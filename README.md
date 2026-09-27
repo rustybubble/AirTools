@@ -64,6 +64,12 @@ uv run python -m pipeline.cli run flight.mp4 --site my-site --out scene/my-site
 
 `pipeline.cli remote` uploads the video to a remote GPU box, runs the same command there, and copies each finished revision back.
 
+#### Pipeline roadmap
+
+The eight pipeline stages, from frame ingest to packaging for the Quest, and the work planned or under way at each. Solid grey boxes are the pipeline stages. Dashed boxes are planned improvements from the ranked plan. Blue boxes are coverage experiments that are running, and yellow boxes are work in progress on a branch.
+
+![Reconstruction pipeline roadmap](docs/pipeline-roadmap.webp)
+
 ## Tech stack
 
 - **Headset:** Unity 6.3 LTS, Universal Render Pipeline, OpenXR, Meta XR SDK (Interaction SDK, MRUK), glTFast
