@@ -1,0 +1,27 @@
+== zabel-gymnasium
+  focus=None     -> applied=None     env=facade   n= 9 took_ms=  0.6 http=   1.1 ms | Windows & frames:3, Doors:1, Siding:2, Gutters & hangers:4, Exterior lights:4
+  focus=roof     -> applied=roof     env=facade   n=11 took_ms=  0.7 http=   1.1 ms | Solar panels:4, Gutters & hangers:4, Roof vents:4, HVAC units:1, Skylights:4
+  focus=wall     -> applied=wall     env=facade   n= 8 took_ms=  0.5 http=   0.9 ms | Wall-mounted HVAC:4, Windows & frames:3, Window AC units:4, Doors:1, Siding:2
+  focus=ground   -> applied=ground   env=facade   n= 7 took_ms=  0.5 http=   0.9 ms | Pavers:4, Planters:4, Benches:1, Drainage:4, Picnic tables:4
+  focus=ceiling  -> applied=ceiling  env=facade   n= 3 took_ms=  0.4 http=   0.7 ms | Exterior lights:4, Ceiling fans:2, Siding:2
+  focus=counter  -> applied=None     env=facade   n= 9 took_ms=  0.6 http=   0.9 ms | Windows & frames:3, Doors:1, Siding:2, Gutters & hangers:4, Exterior lights:4
+  focus=opening  -> applied=opening  env=facade   n= 4 took_ms=  0.4 http=   0.6 ms | Windows & frames:3, Doors:1, Window AC units:4, Blinds & shades:0
+  foci=['roof', 'wall', 'ground', 'ceiling', 'opening']
+== hospital-bg
+  focus=None     -> applied=None     env=facade   n= 9 took_ms=  0.9 http=   1.2 ms | Windows & frames:3, Doors:1, Siding:2, Gutters & hangers:4, Exterior lights:4
+  focus=roof     -> applied=roof     env=facade   n= 9 took_ms=  0.5 http=   0.8 ms | Solar panels:4, Gutters & hangers:4, Roof vents:4, HVAC units:1, Skylights:4
+  focus=wall     -> applied=wall     env=facade   n= 8 took_ms=  0.4 http=   0.8 ms | Wall-mounted HVAC:4, Windows & frames:3, Window AC units:4, Doors:1, Siding:2
+  focus=ground   -> applied=ground   env=facade   n= 7 took_ms=  0.5 http=   0.8 ms | Pavers:4, Planters:4, Benches:1, Drainage:4, Picnic tables:4
+  focus=ceiling  -> applied=ceiling  env=facade   n= 3 took_ms=  0.3 http=   0.6 ms | Exterior lights:4, Ceiling fans:2, Siding:2
+  focus=counter  -> applied=None     env=facade   n= 9 took_ms=  0.5 http=   0.8 ms | Windows & frames:3, Doors:1, Siding:2, Gutters & hangers:4, Exterior lights:4
+  focus=opening  -> applied=opening  env=facade   n= 4 took_ms=  0.3 http=   0.5 ms | Windows & frames:3, Doors:1, Window AC units:4, Blinds & shades:0
+  foci=['roof', 'wall', 'ground', 'ceiling', 'opening']
+== kitchen
+  focus=None     -> applied=None     env=kitchen  n=10 took_ms=  0.9 http=   1.3 ms | Fridges:8, Dishwashers:8, Ranges & ovens:6, Microwaves:4, Range hoods:4
+  focus=roof     -> applied=None     env=kitchen  n=10 took_ms=  0.9 http=   1.3 ms | Fridges:8, Dishwashers:8, Ranges & ovens:6, Microwaves:4, Range hoods:4
+  focus=wall     -> applied=wall     env=kitchen  n= 7 took_ms=  0.6 http=   0.9 ms | Range hoods:4, Microwaves:4, Cabinet hardware:8, Lighting:3, Outlets & switches:4
+  focus=ground   -> applied=ground   env=kitchen  n= 4 took_ms=  0.7 http=   1.2 ms | Dishwashers:8, Fridges:8, Ranges & ovens:6, Cabinet hardware:8
+  focus=ceiling  -> applied=ceiling  env=kitchen  n= 4 took_ms=  0.4 http=   0.7 ms | Ceiling lights:4, Smoke detectors:4, Range hoods:4, Ceiling fans:2
+  focus=counter  -> applied=counter  env=kitchen  n= 7 took_ms=  0.6 http=   0.9 ms | Microwaves:4, Sinks & faucets:1, Cooktops:4, Backsplash tile:3, Lighting:3
+  focus=opening  -> applied=opening  env=kitchen  n= 3 took_ms=  0.3 http=   0.6 ms | Windows & frames:3, Doors:1, Blinds & shades:0
+  foci=['wall', 'ground', 'ceiling', 'counter', 'opening']

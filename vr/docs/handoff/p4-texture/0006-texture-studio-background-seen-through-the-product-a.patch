@@ -1,0 +1,102 @@
+From 39e482535538a14a57fddc1522f4ecc8138cb565 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:18:54 -0400
+Subject: [PATCH 6/6] texture: studio background seen through the product (a
+ bench's slat gaps) stays background; cut cache v3
+
+An enclosed patch of the background colour (>= 0.2 % of the photo) with a sharp edge to a product
+that isn't itself that colour is background, not a filled hole; a steel highlight fading into the
+body (its ring is near the background colour too) stays product. Test with a slatted back and a
+fading highlight.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/photo_cut.py   | 28 ++++++++++++++++++++++------
+ tests/test_texture.py | 20 ++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 6 deletions(-)
+
+diff --git a/server/photo_cut.py b/server/photo_cut.py
+index bd66874..1b1111a 100644
+--- a/server/photo_cut.py
++++ b/server/photo_cut.py
+@@ -47,10 +47,12 @@ from server.config import get_settings
+ 
+ logger = logging.getLogger(__name__)
+ 
+-VERSION = 2  # 2: a frame-filling crop matches any face of the product
++VERSION = 3  # 2: frame-filling crop, any face; 3: background seen through the product
+ PLAIN_BORDER_FRAC = 0.4  # this share of the border near its median colour = a studio background
+ TOL = 12  # max per-channel distance from the border colour that still counts as background
+ MAX_SIDE = 1600  # photos are worked on at most this big (catalogue photos are <= 1000 px)
++HOLE_MIN = 0.002  # an enclosed background-coloured patch this big is background seen through
++HOLE_CONTRAST = 40  # ... when the product's median colour is this far from the background's
+ RIM = 2  # px of the outline that are part background (anti-aliased), replaced from inside
+ EXTEND = 0.015  # background this near the outline (share of the size) takes the edge's colour
+ MIN_BLOB = 0.01  # a component smaller than this share of the photo isn't a candidate
+@@ -293,16 +295,30 @@ def is_plain(rgb: np.ndarray) -> bool:
+ 
+ def flood_mask(rgb: np.ndarray, tol: int = TOL) -> np.ndarray:
+     """Foreground of a plain-background photo: the border colour flooded in from the edges, the
+-    biggest remaining blob, holes filled (meshgen.photo_mask's method)."""
++    biggest remaining blob, holes filled (meshgen.photo_mask's method) -- except background seen
++    through the product (between a bench's slats) when the product isn't itself that colour: an
++    enclosed patch of the background colour of at least HOLE_MIN of the photo stays background."""
+     img = rgb.astype(np.int16)
+-    near_bg = np.abs(img - np.median(border_pixels(rgb, 1), axis=0)).max(axis=2) <= tol
++    bg = np.median(border_pixels(rgb, 1), axis=0)
++    near_bg = np.abs(img - bg).max(axis=2) <= tol
+     lab, _ = ndimage.label(near_bg)
+     edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+     fg = ndimage.binary_opening(~np.isin(lab, edge[edge > 0]))
+-    lab, n = ndimage.label(fg)
++    lab2, n = ndimage.label(fg)
+     if n > 1:
+-        fg = lab == (np.argmax(np.bincount(lab.ravel())[1:]) + 1)
+-    return ndimage.binary_fill_holes(fg)
++        fg = lab2 == (np.argmax(np.bincount(lab2.ravel())[1:]) + 1)
++    filled = ndimage.binary_fill_holes(fg)
++    body = img[filled & ~near_bg]
++    if body.size and np.abs(np.median(body, axis=0) - bg).max() > HOLE_CONTRAST:
++        sizes = np.bincount(lab.ravel())
++        big = np.nonzero(sizes >= HOLE_MIN * near_bg.size)[0]
++        for i in big[(big > 0) & ~np.isin(big, edge)]:
++            patch = lab == i
++            ring = ndimage.binary_dilation(patch, iterations=3) & ~patch
++            # a sharp edge to the product (a gap between slats), not a highlight fading into steel
++            if np.abs(np.median(img[ring], axis=0) - bg).max() > HOLE_CONTRAST:
++                filled &= ~patch
++    return filled
+ 
+ 
+ def pick_object(fg: np.ndarray, aspect: float | None) -> np.ndarray:
+diff --git a/tests/test_texture.py b/tests/test_texture.py
+index b0f5a6f..458fc20 100644
+--- a/tests/test_texture.py
++++ b/tests/test_texture.py
+@@ -483,3 +483,23 @@ def test_place_part_model_url_carries_the_generator():
+     _, action = agent._place_action(session, {"id": "dw1"}, None, 0, 1, part)
+     assert action["name"] == "place_part"
+     assert action["args"]["model_url"] == "/parts/dw-cad/model.glb?mode=llm_scad"
++
++
++def test_background_seen_through_the_product_stays_background(tmp_path, no_model):
++    """A bench's slat gaps show the studio white: not the product. A steel highlight isn't."""
++    img = Image.new("RGB", (400, 300), (255, 255, 255))
++    d = ImageDraw.Draw(img)
++    d.rectangle((50, 50, 350, 250), fill=(40, 60, 100))  # the navy back
++    for x in range(80, 330, 40):
++        d.rectangle((x, 70, x + 20, 230), fill=(255, 255, 255))  # the gaps between slats
++    img.save(tmp_path / "image.jpg")
++    c = photo_cut.cut(tmp_path / "image.jpg", 1.5)
++    mask = c.mask
++    gap = mask[40:140, 38:52]  # inside the first gap (crop coordinates: box starts at 50, 50)
++    assert gap.mean() < 0.2 and mask.mean() < 0.8
++    shiny = _studio(tmp_path / "shiny.jpg")
++    arr = np.asarray(Image.open(shiny)).copy()
++    for i, v in enumerate(range(200, 256, 4)):  # a highlight fading into the steel
++        arr[150 + i : 350 - i, 190 + i : 210 - i] = v
++    Image.fromarray(arr).save(shiny)
++    assert photo_cut.cut(shiny, 0.5).mask.mean() > 0.97
+-- 
+2.50.1 (Apple Git-155)
+

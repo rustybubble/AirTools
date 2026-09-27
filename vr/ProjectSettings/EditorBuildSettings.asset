@@ -1,0 +1,15 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - enabled: 1
+    path: Assets/AirTools/Scenes/Main.unity
+    guid: 49f51843255bd41f7af916e20f7f3e52
+  m_configObjects:
+    com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+    com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 546c3c6527f7c4ee98a3d448268c9ee6, type: 2}
+    com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 4fa20b480cad74521a367f8c72cd6e29, type: 2}
+  m_UseUCBPForAssetBundles: 0

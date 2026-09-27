@@ -1,0 +1,95 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "kitchen",
+ "title": "Kitchen",
+ "focus": "opening",
+ "foci": [
+  "wall",
+  "ground",
+  "ceiling",
+  "counter",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "windows",
+   "title": "Windows & frames",
+   "icon": "squares-four",
+   "query": "vinyl window",
+   "items": [
+    {
+     "part_id": "jeld-wen-thdjw235100032-d0809e",
+     "name": "V-2500 Series 59.5 in. W x 47.5 in. H Left-Handed White Vinyl Low-E Sliding Window w/Brickmould Nail Fin Frame and Grids",
+     "price_usd": 415.6,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw235100032-d0809e/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw235100032-d0809e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw140400129-e52d6c",
+     "name": "59.5 in. x 47.5 in. V-4500 Series White Vinyl Right-Handed Sliding Window with Fiberglass Mesh Screen",
+     "price_usd": 597.42,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw140400129-e52d6c/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw140400129-e52d6c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw138500119-d5f663",
+     "name": "59.5 in. x 47.5 in. V-2500 Series Desert Sand Vinyl Right-Handed Sliding Window with Colonial Grids/Grilles",
+     "price_usd": 640.45,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw138500119-d5f663/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw138500119-d5f663/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "doors",
+   "title": "Doors",
+   "icon": "door",
+   "query": "exterior door",
+   "items": [
+    {
+     "part_id": "emco-e1ss-36wh-26984d",
+     "name": "36 in. x 80 in. White Universal 3/4-Light Vinyl Storm Door with Black Hardware",
+     "price_usd": 154.0,
+     "dims_mm": {
+      "w": 914.4,
+      "h": 2032.0,
+      "d": 25.4
+     },
+     "image_url": "/parts/emco-e1ss-36wh-26984d/image.jpg",
+     "model_url": "/parts/emco-e1ss-36wh-26984d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "blinds",
+   "title": "Blinds & shades",
+   "icon": "square-split-vertical",
+   "query": "cordless blinds",
+   "items": []
+  }
+ ]
+}

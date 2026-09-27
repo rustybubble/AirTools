@@ -1,0 +1,41 @@
+From b6b0317f36941e85839d989f46717ef0e6665ebd Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:25:14 -0400
+Subject: [PATCH 11/12] fix(replace job): "an LG ...", "a GE ..." in the spoken
+ summary
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/replace_job.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/server/replace_job.py b/server/replace_job.py
+index f9a5a67..e1e4c6e 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -292,6 +292,13 @@ def _gap_words(cav: Cavity) -> str:
+     return f"{w * 100:.0f} × {h * 100:.0f} × {d * 100:.0f} cm"
+ 
+ 
++def _a(name: str) -> str:
++    """ "an LG ...", "an Asko ...", "a GE ...", "a Frigidaire ..." (by the first letter's sound)."""
++    word = (name or "x").split()[0]
++    vowel_sound = word[0] in "AEIOUaeiou" or (word.isupper() and word[0] in "AEFHILMNORSX")
++    return "an" if vowel_sound else "a"
++
++
+ def _count(n: int) -> str:
+     """ "three" (so "Found three 30 inch ranges", not "3 30 inch")."""
+     return ("no", "one", "two", "three", "four", "five")[n] if 0 <= n <= 5 else str(n)
+@@ -570,7 +577,7 @@ def _done_args(run: runjob.Run, st: State, by: dict[str, dict[str, Any]]) -> dic
+         short = replace.short_name(st.part)
+         phrase = fit_phrase(st.fit)
+         lines = [st.scale_note] if st.scale_note else []
+-        lines.append(f"Put a {short} in the {st.label} gap, {phrase}.{st.pick_note}")
++        lines.append(f"Put {_a(short)} {short} in the {st.label} gap, {phrase}.{st.pick_note}")
+         if ready:
+             lines.append(
+                 f"Say next one to see the other {'two' if ready == 2 else 'one'}."
+-- 
+2.50.1 (Apple Git-155)
+

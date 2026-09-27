@@ -1,0 +1,69 @@
+From 27e6a8bfd11eaa33d450dbe6f6bbd8dcab80111a Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:54:29 -0400
+Subject: [PATCH 7/8] feat: scene_pin carries the vision answer as its label
+
+Integration finding #6: scene_pin had only {frame_id, box}, so the app labelled the pin with the
+agent's spoken reply. The action now also carries `label` (the vision model's answer); additive,
+clients that ignore it are unaffected.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md         | 2 +-
+ server/agent.py     | 6 +++++-
+ tests/test_agent.py | 9 ++++++++-
+ 3 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 7e81125..cbe9435 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -450,7 +450,7 @@ Errors: `400` empty frames, invalid base64, frame too large. `413` request body
+ | `start_checkout` | `{seller_index}` | Open hold-to-pay panel — do NOT call `/checkout` yet. Index into the selected part's `sellers[]`: the one named in the command ("buy it from Home Depot"), else the cheapest/fastest if asked, else `recommended_seller`. "buy/purchase/order it", "check out", "pay for it" never start a search |
+ | `equip_tool` | `{tool}` | Swap hand tool: `tape`/`level`/`protractor`/`plumb`/`area`/`notebook`/`part` |
+ | `add_note` | `{text}` | Append text to wrist notebook |
+-| `scene_pin` | `{frame_id, box}` | Project box centre onto mesh, drop a pin |
++| `scene_pin` | `{frame_id, box, label}` | Project box centre onto mesh, drop a pin; `label` is the vision answer to show on it |
+ | `show_bom` | `{bom_id, lines, total_usd}` | Open the "what else do I need?" panel; `lines[]` are `BomLine` objects, ready to render without a second call |
+ 
+ ---
+diff --git a/server/agent.py b/server/agent.py
+index 8957199..214e869 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -367,7 +367,11 @@ async def _run_tool(
+         if scene_answer.box is not None:
+             action = {
+                 "name": "scene_pin",
+-                "args": {"frame_id": scene_answer.frame_id, "box": scene_answer.box},
++                "args": {
++                    "frame_id": scene_answer.frame_id,
++                    "box": scene_answer.box,
++                    "label": scene_answer.answer,  # the pin's own text, not the spoken reply
++                },
+             }
+         return result, action, None
+ 
+diff --git a/tests/test_agent.py b/tests/test_agent.py
+index d25e73d..c260774 100644
+--- a/tests/test_agent.py
++++ b/tests/test_agent.py
+@@ -159,7 +159,14 @@ async def test_ask_scene_tool_returns_scene_pin_and_spoken_answer(monkeypatch):
+ 
+     assert result["reply"] == "It's a gutter hanger."
+     assert result["actions"] == [
+-        {"name": "scene_pin", "args": {"frame_id": "f0", "box": [0.1, 0.1, 0.5, 0.5]}}
++        {
++            "name": "scene_pin",
++            "args": {
++                "frame_id": "f0",
++                "box": [0.1, 0.1, 0.5, 0.5],
++                "label": "It's a gutter hanger.",  # integration finding #6: the pin's text
++            },
++        }
+     ]
+     assert result["job_id"] is None
+ 
+-- 
+2.50.1 (Apple Git-155)
+

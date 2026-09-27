@@ -1,0 +1,182 @@
+{
+ "site": "synthetic-facade",
+ "environment": "facade",
+ "title": "House front",
+ "generated_at": "2026-09-26T22:00:00Z",
+ "categories": [
+  {
+   "id": "gutter-hangers",
+   "title": "Gutter hangers",
+   "query": "gutter hanger",
+   "items": [
+    {
+     "part_id": "amerimax-home-products-21812-846830",
+     "name": "5 in. Aluminum Hidden Gutter Hanger with Screw",
+     "price_usd": 2.74,
+     "dims_mm": {
+      "w": 19.1,
+      "h": 25.4,
+      "d": 127.0
+     },
+     "image_url": "/parts/amerimax-home-products-21812-846830/image.jpg",
+     "model_url": "/parts/amerimax-home-products-21812-846830/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "amerimax-home-products-m0722b-d6dfa5",
+     "name": "5 in. White Vinyl K-Style Hidden Gutter Hanger",
+     "price_usd": 2.98,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 69.8,
+      "d": 114.3
+     },
+     "image_url": "/parts/amerimax-home-products-m0722b-d6dfa5/image.jpg",
+     "model_url": "/parts/amerimax-home-products-m0722b-d6dfa5/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "amerimax-home-products-47814-e9a830",
+     "name": "6 in. Aluminum Hidden Gutter Hanger with Screw",
+     "price_usd": 4.18,
+     "dims_mm": {
+      "w": 152.4,
+      "h": 50.8,
+      "d": 152.4
+     },
+     "image_url": "/parts/amerimax-home-products-47814-e9a830/image.jpg",
+     "model_url": "/parts/amerimax-home-products-47814-e9a830/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "spectra-pro-select-5hnsrt-7c9465",
+     "name": "5 in. Aluminum Gutter Hanger No Screw (10-Pack)",
+     "price_usd": 11.98,
+     "dims_mm": {
+      "w": 12.7,
+      "h": 241.3,
+      "d": 304.8
+     },
+     "image_url": "/parts/spectra-pro-select-5hnsrt-7c9465/image.jpg",
+     "model_url": "/parts/spectra-pro-select-5hnsrt-7c9465/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "window-ac",
+   "title": "Window AC",
+   "query": "window ac",
+   "items": [
+    {
+     "part_id": "vissani-v05wc3r-ae8225",
+     "name": "5,000 BTU 115-Volt Window Air Conditioner cools 150 sq. ft. with Remote in White",
+     "price_usd": 169.0,
+     "dims_mm": {
+      "w": 405.9,
+      "h": 304.8,
+      "d": 332.0
+     },
+     "image_url": "/parts/vissani-v05wc3r-ae8225/image.jpg",
+     "model_url": "/parts/vissani-v05wc3r-ae8225/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "windmill-w1w12-adf5c5",
+     "name": "6,000 BTU 115-Volts Quiet Smart Window Air Conditioner, Wi-Fi/Remote, #1 Easiest-to-Install, up to 250 sq ft.",
+     "price_usd": 299.0,
+     "dims_mm": {
+      "w": 457.2,
+      "h": 304.8,
+      "d": 396.9
+     },
+     "image_url": "/parts/windmill-w1w12-adf5c5/image.jpg",
+     "model_url": "/parts/windmill-w1w12-adf5c5/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "midea-maw08u1qwt-8d6d08",
+     "name": "8,000 BTU U+ Smart Inverter Window Air Conditioner for Rooms up to 350 Sq. Ft. with Dual Filter, Remote in White",
+     "price_usd": 379.0,
+     "dims_mm": {
+      "w": 486.9,
+      "h": 341.9,
+      "d": 558.0
+     },
+     "image_url": "/parts/midea-maw08u1qwt-8d6d08/image.jpg",
+     "model_url": "/parts/midea-maw08u1qwt-8d6d08/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "brackets",
+   "title": "Brackets",
+   "query": "shelf bracket",
+   "items": [
+    {
+     "part_id": "everbilt-25223pklhd-dd016b",
+     "name": "12 in. x 8 in. Black Steel HD Shelf Bracket",
+     "price_usd": 9.93,
+     "dims_mm": {
+      "w": 38.1,
+      "h": 203.2,
+      "d": 304.8
+     },
+     "image_url": "/parts/everbilt-25223pklhd-dd016b/image.jpg",
+     "model_url": "/parts/everbilt-25223pklhd-dd016b/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "crates-pallet-69104-2c573d",
+     "name": "12 in. Black Steel Shelf Bracket for Wood Shelving",
+     "price_usd": 10.99,
+     "dims_mm": {
+      "w": 38.1,
+      "h": 261.9,
+      "d": 304.8
+     },
+     "image_url": "/parts/crates-pallet-69104-2c573d/image.jpg",
+     "model_url": "/parts/crates-pallet-69104-2c573d/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "lights",
+   "title": "Outdoor lights",
+   "query": "outdoor wall light",
+   "items": [
+    {
+     "part_id": "armacost-lighting-132250-c61083",
+     "name": "RibbonFlex Pro 32.8 ft. 12-Volt White Tape Strip Light 60 LEDs/m Soft White (2700K)",
+     "price_usd": 59.27,
+     "dims_mm": {
+      "w": 8.0,
+      "h": 1.0,
+      "d": 1.0
+     },
+     "image_url": "/parts/armacost-lighting-132250-c61083/image.jpg",
+     "model_url": "/parts/armacost-lighting-132250-c61083/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "shutters",
+   "title": "Shutters",
+   "query": "exterior shutters",
+   "items": []
+  }
+ ]
+}

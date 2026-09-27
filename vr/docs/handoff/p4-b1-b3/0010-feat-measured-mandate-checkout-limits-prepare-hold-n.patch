@@ -1,0 +1,1630 @@
+From f570c3dd10532f0f21c09447acfc4636f518b70c Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 04:26:03 -0400
+Subject: [PATCH 10/11] feat: measured mandate checkout (limits, prepare + hold
+ nonce, evidenced receipt)
+
+brain.md S2 / B3, server part: a bounded, evidenced checkout that only the 1 s hold can pay.
+
+- mandate.py: IntentMandate (one per session in data/mandates/intents/, 24 h: budget cap on the
+  order total, delivery deadline, seller policy, the instruction text and a change history;
+  voice can only tighten, the panel may loosen or clear), CartMandate (part line units -> packs,
+  BOM lines, shipping, total, the headset's evidence; hash = sha256 of canonical JSON; saved in
+  data/mandates/carts/), the checks (price re-read, within limit, delivery by the deadline,
+  quantity evidence, structured seller listing, fit, card) as ok / warn / fail, and in-memory
+  hold nonces (single-use, 120 s, bound to cart hash + session, a newer prepare revokes).
+- POST /commerce/limits: only the fields sent change; a looser voice ask comes back in `refused`.
+- POST /checkout/prepare: prices the cart on the server, returns the cart, cart_hash, checks,
+  all_ok and the hold nonce. Never pays.
+- POST /checkout: with cart_hash + hold_nonce + hold_ms (>= 1000) + session_id it redeems the
+  nonce, requires the request to match the prepared cart and the price to be unchanged (rebuilt
+  hash), re-runs the checks against the current limits, and adds receipt.mandate {intent, cart,
+  authorization (with hold_ms), evidence, checks}. 400 missing/short proof, 409 stale/reused/
+  foreign/tampered, 422 a check fails. The sandbox request carries the cart hash as
+  clientReferenceInformation.code and intent id / evidence / session as merchantDefinedInformation.
+  Offline receipts (no Cybersource keys) keep their honest label and carry the same chain.
+- REQUIRE_HOLD_PROOF (default false): true refuses a /checkout without the proof. Off by default
+  so the current app build can still check out until it sends the proof.
+- api.md: both endpoints, the proof fields, errors and the receipt's mandate block.
+
+Not in this patch (S2's cut order): TAP request signing / JWKS and the phase-2 payment link.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md           | 120 +++++++-
+ server/app.py         | 116 +++++++-
+ server/checkout.py    |  74 ++++-
+ server/config.py      |   4 +
+ server/mandate.py     | 644 ++++++++++++++++++++++++++++++++++++++++++
+ tests/test_mandate.py | 480 +++++++++++++++++++++++++++++++
+ 6 files changed, 1420 insertions(+), 18 deletions(-)
+ create mode 100644 server/mandate.py
+ create mode 100644 tests/test_mandate.py
+
+diff --git a/docs/api.md b/docs/api.md
+index 2021c48..ea6b3bc 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -67,9 +67,12 @@ sequenceDiagram
+     S-->>U: {reply, actions:[{name:"show_sellers",args:{part_id,sort}}]}
+     U->>S: POST /parts/{part_id}/sellers?sort=cheapest
+     S-->>U: Part (sellers[] re-sorted)
+-    Note over U: user pinch-hold → call POST /checkout
+-    U->>S: POST /checkout {part_id, seller_idx, qty, session_id}
+-    S-->>U: receipt
++    Note over U: checkout panel opens (Buy, or the start_checkout action)
++    U->>S: POST /checkout/prepare {session_id, part_id, seller_idx, units_needed, evidence[]}
++    S-->>U: {cart, cart_hash, hold_nonce, checks[], all_ok}
++    Note over U: user holds Pay for 1 s → call POST /checkout
++    U->>S: POST /checkout {part_id, seller_idx, qty, session_id, cart_hash, hold_nonce, hold_ms}
++    S-->>U: receipt + mandate {intent, cart, authorization, evidence}
+ ```
+ 
+ ### Agent survey (the agent uses the headset's tape)
+@@ -306,6 +309,81 @@ just excluded from `total_usd`. An `OFFLINE` cache miss returns an empty BOM (`l
+ 
+ ---
+ 
++### `POST /commerce/limits`
++
++The session's purchase limits (measured mandate, brain.md S2). Only the fields present in the body
++change. `source: "voice"` (the default; the agent's `set_limits` uses it) can only **tighten**:
++lower the cap, move the deadline earlier, pick a seller policy; a looser ask is refused, not
++applied. `source: "panel"` (the checkout panel's own controls, i.e. the user's hand) may also raise
++or clear (`null`) a limit. `max_total_usd` caps the order total (part + BOM lines + shipping).
++`deliver_by`: ISO date, a weekday (the next one, today included), `today` or `tomorrow`.
++```json
++{"session_id": "quest-1a2b3c4d5e", "max_total_usd": 40, "deliver_by": "friday",
++ "seller_policy": "fastest", "source": "voice", "text": "under forty dollars, arriving by Friday"}
++```
++**Response:**
++```json
++{"intent": {"id": "int-4c1e09ab", "max_total_usd": 40.0, "deliver_by": "2026-10-02",
++            "seller_policy": "fastest", "source": "voice", "text": "under forty dollars, arriving by Friday"},
++ "refused": [],
++ "changed": ["max_total_usd", "deliver_by", "seller_policy"]}
++```
++A refused voice change: `"refused": [{"field": "max_total_usd", "asked": 100.0, "kept": 40.0,
++"why": "voice can only tighten a limit; change it on the panel"}]`. The intent lives in
++`data/mandates/intents/`, one per session, and expires 24 h after its last change.
++
++Errors: `400` a non-positive cap or an unreadable date; `422` an unknown `seller_policy`/`source`.
++
++---
++
++### `POST /checkout/prepare`
++
++Call when the checkout panel opens, and again whenever the seller, quantity or BOM lines change.
++Prices the cart on the server, runs the checks the panel shows, and issues the single-use
++**hold nonce** (120 s, bound to this cart and session; a newer prepare revokes the older nonce).
++Never pays.
++```json
++{"session_id": "quest-1a2b3c4d5e", "part_id": "gutter-hanger-hidden-k-style", "seller_idx": 0,
++ "units_needed": 8, "bom_id": "bom-a1b2c3d4e5f6", "bom_lines": [0],
++ "evidence": [{"notebook_id": 3, "label": "tape #3", "value_m": 4.20, "camera_id": 316,
++               "photo": "/scenes/facade/thumbs/0316.jpg", "array": {"spacing_mm": 600, "count": 8}}]}
++```
++`units_needed` is pieces (1–5000); the server turns them into listings: `packs = ⌈units /
++pack_qty⌉`, which is the `qty` to send to `/checkout`. `evidence` (≤ 20, all fields optional) is the
++headset's measurement behind the quantity; it is stored with the cart and returned verbatim on
++the receipt (`photo` is any path the app can show).
++
++**Response:**
++```json
++{"cart": {"id": "cart-77aa01bc", "intent_id": "int-4c1e09ab",
++          "lines": [{"part_id": "gutter-hanger-hidden-k-style", "seller_idx": 0, "seller": "Home Depot",
++                     "units_needed": 8, "pack_qty": 1, "packs": 8, "unit_price_usd": 2.98,
++                     "shipping_usd": 0.0, "line_total_usd": 23.84}],
++          "bom_id": null, "bom_lines": [], "shipping_usd": 0.0, "total_usd": 23.84,
++          "evidence": [{"notebook_id": 3, "label": "tape #3", "...": "..."}], "created_at": "..."},
++ "cart_hash": "sha256:5b0e…9f2c",
++ "hold_nonce": "hn_…",
++ "nonce_expires_at": "2026-09-27T01:02:03+00:00",
++ "intent": {"id": "int-4c1e09ab", "max_total_usd": 40.0, "deliver_by": "2026-10-02", "...": "..."},
++ "checks": [{"id": "price_reread", "status": "ok", "ok": true, "detail": "$2.98 × 8 from the saved listing"},
++            {"id": "within_limit", "status": "ok", "ok": true, "detail": "$23.84 ≤ $40"},
++            {"id": "delivery", "status": "ok", "ok": true, "detail": "arrives Thu Oct 1, by Fri Oct 2"},
++            {"id": "qty_evidence", "status": "ok", "ok": true, "detail": "tape #3 4.20 m ÷ 600 mm → 8 (reported by headset)"},
++            {"id": "seller_verified", "status": "ok", "ok": true, "detail": "Home Depot: structured seller listing"},
++            {"id": "fit", "status": "ok", "ok": true, "detail": "green, 38 mm spare"},
++            {"id": "card", "status": "ok", "ok": true, "detail": "Visa test card •••• 1111, held by the server"}],
++ "all_ok": true}
++```
++`status`: `ok` (✓), `warn` (⚠, shown, doesn't block: no ETA for a deadline, no or mismatched
++evidence, a listing read by the model, fit unknown/too big/too small), `fail` (✗: over the budget
++cap, arrives after the deadline; `/checkout` answers 422). `all_ok` = no `fail`. Delivery is
++estimated as today + the seller's `eta_days`.
++
++Errors: `400` bad `units_needed`/`seller_idx`, a seller without a price, more than 500 packs, bad
++`bom_id`/line; `404` unknown part or BOM.
++
++---
++
+ ### `POST /checkout`
+ 
+ **Only call after the user's hold-to-pay gesture.**
+@@ -316,6 +394,42 @@ just excluded from `total_usd`. An `OFFLINE` cache miss returns an empty BOM (`l
+ 
+ `session_id` optional; if set the receipt is appended to that notebook.
+ 
++**Hold proof (measured mandate):** send `cart_hash` and `hold_nonce` from `/checkout/prepare`,
++`hold_ms` (how long the Pay button was actually held) and `session_id`, with `part_id`,
++`seller_idx`, `qty` (= the prepared `packs`), `bom_id`, `bom_lines` exactly as prepared:
++```json
++{"part_id": "gutter-hanger-hidden-k-style", "seller_idx": 0, "qty": 8, "session_id": "quest-1a2b3c4d5e",
++ "cart_hash": "sha256:5b0e…9f2c", "hold_nonce": "hn_…", "hold_ms": 1043}
++```
++The nonce is single-use: any attempt that gets past the `hold_ms` check consumes it, so after an
++error, prepare again. The server re-reads the price (a changed price is a 409) and re-runs the
++checks against the current limits. With the proof, the receipt gains a `mandate` block:
++```json
++"mandate": {
++  "intent": {"id": "int-4c1e09ab", "max_total_usd": 40.0, "deliver_by": "2026-10-02",
++             "seller_policy": null, "source": "voice", "text": "under $40, by Friday"},
++  "cart": {"id": "cart-77aa01bc", "hash": "sha256:5b0e…9f2c", "total_usd": 23.84, "units_needed": 8, "packs": 8},
++  "authorization": {"mode": "sandbox", "status": "AUTHORIZED", "approval_code": "831000", "hold_ms": 1043},
++  "evidence": [{"notebook_id": 3, "label": "tape #3", "value_m": 4.2, "camera_id": 316,
++                "photo": "/scenes/facade/thumbs/0316.jpg", "array": {"spacing_mm": 600, "count": 8}}],
++  "checks": [{"id": "price_reread", "status": "ok", "ok": true, "detail": "..."}]
++}
++```
++`intent` is `null` when no limits were set. Offline (no Cybersource keys, or the sandbox failed)
++the block is the same with `"authorization": {"mode": "offline", "status": "OFFLINE_RECEIPT",
++"approval_code": null, "hold_ms": 1043}`. In sandbox mode the Cybersource request also carries
++`clientReferenceInformation.code = "at-" + the first 47 hex digits of the cart hash` and
++`merchantDefinedInformation` 1 = intent id, 2 = the evidence (e.g. `tape#3 4.20m->8@600mm`),
++3 = session id. Without a proof the request works as before (no `mandate`), unless the server
++sets `REQUIRE_HOLD_PROOF=true` (default `false`, so an app build that predates the proof can
++still check out).
++
++Proof errors: `400` part of the proof missing (`hold proof required: …`) or `hold_ms < 1000`;
++`409` nonce unknown / already used / expired / another session's, `cart_hash` not the prepared
++one, the request no longer matches the prepared cart (qty, seller, BOM lines), or the price
++changed since prepare; `422` a check fails now (e.g. the cap was lowered after prepare): body
++`{"detail": {"error": "a mandate check failed", "checks": [...]}}`.
++
+ `bom_id` / `bom_lines` (both optional, plan §4b.6 "same cart"): add lines from a `Bom` returned
+ by `/parts/bom` or the `show_bom` action to this same checkout. `bom_lines` is a list of
+ `BomLine.idx` values (indices only -- the server always re-reads the price from the saved `Bom`
+diff --git a/server/app.py b/server/app.py
+index a685d73..8057e73 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -15,7 +15,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import FileResponse, JSONResponse, Response
+ from openai import RateLimitError
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, Field, ValidationError
+ 
+ from server import (
+     __version__,
+@@ -25,6 +25,7 @@ from server import (
+     cache,
+     checkout,
+     jobs,
++    mandate,
+     search,
+     survey,
+     vision,
+@@ -303,38 +304,133 @@ class CheckoutRequest(BaseModel):
+     session_id: str | None = None  # optional: also logs the receipt into that notebook
+     bom_id: str | None = None  # optional: a "what else do I need?" Bom to add to the same cart
+     bom_lines: list[int] = []  # BomLine.idx values from that bom to include
++    # The hold proof (measured mandate, brain.md S2): from /checkout/prepare + the 1 s hold.
++    cart_hash: str | None = None
++    hold_nonce: str | None = None
++    hold_ms: int | None = None
+ 
+ 
+-@app.post("/checkout")
+-async def do_checkout(req: CheckoutRequest) -> dict:
+-    if not _PART_ID_RE.match(req.part_id):
++def _checkout_inputs(part_id: str, bom_id: str | None, bom_lines: list[int]):
++    """The saved part and the chosen priced BOM lines -- never client-supplied prices."""
++    if not _PART_ID_RE.match(part_id):
+         raise HTTPException(400, "invalid part id")
+-    part = jobs.load_part(req.part_id)
++    part = jobs.load_part(part_id)
+     if part is None:
+         raise HTTPException(404, "unknown part")
+ 
+     selected_lines = []
+-    if req.bom_id is not None:
+-        if not _PART_ID_RE.match(req.bom_id):
++    if bom_id is not None:
++        if not _PART_ID_RE.match(bom_id):
+             raise HTTPException(400, "invalid bom id")
+-        saved_bom = bom.load_bom(req.bom_id)
++        saved_bom = bom.load_bom(bom_id)
+         if saved_bom is None:
+             raise HTTPException(404, "unknown bom")
+         by_idx = {line.idx: line for line in saved_bom.lines}
+-        for idx in req.bom_lines:
++        for idx in bom_lines:
+             line = by_idx.get(idx)
+             if line is None or line.seller is None:  # unknown, or nothing to honestly charge
+                 raise HTTPException(400, f"unknown bom line {idx}")
+             selected_lines.append(line)
++    return part, selected_lines
++
++
++@app.post("/checkout")
++async def do_checkout(req: CheckoutRequest) -> dict:
++    part, selected_lines = _checkout_inputs(req.part_id, req.bom_id, req.bom_lines)
++
++    signed = None
++    proof = (req.cart_hash, req.hold_nonce, req.hold_ms)
++    if any(p is not None for p in proof) or get_settings().REQUIRE_HOLD_PROOF:
++        try:
++            signed = mandate.verify_hold(
++                session_id=req.session_id,
++                part=part,
++                seller_idx=req.seller_idx,
++                qty=req.qty,
++                bom_id=req.bom_id,
++                bom_lines=selected_lines,
++                cart_hash_=req.cart_hash,
++                hold_nonce=req.hold_nonce,
++                hold_ms=req.hold_ms,
++            )
++        except mandate.MandateError as exc:
++            raise HTTPException(exc.status_code, exc.detail) from exc
++        except ValueError as exc:
++            raise HTTPException(400, str(exc)) from exc
+ 
+     try:
+-        receipt = await checkout.authorize(part, req.seller_idx, req.qty, bom_lines=selected_lines)
++        receipt = await checkout.authorize(
++            part, req.seller_idx, req.qty, bom_lines=selected_lines, mandate=signed
++        )
+     except ValueError as exc:
+         raise HTTPException(400, str(exc)) from exc
++    if signed is not None:
++        mandate.record_receipt(signed["cart"], receipt["receipt_id"])
+     _append_notebook(req.session_id or "default", [{"type": "order", **receipt}])
+     return receipt
+ 
+ 
++class PrepareRequest(BaseModel):
++    session_id: str = Field(min_length=1, max_length=128)
++    part_id: str
++    seller_idx: int
++    units_needed: int  # pieces the headset needs (e.g. the array count); packs are computed
++    bom_id: str | None = None
++    bom_lines: list[int] = []
++    evidence: list[mandate.Evidence] = Field(default_factory=list, max_length=20)
++
++
++@app.post("/checkout/prepare")
++def checkout_prepare(req: PrepareRequest) -> dict:
++    """Measured mandate (brain.md S2): price the cart on the server, run the checks the panel
++    shows, and issue the single-use hold nonce (120 s) that the 1 s hold sends to /checkout.
++    Never pays."""
++    part, selected_lines = _checkout_inputs(req.part_id, req.bom_id, req.bom_lines)
++    try:
++        return mandate.prepare(
++            req.session_id,
++            part,
++            req.seller_idx,
++            req.units_needed,
++            bom_id=req.bom_id,
++            bom_lines=selected_lines,
++            evidence=req.evidence,
++        )
++    except ValueError as exc:
++        raise HTTPException(400, str(exc)) from exc
++
++
++class LimitsRequest(BaseModel):
++    session_id: str = Field(min_length=1, max_length=128)
++    max_total_usd: float | None = None
++    deliver_by: str | None = None  # ISO date, weekday, "today" or "tomorrow"
++    seller_policy: Literal["cheapest", "fastest", "best"] | None = None
++    source: Literal["voice", "panel"] = "voice"
++    text: str = Field("", max_length=500)
++
++
++@app.post("/commerce/limits")
++def commerce_limits(req: LimitsRequest) -> dict:
++    """Set the session's purchase limits. Only fields present in the body change; voice can only
++    tighten (a looser ask comes back in `refused`), the panel may loosen or clear (null)."""
++    fields = {
++        k: getattr(req, k)
++        for k in ("max_total_usd", "deliver_by", "seller_policy")
++        if k in req.model_fields_set
++    }
++    try:
++        intent, refused, changed = mandate.set_limits(
++            req.session_id, source=req.source, text=req.text, **fields
++        )
++    except ValueError as exc:
++        raise HTTPException(400, str(exc)) from exc
++    return {
++        "intent": intent.summary(),
++        "refused": [r.model_dump() for r in refused],
++        "changed": changed,
++    }
++
++
+ # --- notebook ------------------------------------------------------------
+ 
+ 
+diff --git a/server/checkout.py b/server/checkout.py
+index c43aa42..e62a43a 100644
+--- a/server/checkout.py
++++ b/server/checkout.py
+@@ -16,6 +16,13 @@ error, declined) is an "offline" receipt and says so.
+ caller from a saved `Bom` -- never client-supplied prices, see server/app.py's `do_checkout`)
+ rides along as extra receipt line items; the sandbox call authorizes the grand total (part +
+ bom lines), never just the part.
++
++Measured mandate (brain.md S2, server/mandate.py): when `/checkout` came with a verified hold
++proof, `authorize` gets the mandate. The sandbox request then carries the cart hash as
++`clientReferenceInformation.code` and the intent id, the quantity's evidence and the session as
++`merchantDefinedInformation`, and the receipt gains a `mandate` block: intent -> cart (hash) ->
++authorization (with hold_ms), the evidence and the checks. Offline receipts carry it too, with
++the honest offline authorization.
+ """
+ 
+ import base64
+@@ -92,11 +99,18 @@ def _sign(merchant_id: str, key_id: str, secret_key: str, body: bytes) -> dict[s
+ 
+ 
+ async def _authorize_sandbox(
+-    merchant_id: str, key_id: str, secret_key: str, total_usd: float, receipt_id: str
++    merchant_id: str,
++    key_id: str,
++    secret_key: str,
++    total_usd: float,
++    receipt_id: str,
++    extra: dict | None = None,
+ ) -> str | None:
+-    """POST the authorization to Cybersource. Returns approval_code or raises."""
++    """POST the authorization to Cybersource (plus `extra` top-level fields). Returns
++    approval_code or raises."""
+     body = json.dumps(
+         {
++            **(extra or {}),
+             "clientReferenceCode": receipt_id,
+             "processingInformation": {"capture": False},
+             "paymentInformation": {
+@@ -144,6 +158,44 @@ def _persist(receipt: dict) -> None:
+     )
+ 
+ 
++def _mandate_fields(mandate: dict) -> dict:
++    """Cybersource fields linking the authorization to the mandate ("commerce signals"): the cart
++    hash as the client reference (50 chars max) and three merchant-defined values (64 max)."""
++    cart = mandate["cart"]
++    intent_id = (mandate.get("intent") or {}).get("id") or "no-limits"
++    return {
++        "clientReferenceInformation": {"code": "at-" + cart.hash.removeprefix("sha256:")[:47]},
++        "merchantDefinedInformation": [
++            {"key": "1", "value": intent_id[:64]},
++            {"key": "2", "value": mandate["evidence_summary"][:64]},
++            {"key": "3", "value": mandate["session_id"][:64]},
++        ],
++    }
++
++
++def _mandate_receipt(mandate: dict, mode: str, status: str, approval_code: str | None) -> dict:
++    cart = mandate["cart"]
++    line = cart.lines[0]
++    return {
++        "intent": mandate.get("intent"),
++        "cart": {
++            "id": cart.id,
++            "hash": cart.hash,
++            "total_usd": cart.total_usd,
++            "units_needed": line.units_needed,
++            "packs": line.packs,
++        },
++        "authorization": {
++            "mode": mode,
++            "status": status,
++            "approval_code": approval_code,
++            "hold_ms": mandate["hold_ms"],
++        },
++        "evidence": [e.model_dump(mode="json") for e in cart.evidence],
++        "checks": [c.model_dump() for c in mandate["checks"]],
++    }
++
++
+ def _bom_line_receipt(line: bom.BomLine) -> dict:
+     return {
+         "idx": line.idx,
+@@ -156,10 +208,15 @@ def _bom_line_receipt(line: bom.BomLine) -> dict:
+ 
+ 
+ async def authorize(
+-    part: Part, seller_idx: int, qty: int, bom_lines: list[bom.BomLine] | None = None
++    part: Part,
++    seller_idx: int,
++    qty: int,
++    bom_lines: list[bom.BomLine] | None = None,
++    mandate: dict | None = None,
+ ) -> dict:
+     """Authorize (or record offline) a purchase of `qty` of `part` from `part.sellers[seller_idx]`,
+-    plus any `bom_lines` riding along in the same cart (see module docstring).
++    plus any `bom_lines` riding along in the same cart (see module docstring). `mandate` is
++    `server.mandate.verify_hold`'s result when the request carried a hold proof.
+ 
+     Raises ValueError on bad input (qty out of range, bad seller_idx, seller has no price).
+     """
+@@ -187,7 +244,12 @@ async def authorize(
+     if merchant_id and key_id and secret_key:
+         try:
+             approval_code = await _authorize_sandbox(
+-                merchant_id, key_id, secret_key, total, receipt_id
++                merchant_id,
++                key_id,
++                secret_key,
++                total,
++                receipt_id,
++                extra=_mandate_fields(mandate) if mandate else None,
+             )
+             mode, status, label = "sandbox", "AUTHORIZED", SANDBOX_LABEL
+             logger.info("checkout receipt_id=%s mode=sandbox total_usd=%.2f", receipt_id, total)
+@@ -219,5 +281,7 @@ async def authorize(
+         "created_at": datetime.now(UTC).isoformat(),
+         "label": label,
+     }
++    if mandate:
++        receipt["mandate"] = _mandate_receipt(mandate, mode, status, approval_code)
+     _persist(receipt)
+     return receipt
+diff --git a/server/config.py b/server/config.py
+index f086fd2..9c2b737 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -23,6 +23,10 @@ class Settings(BaseSettings):
+     CYBERSOURCE_MERCHANT_ID: str | None = None
+     CYBERSOURCE_KEY_ID: str | None = None
+     CYBERSOURCE_SECRET_KEY: str | None = None  # base64 shared secret
++    # Measured mandate (brain.md S2): true = POST /checkout refuses a request without the hold
++    # proof from /checkout/prepare. Off by default so an app build that predates the proof can
++    # still check out; a request that does carry a proof is always verified.
++    REQUIRE_HOLD_PROOF: bool = False
+ 
+     HF_TOKEN: str | None = None  # optional, raises HF Spaces anon GPU quota
+ 
+diff --git a/server/mandate.py b/server/mandate.py
+new file mode 100644
+index 0000000..e3af1f8
+--- /dev/null
++++ b/server/mandate.py
+@@ -0,0 +1,644 @@
++"""Measured mandate (brain.md S2 / B3): bounded, evidenced, hold-signed checkout.
++
++Three records tie a purchase to what the user said and what the headset measured:
++
++- **IntentMandate**, one per session: the limits (budget cap on the order total, delivery
++  deadline, seller policy) plus the instruction text and a change history. Voice can only
++  tighten a limit; the checkout panel (the user's own hand, `source: "panel"`) may also loosen
++  or clear one. Expires 24 h after its last change.
++- **CartMandate**: exactly what will be charged -- the part line (units needed -> packs), the
++  "what else" BOM lines, shipping, total, and the headset's evidence (the tape reading and array
++  that set the quantity). `hash` is sha256 over its canonical JSON (sorted keys, no whitespace).
++- **Hold nonce**: issued by `POST /checkout/prepare`, single-use, 120 s, bound to the cart hash
++  and the session (a newer prepare for the session revokes older nonces). `POST /checkout`
++  redeems it only with `hold_ms >= 1000`, the 1 s physical hold. Nothing else can pay.
++
++Prices are always re-read from the saved part on the server. No LLM on this path.
++"""
++
++import hashlib
++import json
++import math
++import re
++import secrets
++import uuid
++from datetime import UTC, date, datetime, timedelta
++from pathlib import Path
++from typing import Any, Literal
++
++from pydantic import BaseModel, Field
++
++from server import bom, cache, checkout
++from server.config import get_settings
++from server.models import Part
++
++INTENT_TTL = timedelta(hours=24)
++NONCE_TTL = timedelta(seconds=120)
++MIN_HOLD_MS = 1000
++MAX_NONCES = 256
++MAX_UNITS = 5000
++
++_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
++
++Policy = Literal["cheapest", "fastest", "best"]
++Source = Literal["voice", "panel"]
++
++
++class MandateError(Exception):
++    """An HTTP-mappable refusal: 400 missing/short hold proof, 409 stale/reused/mismatched
++    proof, 422 a check failed."""
++
++    def __init__(self, status_code: int, detail: Any):
++        super().__init__(detail)
++        self.status_code = status_code
++        self.detail = detail
++
++
++def _now() -> datetime:
++    return datetime.now(UTC)
++
++
++def _today() -> date:
++    """The laptop's local date -- "by Friday" means the user's Friday."""
++    return datetime.now().astimezone().date()
++
++
++def _dir() -> Path:
++    return Path(get_settings().DATA_DIR) / "mandates"
++
++
++def _session_file(session_id: str) -> str:
++    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)[:60]
++    return f"{safe}-{hashlib.sha1(session_id.encode()).hexdigest()[:8]}.json"
++
++
++def _money(usd: float) -> str:
++    return f"${usd:.0f}" if float(usd).is_integer() else f"${usd:.2f}"
++
++
++def _day(d: date) -> str:
++    return f"{d.strftime('%a %b')} {d.day}"  # "Fri Oct 2"
++
++
++# --- intent: the limits -----------------------------------------------------------------------
++
++
++class Refusal(BaseModel):
++    field: str
++    asked: Any
++    kept: Any
++    why: str
++
++
++class IntentMandate(BaseModel):
++    id: str
++    session_id: str
++    max_total_usd: float | None = None  # cap on the order total (part + BOM lines + shipping)
++    deliver_by: date | None = None
++    seller_policy: Policy | None = None
++    source: Source = "voice"  # who changed it last
++    text: str = ""  # the latest instruction, verbatim
++    history: list[dict[str, Any]] = Field(default_factory=list)
++    created_at: datetime
++    expires_at: datetime
++
++    def summary(self) -> dict[str, Any]:
++        return self.model_dump(
++            mode="json",
++            include={"id", "max_total_usd", "deliver_by", "seller_policy", "source", "text"},
++        )
++
++    def spoken(self) -> str:
++        """ "under $40, by Fri Oct 2, fastest" (empty when nothing is limited)."""
++        bits = []
++        if self.max_total_usd is not None:
++            bits.append(f"under {_money(self.max_total_usd)}")
++        if self.deliver_by is not None:
++            bits.append(f"by {_day(self.deliver_by)}")
++        if self.seller_policy:
++            bits.append(self.seller_policy)
++        return ", ".join(bits)
++
++
++def parse_deliver_by(value: Any, today: date | None = None) -> date | None:
++    """ISO date, "today", "tomorrow" or a weekday (the next one, today included)."""
++    if value is None or value == "":
++        return None
++    if isinstance(value, date):
++        return value
++    today = today or _today()
++    word = str(value).strip().lower()
++    if word == "today":
++        return today
++    if word == "tomorrow":
++        return today + timedelta(days=1)
++    if word in _WEEKDAYS:
++        return today + timedelta(days=(_WEEKDAYS.index(word) - today.weekday()) % 7)
++    try:
++        return date.fromisoformat(word[:10])
++    except ValueError:
++        raise ValueError(f"deliver_by must be an ISO date or a weekday, got {value!r}") from None
++
++
++def _intent_path(session_id: str) -> Path:
++    return _dir() / "intents" / _session_file(session_id)
++
++
++def current_intent(session_id: str, now: datetime | None = None) -> IntentMandate | None:
++    path = _intent_path(session_id)
++    if not path.exists():
++        return None
++    intent = IntentMandate.model_validate_json(path.read_text())
++    if intent.session_id != session_id or intent.expires_at <= (now or _now()):
++        return None
++    return intent
++
++
++def set_limits(
++    session_id: str,
++    *,
++    source: Source,
++    text: str = "",
++    now: datetime | None = None,
++    today: date | None = None,
++    **limits: Any,
++) -> tuple[IntentMandate, list[Refusal], list[str]]:
++    """Apply the given limits (only keys present change anything) -> (intent, refusals, changed
++    fields). Voice may lower the cap, move the deadline earlier and pick a policy; asking to
++    raise or clear is refused, not applied. The panel may set anything (None clears)."""
++    now = now or _now()
++    intent = current_intent(session_id, now) or IntentMandate(
++        id=f"int-{uuid.uuid4().hex[:8]}",
++        session_id=session_id,
++        source=source,
++        created_at=now,
++        expires_at=now + INTENT_TTL,
++    )
++    refused: list[Refusal] = []
++    changed: list[str] = []
++
++    def apply(field: str, asked: Any, looser: bool) -> None:
++        kept = getattr(intent, field)
++        if asked == kept:
++            return
++        if source == "voice" and looser:
++            if asked is not None:  # a voice "no limit" is simply ignored
++                refused.append(
++                    Refusal(
++                        field=field,
++                        asked=str(asked) if isinstance(asked, date) else asked,
++                        kept=str(kept) if isinstance(kept, date) else kept,
++                        why="voice can only tighten a limit; change it on the panel",
++                    )
++                )
++            return
++        setattr(intent, field, asked)
++        changed.append(field)
++        intent.history.append(
++            {
++                "field": field,
++                "from": str(kept) if isinstance(kept, date) else kept,
++                "to": str(asked) if isinstance(asked, date) else asked,
++                "source": source,
++                "text": text,
++                "at": now.isoformat(),
++            }
++        )
++
++    if "max_total_usd" in limits:
++        asked = limits["max_total_usd"]
++        if asked is not None:
++            asked = round(float(asked), 2)
++            if not asked > 0:
++                raise ValueError("max_total_usd must be positive")
++        kept = intent.max_total_usd
++        apply("max_total_usd", asked, asked is None or (kept is not None and asked > kept))
++    if "deliver_by" in limits:
++        asked = parse_deliver_by(limits["deliver_by"], today)
++        kept = intent.deliver_by
++        apply("deliver_by", asked, asked is None or (kept is not None and asked > kept))
++    if "seller_policy" in limits:
++        asked = limits["seller_policy"]
++        if asked is not None and asked not in ("cheapest", "fastest", "best"):
++            raise ValueError(f"seller_policy must be cheapest, fastest or best, got {asked!r}")
++        apply("seller_policy", asked, asked is None)
++
++    if changed:
++        intent.source = source
++        intent.text = text[:500]
++        intent.expires_at = now + INTENT_TTL
++        cache.write_json_atomic(_intent_path(session_id), intent.model_dump_json(indent=2))
++    return intent, refused, changed
++
++
++# --- cart: exactly what will be charged -----------------------------------------------------
++
++
++class EvidenceArray(BaseModel):
++    spacing_mm: float | None = None
++    count: int | None = None
++
++
++class Evidence(BaseModel):
++    """A headset measurement behind the quantity (a notebook tape entry, its array, its photo)."""
++
++    notebook_id: int | str | None = None
++    label: str = Field("", max_length=80)  # "tape #3"
++    value_m: float | None = None
++    camera_id: int | None = None
++    photo: str | None = Field(None, max_length=300)  # e.g. /scenes/<site>/thumbs/0316.jpg
++    array: EvidenceArray | None = None
++
++
++class CartLine(BaseModel):
++    part_id: str
++    seller_idx: int
++    seller: str
++    units_needed: int
++    pack_qty: int
++    packs: int  # what POST /checkout calls `qty` (listings as sold)
++    unit_price_usd: float  # per listing (pack)
++    shipping_usd: float
++    line_total_usd: float
++
++
++class CartMandate(BaseModel):
++    id: str
++    session_id: str
++    intent_id: str | None = None
++    lines: list[CartLine]
++    bom_id: str | None = None
++    bom_lines: list[dict[str, Any]] = Field(default_factory=list)
++    shipping_usd: float
++    total_usd: float
++    evidence: list[Evidence] = Field(default_factory=list)
++    hash: str = ""
++    created_at: datetime
++    receipt_id: str | None = None
++
++
++_HASHED = {
++    "session_id",
++    "intent_id",
++    "lines",
++    "bom_id",
++    "bom_lines",
++    "shipping_usd",
++    "total_usd",
++    "evidence",
++}
++
++
++def cart_hash(cart: CartMandate) -> str:
++    body = cart.model_dump(mode="json", include=_HASHED)
++    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
++    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
++
++
++def build_cart(
++    session_id: str,
++    part: Part,
++    seller_idx: int,
++    units_needed: int,
++    *,
++    bom_id: str | None = None,
++    bom_lines: list[bom.BomLine] | None = None,
++    evidence: list[Evidence] | None = None,
++    intent_id: str | None = None,
++    now: datetime | None = None,
++) -> CartMandate:
++    """Price the cart from the saved listing, the same arithmetic as `checkout.authorize`
++    (price_usd x packs + shipping, plus BOM lines). Raises ValueError on bad input."""
++    if not 1 <= units_needed <= MAX_UNITS:
++        raise ValueError(f"units_needed must be between 1 and {MAX_UNITS}, got {units_needed}")
++    if not 0 <= seller_idx < len(part.sellers):
++        raise ValueError(f"seller_idx {seller_idx} out of range for part {part.id!r}")
++    pack_qty = max(1, part.sellers[seller_idx].pack_qty)
++    packs = math.ceil(units_needed / pack_qty)
++    seller = checkout._validate(part, seller_idx, packs)
++    shipping = seller.shipping_usd or 0.0
++    line_total = round(seller.price_usd * packs + shipping, 2)
++    bom_receipts = [checkout._bom_line_receipt(line) for line in bom_lines or []]
++    total = round(line_total + round(sum(b["total_usd"] for b in bom_receipts), 2), 2)
++    cart = CartMandate(
++        id=f"cart-{uuid.uuid4().hex[:8]}",
++        session_id=session_id,
++        intent_id=intent_id,
++        lines=[
++            CartLine(
++                part_id=part.id,
++                seller_idx=seller_idx,
++                seller=seller.name,
++                units_needed=units_needed,
++                pack_qty=pack_qty,
++                packs=packs,
++                unit_price_usd=seller.price_usd,
++                shipping_usd=shipping,
++                line_total_usd=line_total,
++            )
++        ],
++        bom_id=bom_id if bom_receipts else None,
++        bom_lines=bom_receipts,
++        shipping_usd=shipping,
++        total_usd=total,
++        evidence=evidence or [],
++        created_at=now or _now(),
++    )
++    cart.hash = cart_hash(cart)
++    return cart
++
++
++def _cart_path(cart_id: str) -> Path:
++    return _dir() / "carts" / f"{cart_id}.json"
++
++
++def save_cart(cart: CartMandate) -> None:
++    cache.write_json_atomic(_cart_path(cart.id), cart.model_dump_json(indent=2))
++
++
++def load_cart(cart_id: str) -> CartMandate | None:
++    path = _cart_path(cart_id)
++    return CartMandate.model_validate_json(path.read_text()) if path.exists() else None
++
++
++# --- checks: what the panel shows before the hold ---------------------------------------------
++
++
++class Check(BaseModel):
++    id: str
++    status: Literal["ok", "warn", "fail"]  # fail blocks payment (422); warn is shown, not blocking
++    ok: bool
++    detail: str
++
++
++def _check(check_id: str, status: str, detail: str) -> Check:
++    return Check(id=check_id, status=status, ok=status != "fail", detail=detail)
++
++
++def checks(
++    cart: CartMandate, intent: IntentMandate | None, part: Part, today: date | None = None
++) -> list[Check]:
++    today = today or _today()
++    line = cart.lines[0]
++    seller = part.sellers[line.seller_idx]
++    out = []
++
++    ship = f" + {_money(line.shipping_usd)} shipping" if line.shipping_usd else ""
++    out.append(
++        _check(
++            "price_reread",
++            "ok",
++            f"${line.unit_price_usd:.2f} × {line.packs} from the saved listing{ship}",
++        )
++    )
++
++    cap = intent.max_total_usd if intent else None
++    if cap is None:
++        out.append(_check("within_limit", "ok", "no budget limit set"))
++    elif cart.total_usd <= cap:
++        out.append(_check("within_limit", "ok", f"${cart.total_usd:.2f} ≤ {_money(cap)}"))
++    else:
++        out.append(
++            _check(
++                "within_limit", "fail", f"${cart.total_usd:.2f} is over your {_money(cap)} limit"
++            )
++        )
++
++    deadline = intent.deliver_by if intent else None
++    arrival = today + timedelta(days=seller.eta_days) if seller.eta_days is not None else None
++    if deadline is None:
++        eta = f"arrives {_day(arrival)}" if arrival else (seller.eta or "no delivery estimate")
++        out.append(_check("delivery", "ok", f"{eta}; no deadline set"))
++    elif arrival is None:
++        detail = f"{seller.name} gave no delivery estimate; you asked for {_day(deadline)}"
++        out.append(_check("delivery", "warn", detail))
++    elif arrival <= deadline:
++        out.append(_check("delivery", "ok", f"arrives {_day(arrival)}, by {_day(deadline)}"))
++    else:
++        detail = f"arrives {_day(arrival)}, after your {_day(deadline)} deadline"
++        out.append(_check("delivery", "fail", detail))
++
++    measured = next((e for e in cart.evidence if e.array and e.array.count), None)
++    if measured is not None:
++        spacing = measured.array.spacing_mm
++        how = (
++            f"{measured.value_m:.2f} m ÷ {spacing:g} mm → {measured.array.count}"
++            if measured.value_m is not None and spacing
++            else f"{measured.array.count}"
++        )
++        detail = f"{measured.label or 'tape'} {how} (reported by headset)"
++        if measured.array.count == line.units_needed:
++            out.append(_check("qty_evidence", "ok", detail))
++        else:
++            out.append(_check("qty_evidence", "warn", f"{detail}, cart has {line.units_needed}"))
++    elif cart.evidence:
++        e = cart.evidence[0]
++        value = f" {e.value_m:.2f} m" if e.value_m is not None else ""
++        out.append(
++            _check("qty_evidence", "ok", f"{e.label or 'tape'}{value} (reported by headset)")
++        )
++    else:
++        out.append(_check("qty_evidence", "warn", "no measurement evidence for the quantity"))
++
++    if seller.verified:
++        out.append(_check("seller_verified", "ok", f"{seller.name}: structured seller listing"))
++    else:
++        detail = f"{seller.name}: listing read by the model, not a seller API"
++        out.append(_check("seller_verified", "warn", detail))
++
++    fit = part.fit
++    if fit.status == "fits":
++        spare = f", {fit.spare_mm:g} mm spare" if fit.spare_mm is not None else ""
++        out.append(_check("fit", "ok", f"green{spare}"))
++    elif fit.status == "unknown":
++        out.append(_check("fit", "warn", "fit not checked against a measurement"))
++    else:
++        by = f" by {abs(fit.spare_mm):g} mm" if fit.spare_mm is not None else ""
++        out.append(_check("fit", "warn", f"{fit.status.replace('_', ' ')}{by}"))
++
++    out.append(_check("card", "ok", "Visa test card •••• 1111, held by the server"))
++    return out
++
++
++# --- hold nonces --------------------------------------------------------------------------
++
++_nonces: dict[str, dict[str, Any]] = {}
++
++
++def issue_nonce(cart: CartMandate, now: datetime | None = None) -> tuple[str, datetime]:
++    """A fresh single-use nonce for this cart; the session's older nonces stop working."""
++    now = now or _now()
++    for key in [
++        k
++        for k, v in _nonces.items()
++        if v["expires_at"] <= now or v["session_id"] == cart.session_id
++    ]:
++        del _nonces[key]
++    while len(_nonces) >= MAX_NONCES:
++        del _nonces[next(iter(_nonces))]
++    nonce = "hn_" + secrets.token_urlsafe(32)
++    expires_at = now + NONCE_TTL
++    _nonces[nonce] = {
++        "cart_id": cart.id,
++        "cart_hash": cart.hash,
++        "session_id": cart.session_id,
++        "expires_at": expires_at,
++    }
++    return nonce, expires_at
++
++
++def _redeem_nonce(nonce: str, session_id: str, cart_hash_: str, now: datetime) -> str:
++    entry = _nonces.pop(nonce, None)  # single use: gone after the first attempt, good or bad
++    if entry is None:
++        raise MandateError(409, "hold nonce unknown or already used; reopen checkout")
++    if entry["expires_at"] <= now:
++        raise MandateError(409, "hold nonce expired (2 min); reopen checkout")
++    if entry["session_id"] != session_id:
++        raise MandateError(409, "hold nonce belongs to another session")
++    if entry["cart_hash"] != cart_hash_:
++        raise MandateError(409, "cart_hash doesn't match the prepared cart; reopen checkout")
++    return entry["cart_id"]
++
++
++# --- the two checkout steps -----------------------------------------------------------------
++
++
++def prepare(
++    session_id: str,
++    part: Part,
++    seller_idx: int,
++    units_needed: int,
++    *,
++    bom_id: str | None = None,
++    bom_lines: list[bom.BomLine] | None = None,
++    evidence: list[Evidence] | None = None,
++    now: datetime | None = None,
++    today: date | None = None,
++) -> dict[str, Any]:
++    """`POST /checkout/prepare`: price the cart, run the checks, issue the hold nonce."""
++    now = now or _now()
++    intent = current_intent(session_id, now)
++    cart = build_cart(
++        session_id,
++        part,
++        seller_idx,
++        units_needed,
++        bom_id=bom_id,
++        bom_lines=bom_lines,
++        evidence=evidence,
++        intent_id=intent.id if intent else None,
++        now=now,
++    )
++    save_cart(cart)
++    results = checks(cart, intent, part, today)
++    nonce, expires_at = issue_nonce(cart, now)
++    return {
++        "cart": cart.model_dump(mode="json", exclude={"hash", "session_id", "receipt_id"}),
++        "cart_hash": cart.hash,
++        "hold_nonce": nonce,
++        "nonce_expires_at": expires_at.isoformat(),
++        "intent": intent.summary() if intent else None,
++        "checks": [c.model_dump() for c in results],
++        "all_ok": all(c.ok for c in results),
++    }
++
++
++def verify_hold(
++    *,
++    session_id: str | None,
++    part: Part,
++    seller_idx: int,
++    qty: int,
++    bom_id: str | None,
++    bom_lines: list[bom.BomLine],
++    cart_hash_: str | None,
++    hold_nonce: str | None,
++    hold_ms: int | None,
++    now: datetime | None = None,
++    today: date | None = None,
++) -> dict[str, Any]:
++    """`POST /checkout` with the hold proof: the nonce is fresh, unused, this session's and this
++    cart's; the request still describes that cart; the price hasn't moved (rebuilt hash); every
++    check still passes against the current limits. Returns the mandate `checkout.authorize`
++    records on the receipt. Raises MandateError (400 / 409 / 422)."""
++    if not (session_id and cart_hash_ and hold_nonce and hold_ms is not None):
++        raise MandateError(
++            400, "hold proof required: session_id, cart_hash, hold_nonce and hold_ms"
++        )
++    if hold_ms < MIN_HOLD_MS:
++        raise MandateError(400, f"hold_ms {hold_ms} < {MIN_HOLD_MS}: paying needs the full hold")
++    now = now or _now()
++    cart = load_cart(_redeem_nonce(hold_nonce, session_id, cart_hash_, now))
++    if cart is None:
++        raise MandateError(409, "prepared cart not found; reopen checkout")
++    line = cart.lines[0]
++    asked = (
++        part.id,
++        seller_idx,
++        qty,
++        bom_id if bom_lines else None,
++        sorted(b.idx for b in bom_lines),
++    )
++    prepared = (
++        line.part_id,
++        line.seller_idx,
++        line.packs,
++        cart.bom_id,
++        sorted(b["idx"] for b in cart.bom_lines),
++    )
++    if asked != prepared:
++        raise MandateError(
++            409,
++            f"cart changed since prepare ({line.packs} × {line.part_id} from seller "
++            f"{line.seller_idx} was prepared); reopen checkout",
++        )
++    rebuilt = build_cart(
++        session_id,
++        part,
++        seller_idx,
++        line.units_needed,
++        bom_id=cart.bom_id,
++        bom_lines=bom_lines,
++        evidence=cart.evidence,
++        intent_id=cart.intent_id,
++    )
++    if rebuilt.hash != cart.hash:
++        raise MandateError(409, "the price or listing changed since prepare; reopen checkout")
++    intent = current_intent(session_id, now)
++    results = checks(cart, intent, part, today)
++    if not all(c.ok for c in results):
++        raise MandateError(
++            422,
++            {
++                "error": "a mandate check failed",
++                "checks": [c.model_dump() for c in results],
++            },
++        )
++    return {
++        "session_id": session_id,
++        "intent": intent.summary() if intent else None,
++        "cart": cart,
++        "checks": results,
++        "hold_ms": hold_ms,
++        "evidence_summary": evidence_summary(cart.evidence),
++    }
++
++
++def record_receipt(cart: CartMandate, receipt_id: str) -> None:
++    cart.receipt_id = receipt_id
++    save_cart(cart)
++
++
++def evidence_summary(evidence: list[Evidence]) -> str:
++    """ "tape#3 4.20m->8@600mm" (<= 64 chars, ASCII) for the processor's merchant-defined data."""
++    e = next((e for e in evidence if e.array and e.array.count), evidence[0] if evidence else None)
++    if e is None:
++        return "no measurement evidence"
++    text = re.sub(r"\s+", "", e.label) or "tape"
++    if e.value_m is not None:
++        text += f" {e.value_m:.2f}m"
++    if e.array and e.array.count:
++        text += f"->{e.array.count}"
++        if e.array.spacing_mm:
++            text += f"@{e.array.spacing_mm:g}mm"
++    return text.encode("ascii", "replace").decode()[:64]
+diff --git a/tests/test_mandate.py b/tests/test_mandate.py
+new file mode 100644
+index 0000000..94636ed
+--- /dev/null
++++ b/tests/test_mandate.py
+@@ -0,0 +1,480 @@
++"""Measured mandate (brain.md S2 / B3): voice can only narrow the limits, /checkout/prepare prices
++the cart and issues a single-use hold nonce, and only a >= 1 s hold with that nonce pays. The
++receipt carries intent -> cart (hash) -> authorization and the evidence. Cybersource is respx."""
++
++import json
++from datetime import UTC, date, datetime, timedelta
++
++import httpx
++import pytest
++import respx
++from fastapi.testclient import TestClient
++
++from server import jobs, mandate
++from server.app import app
++from server.checkout import CYBERSOURCE_HOST, CYBERSOURCE_PATH
++from server.config import get_settings
++from server.models import Dims, Fit, Part, Seller
++from tests.test_checkout import CS_ENV
++
++TODAY = date(2026, 9, 26)  # a Saturday: "by Friday" is Fri Oct 2
++SESSION = "quest-1a2b3c4d5e"
++EVIDENCE = [
++    {
++        "notebook_id": 3,
++        "label": "tape #3",
++        "value_m": 4.2,
++        "camera_id": 316,
++        "photo": "/scenes/facade/thumbs/0316.jpg",
++        "array": {"spacing_mm": 600, "count": 8},
++    }
++]
++
++
++def _hanger() -> Part:
++    return Part(
++        id="gutter-hanger-hidden-k-style",
++        name="Hidden K-style gutter hanger",
++        dims_mm=Dims(w=127, d=38, h=45),
++        sellers=[
++            Seller(name="Home Depot", price_usd=2.98, shipping_usd=0.0, eta_days=5, verified=True),
++            Seller(name="Bulk Supply", price_usd=39.0, pack_qty=50, shipping_usd=4.5, eta_days=10),
++            Seller(name="Mystery Shop", price_usd=3.10),  # no ETA, read by the model
++        ],
++        fit=Fit(status="fits", spare_mm=38, axis="w"),
++    )
++
++
++@pytest.fixture(autouse=True)
++def _env(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    for key in CS_ENV:
++        monkeypatch.delenv(key, raising=False)
++    get_settings.cache_clear()
++    monkeypatch.setattr(mandate, "_today", lambda: TODAY)
++    mandate._nonces.clear()
++    jobs.save_part(_hanger())
++    yield tmp_path
++    mandate._nonces.clear()
++    get_settings.cache_clear()
++
++
++@pytest.fixture
++def client():
++    with TestClient(app) as c:
++        yield c
++
++
++def _limits(client, **body):
++    resp = client.post("/commerce/limits", json={"session_id": SESSION, **body})
++    assert resp.status_code == 200, resp.text
++    return resp.json()
++
++
++def _prepare(client, units=8, seller_idx=0, **extra):
++    body = {
++        "session_id": SESSION,
++        "part_id": "gutter-hanger-hidden-k-style",
++        "seller_idx": seller_idx,
++        "units_needed": units,
++        "evidence": EVIDENCE,
++        **extra,
++    }
++    resp = client.post("/checkout/prepare", json=body)
++    assert resp.status_code == 200, resp.text
++    return resp.json()
++
++
++def _pay(client, prepared, hold_ms=1043, **overrides):
++    line = prepared["cart"]["lines"][0]
++    body = {
++        "part_id": line["part_id"],
++        "seller_idx": line["seller_idx"],
++        "qty": line["packs"],
++        "session_id": SESSION,
++        "cart_hash": prepared["cart_hash"],
++        "hold_nonce": prepared["hold_nonce"],
++        "hold_ms": hold_ms,
++        **overrides,
++    }
++    return client.post("/checkout", json=body)
++
++
++# --- limits: voice narrows, the panel may loosen ---------------------------------------------
++
++
++def test_voice_can_only_tighten():
++    intent, refused, changed = mandate.set_limits(
++        SESSION, source="voice", text="under 40 dollars", max_total_usd=40, deliver_by="friday"
++    )
++    assert (intent.max_total_usd, intent.deliver_by) == (40, date(2026, 10, 2))
++    assert refused == [] and changed == ["max_total_usd", "deliver_by"]
++
++    intent, refused, changed = mandate.set_limits(
++        SESSION,
++        source="voice",
++        text="under $100 by next week",
++        max_total_usd=100,
++        deliver_by="2026-10-09",
++    )
++    assert (intent.max_total_usd, intent.deliver_by) == (40, date(2026, 10, 2))
++    assert changed == []
++    assert [r.model_dump() for r in refused] == [
++        {
++            "field": "max_total_usd",
++            "asked": 100.0,
++            "kept": 40.0,
++            "why": "voice can only tighten a limit; change it on the panel",
++        },
++        {
++            "field": "deliver_by",
++            "asked": "2026-10-09",
++            "kept": "2026-10-02",
++            "why": "voice can only tighten a limit; change it on the panel",
++        },
++    ]
++
++    intent, refused, changed = mandate.set_limits(
++        SESSION, source="voice", text="under 30", max_total_usd=30, seller_policy="fastest"
++    )
++    assert (intent.max_total_usd, intent.seller_policy, changed) == (
++        30,
++        "fastest",
++        ["max_total_usd", "seller_policy"],
++    )
++    assert intent.text == "under 30" and intent.source == "voice"
++    assert [h["to"] for h in intent.history] == [40.0, "2026-10-02", 30.0, "fastest"]
++
++
++def test_panel_may_raise_or_clear_and_voice_cannot_clear():
++    mandate.set_limits(SESSION, source="voice", max_total_usd=40)
++    intent, refused, _ = mandate.set_limits(SESSION, source="voice", max_total_usd=None)
++    assert intent.max_total_usd == 40 and refused == []  # a voice "no limit" is ignored
++    intent, _, changed = mandate.set_limits(SESSION, source="panel", max_total_usd=100)
++    assert intent.max_total_usd == 100 and changed == ["max_total_usd"]
++    intent, _, _ = mandate.set_limits(SESSION, source="panel", max_total_usd=None)
++    assert intent.max_total_usd is None and intent.source == "panel"
++
++
++@pytest.mark.parametrize(
++    "word,expected",
++    [
++        ("friday", date(2026, 10, 2)),
++        ("saturday", TODAY),
++        ("sunday", date(2026, 9, 27)),
++        ("tomorrow", date(2026, 9, 27)),
++        ("today", TODAY),
++        ("2026-10-05", date(2026, 10, 5)),
++    ],
++)
++def test_parse_deliver_by(word, expected):
++    assert mandate.parse_deliver_by(word, TODAY) == expected
++
++
++def test_bad_limits_are_refused_with_400(client):
++    assert mandate.parse_deliver_by(None) is None
++    for body in ({"max_total_usd": -5}, {"deliver_by": "someday"}):
++        resp = client.post("/commerce/limits", json={"session_id": SESSION, **body})
++        assert resp.status_code == 400
++    resp = client.post("/commerce/limits", json={"session_id": SESSION, "seller_policy": "cheap"})
++    assert resp.status_code == 422
++
++
++def test_limits_route_changes_only_fields_present(client):
++    first = _limits(client, max_total_usd=40, deliver_by="friday", text="under forty, by Friday")
++    assert first == {
++        "intent": {
++            "id": first["intent"]["id"],
++            "max_total_usd": 40.0,
++            "deliver_by": "2026-10-02",
++            "seller_policy": None,
++            "source": "voice",
++            "text": "under forty, by Friday",
++        },
++        "refused": [],
++        "changed": ["max_total_usd", "deliver_by"],
++    }
++    second = _limits(client, seller_policy="cheapest")
++    assert second["intent"]["id"] == first["intent"]["id"]
++    assert (
++        second["intent"]["max_total_usd"] == 40 and second["intent"]["deliver_by"] == "2026-10-02"
++    )
++    raised = _limits(client, max_total_usd=100)
++    assert raised["intent"]["max_total_usd"] == 40 and raised["refused"][0]["asked"] == 100
++    cleared = _limits(client, source="panel", deliver_by=None)
++    assert cleared["intent"]["deliver_by"] is None and cleared["changed"] == ["deliver_by"]
++
++
++def test_expired_intent_starts_over(monkeypatch):
++    old, _, _ = mandate.set_limits(SESSION, source="voice", max_total_usd=40)
++    later = datetime.now(UTC) + timedelta(hours=25)
++    assert mandate.current_intent(SESSION, later) is None
++    fresh, refused, _ = mandate.set_limits(SESSION, source="voice", max_total_usd=100, now=later)
++    assert fresh.id != old.id and fresh.max_total_usd == 100 and refused == []
++
++
++# --- prepare: priced cart, checks, nonce ------------------------------------------------------
++
++
++def test_prepare_prices_the_cart_and_lists_the_checks(client):
++    intent = _limits(client, max_total_usd=40, deliver_by="friday")["intent"]
++    prepared = _prepare(client)
++
++    cart = prepared["cart"]
++    assert cart["intent_id"] == intent["id"]
++    assert cart["lines"] == [
++        {
++            "part_id": "gutter-hanger-hidden-k-style",
++            "seller_idx": 0,
++            "seller": "Home Depot",
++            "units_needed": 8,
++            "pack_qty": 1,
++            "packs": 8,
++            "unit_price_usd": 2.98,
++            "shipping_usd": 0.0,
++            "line_total_usd": 23.84,
++        }
++    ]
++    assert cart["total_usd"] == 23.84 and cart["evidence"][0]["array"]["count"] == 8
++    assert prepared["cart_hash"].startswith("sha256:") and len(prepared["cart_hash"]) == 71
++    saved = mandate.load_cart(cart["id"])
++    assert mandate.cart_hash(saved) == prepared["cart_hash"] == saved.hash
++    assert prepared["hold_nonce"].startswith("hn_")
++    expires = datetime.fromisoformat(prepared["nonce_expires_at"])
++    assert timedelta(seconds=115) < expires - datetime.now(UTC) <= timedelta(seconds=120)
++    assert prepared["intent"]["max_total_usd"] == 40
++    assert prepared["all_ok"] is True
++    assert [(c["id"], c["status"], c["detail"]) for c in prepared["checks"]] == [
++        ("price_reread", "ok", "$2.98 × 8 from the saved listing"),
++        ("within_limit", "ok", "$23.84 ≤ $40"),
++        ("delivery", "ok", "arrives Thu Oct 1, by Fri Oct 2"),
++        ("qty_evidence", "ok", "tape #3 4.20 m ÷ 600 mm → 8 (reported by headset)"),
++        ("seller_verified", "ok", "Home Depot: structured seller listing"),
++        ("fit", "ok", "green, 38 mm spare"),
++        ("card", "ok", "Visa test card •••• 1111, held by the server"),
++    ]
++
++
++def test_prepare_turns_units_into_packs_and_warns_honestly(client):
++    prepared = _prepare(client, units=8, seller_idx=1, evidence=[])
++    line = prepared["cart"]["lines"][0]
++    assert (line["pack_qty"], line["packs"], line["line_total_usd"]) == (50, 1, 43.5)
++    checks = {c["id"]: c for c in prepared["checks"]}
++    assert checks["qty_evidence"]["status"] == "warn"
++    assert checks["seller_verified"]["status"] == "warn"
++    assert checks["delivery"] == {
++        "id": "delivery",
++        "status": "ok",
++        "ok": True,
++        "detail": "arrives Tue Oct 6; no deadline set",
++    }
++    assert prepared["all_ok"] is True  # warnings don't block the hold
++
++
++def test_prepare_over_the_limit_or_late_is_not_ok(client):
++    _limits(client, max_total_usd=20, deliver_by="tomorrow")
++    prepared = _prepare(client)
++    failed = {c["id"]: c["detail"] for c in prepared["checks"] if c["status"] == "fail"}
++    assert failed == {
++        "within_limit": "$23.84 is over your $20 limit",
++        "delivery": "arrives Thu Oct 1, after your Sun Sep 27 deadline",
++    }
++    assert prepared["all_ok"] is False
++
++    no_eta = _prepare(client, units=2, seller_idx=2)
++    delivery = next(c for c in no_eta["checks"] if c["id"] == "delivery")
++    assert delivery["status"] == "warn"
++    assert delivery["detail"] == "Mystery Shop gave no delivery estimate; you asked for Sun Sep 27"
++
++
++def test_prepare_bad_input(client):
++    body = {"session_id": SESSION, "part_id": "gutter-hanger-hidden-k-style", "seller_idx": 0}
++    assert client.post("/checkout/prepare", json={**body, "units_needed": 0}).status_code == 400
++    assert client.post("/checkout/prepare", json={**body, "units_needed": 501}).status_code == 400
++    assert (
++        client.post(
++            "/checkout/prepare", json={**body, "seller_idx": 9, "units_needed": 1}
++        ).status_code
++        == 400
++    )
++    missing = {**body, "part_id": "no-such-part", "units_needed": 1}
++    assert client.post("/checkout/prepare", json=missing).status_code == 404
++
++
++# --- the hold pays, once ------------------------------------------------------------------
++
++
++def test_hold_pays_once_and_the_receipt_carries_the_chain(client, tmp_path):
++    intent = _limits(client, max_total_usd=40, deliver_by="friday", text="under $40, by Friday")
++    prepared = _prepare(client)
++
++    resp = _pay(client, prepared)
++    assert resp.status_code == 200, resp.text
++    receipt = resp.json()
++    assert receipt["status"] == "OFFLINE_RECEIPT" and receipt["qty"] == 8
++    assert receipt["total_usd"] == prepared["cart"]["total_usd"] == 23.84
++    chain = receipt["mandate"]
++    assert chain["intent"] == intent["intent"]
++    assert chain["cart"] == {
++        "id": prepared["cart"]["id"],
++        "hash": prepared["cart_hash"],
++        "total_usd": 23.84,
++        "units_needed": 8,
++        "packs": 8,
++    }
++    assert chain["authorization"] == {
++        "mode": "offline",
++        "status": "OFFLINE_RECEIPT",
++        "approval_code": None,
++        "hold_ms": 1043,
++    }
++    assert chain["evidence"] == EVIDENCE
++    assert all(c["ok"] for c in chain["checks"])
++
++    saved = json.loads((tmp_path / "orders" / f"{receipt['receipt_id']}.json").read_text())
++    assert saved["mandate"]["cart"]["hash"] == prepared["cart_hash"]
++    assert mandate.load_cart(prepared["cart"]["id"]).receipt_id == receipt["receipt_id"]
++    notebook = client.get(f"/notebook/{SESSION}").json()["entries"]
++    assert notebook[-1]["mandate"]["authorization"]["hold_ms"] == 1043
++
++    again = _pay(client, prepared)
++    assert again.status_code == 409 and "already used" in again.json()["detail"]
++
++
++def test_sandbox_authorization_carries_the_mandate(client, monkeypatch):
++    for key, value in CS_ENV.items():
++        monkeypatch.setenv(key, value)
++    get_settings.cache_clear()
++    intent_id = _limits(client, max_total_usd=40)["intent"]["id"]
++    prepared = _prepare(client)
++    approval = {"status": "AUTHORIZED", "processorInformation": {"approvalCode": "831000"}}
++    url = f"https://{CYBERSOURCE_HOST}{CYBERSOURCE_PATH}"
++
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(url).mock(return_value=httpx.Response(201, json=approval))
++        resp = _pay(client, prepared, hold_ms=1000)
++
++    receipt = resp.json()
++    assert receipt["mandate"]["authorization"] == {
++        "mode": "sandbox",
++        "status": "AUTHORIZED",
++        "approval_code": "831000",
++        "hold_ms": 1000,
++    }
++    sent = json.loads(route.calls.last.request.content)
++    code = sent["clientReferenceInformation"]["code"]
++    assert code == "at-" + prepared["cart_hash"].removeprefix("sha256:")[:47] and len(code) == 50
++    assert sent["merchantDefinedInformation"] == [
++        {"key": "1", "value": intent_id},
++        {"key": "2", "value": "tape#3 4.20m->8@600mm"},
++        {"key": "3", "value": SESSION},
++    ]
++    assert sent["orderInformation"]["amountDetails"]["totalAmount"] == "23.84"
++
++
++def test_short_hold_is_400_and_keeps_the_nonce(client):
++    prepared = _prepare(client)
++    short = _pay(client, prepared, hold_ms=600)
++    assert short.status_code == 400 and "hold_ms 600" in short.json()["detail"]
++    assert _pay(client, prepared, hold_ms=1000).status_code == 200
++
++
++@pytest.mark.parametrize(
++    "drop",
++    [("cart_hash",), ("hold_nonce",), ("hold_ms",), ("session_id",), ("cart_hash", "hold_nonce")],
++)
++def test_partial_proof_is_400(client, drop):
++    prepared = _prepare(client)
++    resp = _pay(client, prepared, **{k: None for k in drop})
++    assert resp.status_code == 400 and "hold proof required" in resp.json()["detail"]
++
++
++@pytest.mark.parametrize(
++    "overrides",
++    [
++        {"qty": 9},  # tampered after prepare
++        {"seller_idx": 2, "qty": 8},
++        {"cart_hash": "sha256:" + "0" * 64},
++        {"session_id": "quest-someone-else"},
++        {"hold_nonce": "hn_made-up"},
++    ],
++)
++def test_tampered_or_foreign_proof_is_409(client, overrides):
++    prepared = _prepare(client)
++    assert _pay(client, prepared, **overrides).status_code == 409
++
++
++def test_price_change_after_prepare_is_409(client):
++    prepared = _prepare(client)
++    part = _hanger()
++    part.sellers[0].price_usd = 3.49
++    jobs.save_part(part)
++    resp = _pay(client, prepared)
++    assert resp.status_code == 409 and "price or listing changed" in resp.json()["detail"]
++
++
++def test_over_the_limit_is_422_with_the_checks(client):
++    _limits(client, max_total_usd=20)
++    prepared = _prepare(client)
++    resp = _pay(client, prepared)
++    assert resp.status_code == 422
++    detail = resp.json()["detail"]
++    assert detail["error"] == "a mandate check failed"
++    assert {c["id"]: c["status"] for c in detail["checks"]}["within_limit"] == "fail"
++
++
++def test_limit_tightened_by_voice_after_prepare_is_422(client):
++    _limits(client, max_total_usd=40)
++    prepared = _prepare(client)
++    _limits(client, max_total_usd=20, text="actually keep it under $20")
++    assert _pay(client, prepared).status_code == 422
++
++
++def test_nonce_expires_after_two_minutes(client, monkeypatch):
++    prepared = _prepare(client)
++    later = datetime.now(UTC) + timedelta(seconds=121)
++    monkeypatch.setattr(mandate, "_now", lambda: later)
++    resp = _pay(client, prepared)
++    assert resp.status_code == 409 and "expired" in resp.json()["detail"]
++
++
++def test_a_new_prepare_revokes_the_old_nonce(client):
++    first = _prepare(client, units=8)
++    second = _prepare(client, units=10)  # the user tapped + on the panel
++    assert _pay(client, first).status_code == 409
++    resp = _pay(client, second)
++    assert resp.status_code == 200 and resp.json()["qty"] == 10
++
++
++def test_bom_lines_ride_in_the_cart_and_cannot_be_added_later(client):
++    from tests.test_app import _saved_bom
++
++    _saved_bom("bom-a1b2c3d4e5f6", "gutter-hanger-hidden-k-style")  # 2 x $12 screws
++    with_bom = _prepare(client, bom_id="bom-a1b2c3d4e5f6", bom_lines=[0])
++    assert with_bom["cart"]["total_usd"] == round(23.84 + 24.0, 2)
++    ok = _pay(client, with_bom, bom_id="bom-a1b2c3d4e5f6", bom_lines=[0])
++    assert ok.status_code == 200 and ok.json()["total_usd"] == 47.84
++
++    plain = _prepare(client)
++    late = _pay(client, plain, bom_id="bom-a1b2c3d4e5f6", bom_lines=[0])
++    assert late.status_code == 409
++
++
++def test_legacy_checkout_without_proof(client, monkeypatch):
++    body = {"part_id": "gutter-hanger-hidden-k-style", "seller_idx": 0, "qty": 2}
++    legacy = client.post("/checkout", json=body)
++    assert legacy.status_code == 200 and "mandate" not in legacy.json()
++
++    monkeypatch.setenv("REQUIRE_HOLD_PROOF", "true")
++    get_settings.cache_clear()
++    refused = client.post("/checkout", json={**body, "session_id": SESSION})
++    assert refused.status_code == 400 and "hold proof required" in refused.json()["detail"]
++
++
++def test_evidence_summary_is_short_ascii():
++    ev = [mandate.Evidence(**EVIDENCE[0])]
++    assert mandate.evidence_summary(ev) == "tape#3 4.20m->8@600mm"
++    assert mandate.evidence_summary([]) == "no measurement evidence"
++    long = [mandate.Evidence(label="ruban n° 3 " + "x" * 60, value_m=1.0)]
++    summary = mandate.evidence_summary(long)
++    assert len(summary) == 64 and summary.isascii()
+-- 
+2.50.1 (Apple Git-155)
+

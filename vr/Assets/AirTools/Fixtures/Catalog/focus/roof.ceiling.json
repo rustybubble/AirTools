@@ -1,0 +1,138 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "facade",
+ "title": "Facade",
+ "focus": "ceiling",
+ "foci": [
+  "roof",
+  "wall",
+  "ground",
+  "ceiling",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "exterior-lights",
+   "title": "Exterior lights",
+   "icon": "lamp",
+   "query": "outdoor wall light",
+   "items": [
+    {
+     "part_id": "private-brand-unbranded-cam-001-bk-99b1e5",
+     "name": "8 in. Black Outdoor Hardwired Wall Lantern Sconce with Clear Glass Shade and No Bulb Included",
+     "price_usd": 19.97,
+     "dims_mm": {
+      "w": 203.2,
+      "h": 205.74,
+      "d": 109.22
+     },
+     "image_url": "/parts/private-brand-unbranded-cam-001-bk-99b1e5/image.jpg",
+     "model_url": "/parts/private-brand-unbranded-cam-001-bk-99b1e5/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "hampton-bay-jbo1691a-4-f37b8e",
+     "name": "8.2 in. 1-Light Black Outdoor Wall Light Lantern Porch or Patio Sconce (2-Pack)",
+     "price_usd": 49.97,
+     "dims_mm": {
+      "w": 180.34,
+      "h": 208.28,
+      "d": 157.48
+     },
+     "image_url": "/parts/hampton-bay-jbo1691a-4-f37b8e/image.jpg",
+     "model_url": "/parts/hampton-bay-jbo1691a-4-f37b8e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "c-cattleya-hca2429-2w-bf91ef",
+     "name": "Matte Black Outdoor Hardwired Wall Lantern Sconces with Water Glass, No Bulbs Included (2-Pack)",
+     "price_usd": 59.97,
+     "dims_mm": {
+      "w": 254.0,
+      "h": 254.0,
+      "d": 152.4
+     },
+     "image_url": "/parts/c-cattleya-hca2429-2w-bf91ef/image.jpg",
+     "model_url": "/parts/c-cattleya-hca2429-2w-bf91ef/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "ceiling-fans",
+   "title": "Ceiling fans",
+   "icon": "fan",
+   "query": "ceiling fan with light",
+   "items": [
+    {
+     "part_id": "mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee",
+     "name": "Mainstays 52 Hugger Indoor Ceiling Fan with Light Kit",
+     "price_usd": 39.97,
+     "dims_mm": {
+      "w": 1322.8,
+      "h": 381.0,
+      "d": 1322.8
+     },
+     "image_url": "/parts/mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee/image.jpg",
+     "model_url": "/parts/mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee/model.glb",
+     "model_ready": false,
+     "seller": "Walmart"
+    },
+    {
+     "part_id": "westinghouse-7305100-9b425d",
+     "name": "Alloy 42 in. LED Indoor Brushed Nickel Ceiling Fan with Light Fixture",
+     "price_usd": 117.5,
+     "dims_mm": {
+      "w": 304.0,
+      "h": 238.0,
+      "d": 579.9
+     },
+     "image_url": "/parts/westinghouse-7305100-9b425d/image.jpg",
+     "model_url": "/parts/westinghouse-7305100-9b425d/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "siding",
+   "title": "Siding",
+   "icon": "rows",
+   "query": "vinyl siding",
+   "items": [
+    {
+     "part_id": "ejoy-outdoorcladding-wsp-few3-91ed43",
+     "name": "106 in. x 6.1 in. x 0.83 in. Outdoor WPC Vinyl Wall Siding Panel in Red Pine Color (Set of 4-Piece)",
+     "price_usd": 96.62,
+     "dims_mm": {
+      "w": 154.9,
+      "h": 2692.4,
+      "d": 21.1
+     },
+     "image_url": "/parts/ejoy-outdoorcladding-wsp-few3-91ed43/image.jpg",
+     "model_url": "/parts/ejoy-outdoorcladding-wsp-few3-91ed43/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ply-gem-pc4004h-ef6abd",
+     "name": "Transformations Double 4 in. Lap 9.23 in. x 150 in. White Vinyl Siding Carton (24-Pieces)",
+     "price_usd": 219.0,
+     "dims_mm": {
+      "w": 3810.0,
+      "h": 101.6,
+      "d": 234.44
+     },
+     "image_url": "/parts/ply-gem-pc4004h-ef6abd/image.jpg",
+     "model_url": "/parts/ply-gem-pc4004h-ef6abd/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  }
+ ]
+}

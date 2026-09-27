@@ -1,0 +1,67 @@
+From 98e6fcaa268ed56a60540c346c9b97782b30da7e Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:43:00 -0400
+Subject: [PATCH 02/11] fix: say "fits the run" for a length measurement
+ instead of "fit ... is unknown"
+
+Integration finding #11: with measurement axis "length", compute_fit returns fits with
+spare_mm null (a run constrains no part dimension), and the job summary fell through to "Fit
+against the measurement is unknown." Now: "The first fits the run." / "It fits the run."
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/jobs.py     |  2 ++
+ tests/test_jobs.py | 27 +++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/server/jobs.py b/server/jobs.py
+index cfbb4ff..8796478 100644
+--- a/server/jobs.py
++++ b/server/jobs.py
+@@ -208,6 +208,8 @@ def summary(job: Job) -> str:
+         second = f"{subject} is too big by {abs(fit.spare_mm):.0f} millimetres."
+     elif fit.status == "too_small" and fit.spare_mm is not None:
+         second = f"{subject} is too small by {abs(fit.spare_mm):.0f} millimetres."
++    elif fit.status == "fits":  # no spare_mm: a "length" run constrains no part dimension
++        second = f"{subject} fits the run." if fit.axis == "length" else f"{subject} fits."
+     else:
+         second = "Fit against the measurement is unknown."
+ 
+diff --git a/tests/test_jobs.py b/tests/test_jobs.py
+index 782e636..ea78d02 100644
+--- a/tests/test_jobs.py
++++ b/tests/test_jobs.py
+@@ -89,3 +89,30 @@ def test_summary_noun_skips_clauses_numbers_and_filler():
+     ]:
+         job = Job(id="j", status="done", query=query, candidates=[_part("a", Fit()), _part("b", Fit())])
+         assert jobs.summary(job).startswith(expected), query
++
++
++def test_summary_length_run_fits_the_run():
++    """Integration finding #11: axis "length" -> compute_fit says fits with spare_mm None, and
++    the summary used to fall through to "Fit against the measurement is unknown."."""
++    from server import search
++    from server.models import Measurement
++
++    fit = search.compute_fit(
++        Dims(w=127, d=38, h=45),
++        Measurement(label="gutter run", value_m=3.66, axis="length"),
++        "length",
++        None,
++    )
++    assert (fit.status, fit.spare_mm) == ("fits", None)
++    many = Job(
++        id="j",
++        status="done",
++        query="gutter hanger",
++        candidates=[_part("a", fit), _part("b", Fit())],
++    )
++    assert jobs.summary(many) == "Two hangers. The first fits the run."
++    one = Job(id="j", status="done", query="gutter hanger", candidates=[_part("a", fit)])
++    assert jobs.summary(one) == "One hanger. It fits the run."
++    assert "unknown" in jobs.summary(
++        Job(id="j", status="done", query="hinge", candidates=[_part("a", Fit())])
++    )
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,33 @@
+{
+  "result": {
+    "addressMatches": [
+      {
+        "matchedAddress": "225 NORTH AVE NW, ATLANTA, GA, 30332",
+        "geographies": {
+          "States": [
+            {
+              "NAME": "Georgia",
+              "BASENAME": "Georgia",
+              "GEOID": "13",
+              "STUSAB": "GA"
+            }
+          ],
+          "Counties": [
+            {
+              "NAME": "Fulton County",
+              "BASENAME": "Fulton",
+              "GEOID": "13121"
+            }
+          ],
+          "Incorporated Places": [
+            {
+              "NAME": "Atlanta city",
+              "BASENAME": "Atlanta",
+              "GEOID": "1304000"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

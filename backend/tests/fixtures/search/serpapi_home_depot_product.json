@@ -1,0 +1,210 @@
+{
+  "search_metadata": {
+    "id": "6ab4c8f773d1751998955d56",
+    "status": "Success",
+    "json_endpoint": "https://serpapi.com/searches/VMv7GkqiR7crTugqj--d75oo0DOFn7aENcyhPIA6LHQ/6ab4c8f773d1751998955d56.json",
+    "markdown_endpoint": "https://serpapi.com/searches/VMv7GkqiR7crTugqj--d75oo0DOFn7aENcyhPIA6LHQ/6ab4c8f773d1751998955d56.md",
+    "created_at": "2026-09-24 06:53:43 UTC",
+    "processed_at": "2026-09-24 06:53:43 UTC",
+    "home_depot_product_url": "https://www.homedepot.com/p/100085356",
+    "raw_html_file": "https://serpapi.com/searches/VMv7GkqiR7crTugqj--d75oo0DOFn7aENcyhPIA6LHQ/6ab4c8f773d1751998955d56.html",
+    "prettify_html_file": "https://serpapi.com/searches/VMv7GkqiR7crTugqj--d75oo0DOFn7aENcyhPIA6LHQ/6ab4c8f773d1751998955d56.prettify",
+    "total_time_taken": 0.34
+  },
+  "search_parameters": {
+    "product_id": "100085356",
+    "store_id": "2414",
+    "delivery_zip": "04401",
+    "engine": "home_depot_product"
+  },
+  "search_information": {
+    "taxonomy": [
+      {
+        "title": "Building Materials",
+        "link": "https://www.homedepot.com/b/Building-Materials/N-5yc1vZaqns"
+      },
+      {
+        "title": "Gutter Systems",
+        "link": "https://www.homedepot.com/b/Building-Materials-Gutter-Systems/N-5yc1vZardx"
+      },
+      {
+        "title": "Gutter Hardware",
+        "link": "https://www.homedepot.com/b/Building-Materials-Gutter-Systems-Gutter-Hardware/N-5yc1vZc936"
+      }
+    ]
+  },
+  "product_results": {
+    "product_id": "100085356",
+    "title": "5 in. Aluminum Hidden Gutter Hanger with Screw",
+    "description": "Use the 5 in. Hidden Hanger with Screw to hang a 5 in. metal gutter system. This hanger is compatible with most colors and is hidden from sight to give a clean look. To install, power drive a 1/4 in. hex head screw (included) into the fascia board.",
+    "link": "https://www.homedepot.com/p/Amerimax-Home-Products-5-in-Aluminum-Hidden-Gutter-Hanger-with-Screw-21812/100085356",
+    "upc": "049821210120",
+    "model_number": "21812",
+    "store_sku_number": "468919",
+    "favorite": 1237,
+    "rating": 4.5363,
+    "reviews": 537,
+    "price": 2.74,
+    "bulk_price": 2.47,
+    "bulk_price_quantity": 15,
+    "highlights": [
+      "Secures gutter to fascia board with 1/4 in. hex head screw",
+      "Factory-mounted metal screw provides fast, easy installation",
+      "Hidden hanger compatible with 5 in. metal gutter systems"
+    ],
+    "brand": {
+      "name": "Amerimax Home Products",
+      "link": "https://www.homedepot.com/b/Building-Materials-Gutter-Systems-Gutter-Hardware/Amerimax-Home-Products/N-5yc1vZc936Z2cb"
+    },
+    "images": [
+      [
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_65.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_100.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_145.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_300.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_400.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_600.jpg",
+        "https://images.thdstatic.com/productImages/d3b08492-0017-4886-961d-4bb632593a70/svn/amerimax-home-products-gutter-hardware-21812-64_1000.jpg"
+      ],
+      [
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_65.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_100.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_145.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_300.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_400.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_600.jpg",
+        "https://images.thdstatic.com/productImages/ba33a219-3d2d-49c3-94d1-6d2fe8757bee/svn/amerimax-home-products-gutter-hardware-21812-e1_1000.jpg"
+      ],
+      [
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_65.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_100.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_145.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_300.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_400.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_600.jpg",
+        "https://images.thdstatic.com/productImages/64c8dbe7-47f0-4d57-ac6c-4e866e37e85f/svn/amerimax-home-products-gutter-hardware-21812-40_1000.jpg"
+      ],
+      [
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_65.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_100.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_145.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_300.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_400.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_600.jpg",
+        "https://images.thdstatic.com/productImages/bc127141-ec80-4372-bfb5-c8714fd353b5/svn/amerimax-home-products-gutter-hardware-21812-a0_1000.jpg"
+      ],
+      [
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_65.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_100.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_145.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_300.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_400.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_600.jpg",
+        "https://images.thdstatic.com/productImages/457ce74a-7ac3-4039-80ce-a558ded8e82b/svn/amerimax-home-products-gutter-hardware-21812-1d_1000.jpg"
+      ],
+      [
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_65.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_100.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_145.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_300.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_400.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_600.jpg",
+        "https://images.thdstatic.com/productImages/ef268e9e-ce6b-4556-9821-d59fa39bf51a/svn/amerimax-home-products-gutter-hardware-21812-66_1000.jpg"
+      ]
+    ],
+    "specifications": [
+      {
+        "key": "Details",
+        "value": [
+          {
+            "name": "Color Family",
+            "value": "Silver"
+          },
+          {
+            "name": "Compatible Gutter Profile",
+            "value": "K-Style Gutter"
+          },
+          {
+            "name": "Features",
+            "value": "Paintable"
+          },
+          {
+            "name": "Gutter Part Type",
+            "value": "Hangers"
+          },
+          {
+            "name": "Hardware Type",
+            "value": "Gutter Hanger"
+          },
+          {
+            "name": "Material",
+            "value": "Aluminum"
+          }
+        ]
+      },
+      {
+        "key": "Warranty / Certifications",
+        "value": [
+          {
+            "name": "Manufacturer Warranty",
+            "value": "Limited Manufacturers Warranty - Free from defects in materials and workmanship"
+          }
+        ]
+      },
+      {
+        "key": "Dimensions",
+        "value": [
+          {
+            "name": "Product Depth (in.)",
+            "value": "5 in"
+          },
+          {
+            "name": "Product Height (in.)",
+            "value": "1 in"
+          },
+          {
+            "name": "Product Width (in.)",
+            "value": "0.75 in"
+          }
+        ]
+      }
+    ],
+    "minimum_order_quantity": 0,
+    "availability_type": "Available",
+    "fulfillment": {
+      "countity": 504,
+      "quantity": 504,
+      "store": "Bangor",
+      "options": [
+        {
+          "type": "Ship to Home",
+          "title": "Get it by",
+          "arrival_time": [
+            "Sep 26",
+            "Sep 26"
+          ],
+          "bottom": "Free delivery",
+          "quantity": 495
+        },
+        {
+          "type": "Schedule delivery",
+          "title": "As soon as",
+          "arrival_time": [
+            "Fri, Sep 25"
+          ],
+          "bottom": "0.0",
+          "quantity": 542
+        },
+        {
+          "type": "Store Pickup",
+          "title": "Pickup",
+          "arrival_time": [
+            "Today"
+          ],
+          "bottom": "FREE",
+          "quantity": 504
+        }
+      ]
+    }
+  }
+}

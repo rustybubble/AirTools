@@ -1,0 +1,1668 @@
+From 66672de3b21e2a8aaaee64f3457d779ed01e5cc9 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:00:39 -0400
+Subject: [PATCH 1/6] texture: product cut out of its photo, front-only
+ mapping, sides from the product; CAD front check
+
+- server/photo_cut.py: the product cut out of its photo, cached as image.cut.png (+ .cut.json with
+  the box, method, keystone quad, colours). Plain studio background: border flood (~0.1 s). Cluttered
+  (the LG fridge between its neighbours): U^2-Netp salient object via onnxruntime on CPU (4.6 MB
+  model fetched once into <DATA_DIR>/cache/models, ~0.1-0.3 s), the largest central object whose
+  aspect matches the part's W x H; a catalogue crop the product fills stays whole. A slight keystone
+  of a box face is straightened (only when the model's front is a rectangle). Dominant body / trim
+  colours sampled by k-means with the outline band weighted; finish cue from the listing words.
+- meshgen.project (ASSET_PHOTO_CUT, default on): the cut-out fitted to the front footprint of the
+  front-facing visible triangles (normal within 60 deg, was 70) instead of the whole bbox; far
+  background fades to the body colour. Old path kept as _project_legacy.
+- meshgen.recolor (ASSET_SIDE_COLOR, default on): the sampled body colour on Hunyuan meshes and boxes,
+  CAD pieces left the default grey (small ones take the trim), template shell roles still in the
+  template default; a subtle PBR cue (metal 0.35/0.35, plastic 0/0.7, painted 0/0.5; photo 0.12/0.5
+  for metal). decal_box sides in the body colour.
+- CAD orientation (ASSET_SCAD_ORIENT): meshgen.orientation compares what the front (+Z) and the back
+  show (pieces, detail share, relief, photo correlation); a backwards model is turned 180 deg about Y
+  (turn_around) before the photo goes on. SCAD_PROMPT now spells out the front (handles, controls,
+  seams at Z=D, proud); an appliance whose CAD front is a flat slab gets one relief feedback pass.
+- assets.retexture + `python -m server.warm --retexture`: every variant re-textured from its own
+  geometry (scad.glb, the cached raw Hunyuan mesh, the cached template plan, the box), OFFLINE: $0.
+- Asset.texture records how each model was textured.
+- onnxruntime added to the dependencies (uv.lock: onnxruntime, flatbuffers, protobuf).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pyproject.toml      |   1 +
+ server/assets.py    | 191 ++++++++++++--
+ server/config.py    |  12 +
+ server/meshgen.py   | 402 +++++++++++++++++++++++++++-
+ server/models.py    |   4 +
+ server/photo_cut.py | 629 ++++++++++++++++++++++++++++++++++++++++++++
+ server/warm.py      |  87 ++++++
+ tests/test_cad.py   |   3 +-
+ uv.lock             |  52 ++++
+ 9 files changed, 1351 insertions(+), 30 deletions(-)
+ create mode 100644 server/photo_cut.py
+
+diff --git a/pyproject.toml b/pyproject.toml
+index e196607..cf3f422 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -14,6 +14,7 @@ dependencies = [
+     "httpx>=0.28.1",
+     "manifold3d>=3.5.4",
+     "numpy>=2.5.3",
++    "onnxruntime>=1.20",
+     "openai>=3.19.2",
+     "pillow>=12.3.0",
+     "pydantic>=2",
+diff --git a/server/assets.py b/server/assets.py
+index ae9be2a..76e3244 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -44,7 +44,8 @@ import trimesh
+ from gradio_client import Client, handle_file
+ from PIL import Image
+ 
+-from server import cache, llm, meshgen, web
++from server import cache, llm, meshgen, photo_cut, web
++from server import part_templates as T
+ from server.config import get_settings
+ from server.keys import KeyPool, KeysExhausted
+ from server.models import Asset, Dims, Part
+@@ -568,17 +569,82 @@ def _plan_info(plan) -> dict:
+     return {"made_by": plan.made_by or None, "template": plan.template, "retried": plan.retried}
+ 
+ 
+-async def _textured(part: Part, geometry, photo: Path | None, plan, face):
+-    """The photo on the face it shows, when it shows this one product."""
+-    if photo and (plan is None or plan.single):
+-        rotate = plan.rotate_cw if plan else 0
+-        try:
+-            geometry = await asyncio.to_thread(meshgen.project, geometry, photo, face, rotate)
+-        # Blind except is deliberate: a photo that won't project (odd crop, degenerate mesh)
+-        # still leaves a good untextured asset; not worth losing the tier over.
+-        except Exception as exc:  # noqa: BLE001
+-            logger.info("asset %s: photo projection failed: %s", part.id, exc)
+-    return geometry
++def _shell_defaults(plan) -> set[str]:
++    """texture: a template's shell roles still in the template's default colour (the answer gave
++    none from the photo): the sampled body colour replaces them."""
++    if plan is None or plan.template not in T.TEMPLATES:
++        return set()
++    defaults = T.TEMPLATES[plan.template][3]
++    return {
++        role
++        for role, color in (plan.colors or {}).items()
++        if role in meshgen.SHELL_ROLES
++        and str(defaults.get(role, "")).upper().lstrip("#") == str(color).upper().lstrip("#")
++    }
++
++
++def finish_of(part: Part, colors: dict) -> str:
++    """texture: the material cue ("metal" | "plastic" | "painted") from the listing, else the
++    sampled body colour."""
++    return photo_cut.finish_for([part.finish, part.material, part.name], colors["body"])
++
++
++def _texture_sync(part: Part, geometry, photo: Path, plan, face, tier: str | None):
++    """(geometry, texture info): a CAD model built backwards turned around (ASSET_SCAD_ORIENT),
++    the sides painted from the product (ASSET_SIDE_COLOR), the photo on the front footprint when
++    it shows this one product (ASSET_PHOTO_CUT: the product cut out of it)."""
++    settings = get_settings()
++    face = face or "front"
++    rotate = plan.rotate_cw if plan else 0
++    info: dict = {}
++    c = None
++    if settings.ASSET_PHOTO_CUT or settings.ASSET_SIDE_COLOR or tier == "scad":
++        c = photo_cut.cut(photo, meshgen.face_aspect(part.dims_mm, face, rotate))
++    if tier == "scad" and settings.ASSET_SCAD_ORIENT and c is not None:
++        geometry = geometry if isinstance(geometry, trimesh.Scene) else trimesh.Scene(geometry)
++        ori = meshgen.orientation(geometry, c.texture(rectify=True) if face == "front" else None)
++        if ori["reversed"]:
++            geometry = meshgen.turn_around(geometry)
++            info["turned"] = ori["reason"]
++            logger.info(
++                "asset %s: the CAD model faced backwards (%s): turned", part.id, ori["reason"]
++            )
++    finish = None
++    if settings.ASSET_SIDE_COLOR and c is not None:
++        finish = finish_of(part, c.colors)
++        geometry = meshgen.recolor(
++            geometry,
++            c.colors,
++            finish,
++            replace_all=tier in ("ai_mesh", "proxy"),
++            replace=_shell_defaults(plan) if tier == "llm" else None,
++            cue_near=tier == "scad",
++        )
++        info.update(
++            body=c.colors["body"],
++            trim=c.colors["trim"],
++            finish=finish,
++            recolored=geometry.metadata.get("recolored", []),
++        )
++    if plan is None or plan.single:
++        geometry = meshgen.project(geometry, photo, face, rotate, finish=finish)
++        info.update(geometry.metadata.get("texture") or {"photo": True})
++    return geometry, info
++
++
++async def _textured(part: Part, geometry, photo: Path | None, plan, face, tier: str | None = None):
++    """(geometry, texture info or None): the photo on the face it shows, when it shows this one
++    product; texture: the product cut out of it, on the front footprint only, the rest painted
++    from the product (`_texture_sync`)."""
++    if photo is None:
++        return geometry, None
++    try:
++        return await asyncio.to_thread(_texture_sync, part, geometry, photo, plan, face, tier)
++    # Blind except is deliberate: a photo that won't project (odd crop, degenerate mesh)
++    # still leaves a good untextured asset; not worth losing the tier over.
++    except Exception as exc:  # noqa: BLE001
++        logger.info("asset %s: photo texture failed: %s", part.id, exc)
++    return geometry, None
+ 
+ 
+ async def _generated(part: Part, photo: Path | None, pdir: Path):
+@@ -603,8 +669,9 @@ async def _generated(part: Part, photo: Path | None, pdir: Path):
+         geometry, tier = await asyncio.to_thread(meshgen.build, plan, part.dims_mm), "llm"
+     if geometry is None:
+         return None
+-    geometry = await _textured(part, geometry, photo, plan, face)
++    geometry, texture = await _textured(part, geometry, photo, plan, face, tier)
+     info = _plan_info(plan)
++    info["texture"] = texture
+     if tier == "ai_mesh":
+         info["made_by"] = _hf_made_by(hy_meta)
+     elif tier == "scad":
+@@ -644,7 +711,7 @@ async def _generated_hf(part: Part, photo: Path | None, pdir: Path):
+         info = _plan_info(plan)
+     if geometry is None:
+         return None, reason
+-    geometry = await _textured(part, geometry, photo, plan, face)
++    geometry, info["texture"] = await _textured(part, geometry, photo, plan, face, tier)
+     return (geometry, tier, residual, info), reason
+ 
+ 
+@@ -818,19 +885,26 @@ async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
+     if geometry is None:
+         return None, reason
+     if tier != "scad" or get_settings().ASSET_SCAD_PHOTO:  # cad: or Grok's own paint only
+-        geometry = await _textured(part, geometry, photo, plan, face)
++        geometry, info["texture"] = await _textured(part, geometry, photo, plan, face, tier)
+     return (geometry, tier, 0.0, info), reason
+ 
+ 
+ def _box(part: Part, photo: Path | None):
+-    """Last tier: the photo decal box (E3), or a plain coloured box if the photo won't do."""
++    """Last tier: (the photo decal box (E3), its texture info), or a plain coloured box (None)
++    if the photo won't do. texture: its sides in the product's sampled colour."""
+     if photo is not None:
+         try:
+             face = meshgen.aspect_guess(part.dims_mm, photo)
+-            return meshgen.decal_box(part.dims_mm, photo, face)
++            finish, info = None, {}
++            if get_settings().ASSET_SIDE_COLOR:
++                c = photo_cut.cut(photo, meshgen.face_aspect(part.dims_mm, face))
++                finish = finish_of(part, c.colors)
++                info = {"body": c.colors["body"], "trim": c.colors["trim"], "finish": finish}
++            scene = meshgen.decal_box(part.dims_mm, photo, face, finish=finish)
++            return scene, {**info, **(scene.metadata.get("texture") or {})} or None
+         except Exception as exc:  # noqa: BLE001 -- any photo problem: the plain box below
+             logger.info("asset %s: decal box failed: %s", part.id, exc)
+-    return proxy_mesh(part.dims_mm, part.color_hex)
++    return proxy_mesh(part.dims_mm, part.color_hex), None
+ 
+ 
+ # --- asset-mode: variants on disk ------------------------------------------------------------
+@@ -994,7 +1068,7 @@ async def resolve_asset(
+             info = more[0] if more else {}
+ 
+     if geometry is None:
+-        geometry = await asyncio.to_thread(_box, part, photo)
++        geometry, info["texture"] = await asyncio.to_thread(_box, part, photo)
+ 
+     part.asset = Asset(
+         tier=tier,
+@@ -1142,3 +1216,82 @@ async def warm_hf(part: Part) -> str:
+     if hunyuan_cached(photo) is not None:
+         return "mismatch"
+     return "quota" if AI_MESH_LAST.get("outcome") == "quota" or HF_KEYS.exhausted() else "failed"
++
++
++# --- texture: re-texture the models already made (server.warm --retexture) ---------------------
++
++
++async def _source_geometry(part: Part, asset: Asset, photo: Path | None, plan):
++    """The untextured geometry a variant was made from, from what's on disk: scad.glb (scad), the
++    raw Hunyuan mesh cached by photo hash (ai_mesh), the template from the cached plan (llm), the
++    box (proxy). None when it isn't there (a plan the cache doesn't have, a downloaded cad mesh)."""
++    pdir = part_dir(part.id)
++    if asset.tier == "scad":
++        path = pdir / "scad.glb"
++        return trimesh.load(path, force="scene") if path.exists() else None
++    if asset.tier == "ai_mesh":
++        raw = hunyuan_cached(photo)
++        if raw is None:
++            return None
++        mesh, _ = await asyncio.to_thread(
++            normalize_mesh,
++            trimesh.load(raw, force="scene"),
++            part.dims_mm,
++            part.mount.get("face") or "-z",
++            True,
++            True,
++        )
++        return _paint(mesh, part.color_hex)
++    if asset.tier == "llm":
++        return await asyncio.to_thread(meshgen.build, plan, part.dims_mm) if plan else None
++    return None  # proxy: _box makes it whole; cad: a downloaded mesh, kept
++
++
++async def retexture(part: Part, mode: str) -> dict:
++    """texture: the mode's model made again from its own geometry with today's texturing (the
++    product cut out of its photo, front-only mapping, sides from the product, a backwards CAD
++    model turned) -- no LLM call (the plan comes from the cache; run it OFFLINE to be sure) and no
++    Hunyuan call (the raw mesh is cached by photo hash). The variant keeps its asset (tier,
++    made_by, seconds...) with `texture` updated, and model.glb follows when it's the selected
++    one. {outcome: "done" | "kept" | "none", tier, reason, texture, seconds}. Never raises."""
++    t0 = time.monotonic()
++    mode = normalize_mode(mode)
++    _adopt_legacy(part.id)
++    asset = variant_asset(part.id, mode, fresh=False)
++    if asset is None:
++        return {"outcome": "none", "tier": None, "reason": "no model"}
++    photo = part_dir(part.id) / "image.jpg"
++    photo = photo if photo.exists() else None
++    out = {"outcome": "kept", "tier": asset.tier, "reason": None, "texture": None}
++    try:
++        if asset.tier == "proxy":
++            geometry, texture = await asyncio.to_thread(_box, part, photo)
++        else:
++            plan, face = await _plan_and_face(part, photo)
++            geometry = await _source_geometry(part, asset, photo, plan)
++            if geometry is None:
++                out["reason"] = {
++                    "llm": "the template plan isn't cached",
++                    "ai_mesh": "the raw Hunyuan mesh isn't cached",
++                    "scad": "scad.glb is missing",
++                }.get(asset.tier, f"{asset.tier} models aren't re-textured")
++                return {**out, "seconds": round(time.monotonic() - t0, 2)}
++            texture = None
++            if asset.tier != "scad" or mode != "llm_scad" or get_settings().ASSET_SCAD_PHOTO:
++                geometry, texture = await _textured(part, geometry, photo, plan, face, asset.tier)
++    except Exception as exc:  # noqa: BLE001 -- one part's failure never stops the warm
++        logger.warning("retexture %s (%s) failed: %s", part.id, mode, exc)
++        return {**out, "reason": f"{type(exc).__name__}: {str(exc)[:120]}"}
++    if texture is not None:
++        texture = {**texture, "retextured_at": round(time.time(), 1)}
++    new = asset.model_copy(update={"texture": texture})
++    _store_variant(part.id, mode, geometry, new)
++    current = _disk_part(part.id)
++    if current is not None and normalize_mode(current.asset.mode) == mode:
++        select(current, mode, new)
++    return {
++        **out,
++        "outcome": "done",
++        "texture": texture,
++        "seconds": round(time.monotonic() - t0, 2),
++    }
+diff --git a/server/config.py b/server/config.py
+index 319093d..a824654 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -63,6 +63,18 @@ class Settings(BaseSettings):
+     # geometry and paint only (false: the CAD model as written, e.g. to compare generators; a
+     # photo over CAD relief can draw a window's bars twice). Variants made before a change stay.
+     ASSET_SCAD_PHOTO: bool = True
++    # texture: the product photo on every tier's model (server/meshgen.py project, photo_cut.py).
++    # ASSET_PHOTO_CUT: the product cut out of its photo (studio background removed, a showroom's
++    # neighbours dropped, a slight keystone straightened) and fitted to the model's front footprint,
++    # front-facing triangles only; off = the whole crop stretched over the bbox face (as before).
++    # ASSET_SIDE_COLOR: the sides and top in the product's sampled body colour with a material cue
++    # (slightly metallic for stainless, matte for plastic); off = grey / the photo's edge colour.
++    # ASSET_SCAD_ORIENT: a CAD model whose back shows the front's detail (or matches the photo) is
++    # turned 180 degrees about Y (meshgen.orientation). Variants made before a change stay until
++    # `python -m server.warm --retexture`.
++    ASSET_PHOTO_CUT: bool = True
++    ASSET_SIDE_COLOR: bool = True
++    ASSET_SCAD_ORIENT: bool = True
+     # assetgen: a poor `asset` answer (none, or a known shape -- a window -- answered with another
+     # template) is asked once more here (server/meshgen.py ask). "" turns the retry off.
+     LLM_ASSET_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
+diff --git a/server/meshgen.py b/server/meshgen.py
+index dd18ccc..d5963f5 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -41,7 +41,7 @@ import trimesh
+ from PIL import Image, ImageDraw
+ from scipy import ndimage
+ 
+-from server import cache, llm
++from server import cache, llm, photo_cut
+ from server import part_templates as T
+ from server.config import get_settings
+ from server.models import Dims, Part
+@@ -421,10 +421,13 @@ def aspect_guess(dims: Dims, photo: Path) -> str:
+     """No-LLM face guess: the face whose aspect best matches the product crop (9/12 in E3);
+     "front" if the photo won't load."""
+     try:
+-        crop, _, _ = cut_product(photo)
++        if get_settings().ASSET_PHOTO_CUT:  # texture: the product cut out, not the background
++            size = photo_cut.cut(photo, dims.w / dims.h).image.size
++        else:
++            size = cut_product(photo)[0].size
+     except OSError:  # PIL's UnidentifiedImageError included
+         return "front"
+-    a = np.log(crop.width / crop.height)
++    a = np.log(size[0] / size[1])
+     cand = {"front": dims.w / dims.h, "right": dims.d / dims.h, "top": dims.w / dims.d}
+     return min(cand, key=lambda k: abs(a - np.log(cand[k])))
+ 
+@@ -452,10 +455,11 @@ def _silhouette(meshes, r, up, lo, ext) -> np.ndarray:
+     return np.asarray(img, bool)
+ 
+ 
+-def project(
++def _project_legacy(
+     geometry: trimesh.Scene | trimesh.Trimesh, photo: Path, face: str, rotate_cw: int = 0
+ ) -> trimesh.Scene:
+-    """Stretch the cropped photo over the geometry's bbox on `face` and put it on every triangle
++    """ASSET_PHOTO_CUT off (the pre-texture-lane projection): stretch the cropped photo over the
++    geometry's bbox on `face` and put it on every triangle
+     facing that way that can see the camera (a ray from its centre or a corner escapes the part);
+     every other triangle keeps its material. A profile photo goes on both sides, mirrored or not,
+     whichever silhouette matches the photo better. One JPEG on one extra `photo` primitive.
+@@ -519,11 +523,359 @@ def project(
+     return out
+ 
+ 
+-def decal_box(dims: Dims, photo: Path, face: str, rotate_cw: int = 0) -> trimesh.Scene:
+-    """Exact-size box in the photo's edge colour with the photo on `face` (E3)."""
+-    _, _, edge = cut_product(photo)
+-    box, _ = T.build("box", dims.model_dump(), None, {"body": edge})
+-    return project(box, photo, face, rotate_cw)
++def decal_box(dims: Dims, photo: Path, face: str, rotate_cw: int = 0, finish: str | None = None):
++    """Exact-size box with the photo on `face` (E3): its sides in the product's sampled body
++    colour and material cue (ASSET_SIDE_COLOR; the photo's edge colour without it)."""
++    settings = get_settings()
++    if settings.ASSET_SIDE_COLOR:
++        c = photo_cut.cut(photo, face_aspect(dims, face, rotate_cw))
++        box, _ = T.build("box", dims.model_dump(), None, {"body": c.colors["body"]})
++        box = recolor(box, c.colors, finish or "painted", replace_all=True)
++    else:
++        _, _, edge = cut_product(photo)
++        box, _ = T.build("box", dims.model_dump(), None, {"body": edge})
++    return project(box, photo, face, rotate_cw, finish=finish)
++
++
++# ---------------------------------------------------------------- the photo texture (texture lane)
++#
++# ASSET_PHOTO_CUT (default on): the photo is the product cut out of it (server/photo_cut.py: the
++# studio background removed, a showroom's neighbours dropped, a slight keystone straightened when
++# the model's front is a rectangle), fitted to the model's *front footprint* -- the extent of the
++# triangles that face the photo's side (normal within FACE_DOT_CUT) and can see the camera -- not
++# the whole bounding box, and put on those triangles only. Every other face keeps its own paint.
++# ASSET_SIDE_COLOR (default on): `recolor` paints what isn't photo from the product: the sampled
++# body colour on pieces with no meaningful paint of their own (a Hunyuan mesh, a box, a CAD piece
++# Grok left the default grey, a template shell role still in the template's default colour), the
++# trim colour on small unpainted CAD pieces, and a material cue (FINISH_PBR: slightly metallic and
++# smooth for stainless, matte for plastic) on those and on CAD pieces painted about the body colour.
++
++FACE_DOT_CUT = 0.5  # a triangle within 60 degrees of the photo's axis gets the photo
++RECT_FILL = 0.9  # the front footprint's silhouette fills its box this much: a rectangular front
++PLACEHOLDER_GREYS = {"#B0B0B0", "#CCCCCC"}  # build_scad's unpainted piece; assets' proxy grey
++SHELL_ROLES = {"body", "door", "frame", "panel", "housing", "shell", "sash", "case"}
++TRIM_MAX_AREA = 0.25  # an unpainted CAD piece smaller than this share of the area takes the trim
++CUE_NEAR = (
++    60.0  # sRGB distance: a painted piece this close to the body colour is the body's material
++)
++
++
++def face_aspect(dims: Dims, face: str, rotate_cw: int = 0) -> float:
++    """Width / height of the product face the photo shows, as it appears in the photo."""
++    w, h, d = dims.w, dims.h, dims.d
++    a = {"front": w / h, "back": w / h, "left": d / h, "right": d / h}.get(face, w / d)
++    return 1.0 / a if rotate_cw in (90, 270) else a
++
++
++def _hex_of(material) -> str | None:
++    bc = getattr(material, "baseColorFactor", None)
++    if bc is None:
++        return None
++    bc = np.asarray(bc, float)[:3]
++    return "#{:02X}{:02X}{:02X}".format(
++        *np.round(_lin_to_srgb255(bc / 255.0 if bc.max() > 1.0 else bc)).astype(int)
++    )
++
++
++def _pbr(color_hex: str, finish: str, texture=None):
++    metallic, rough = photo_cut.FINISH_PBR.get(finish, photo_cut.FINISH_PBR["painted"])
++    if texture is not None:
++        metallic, rough = photo_cut.PHOTO_PBR.get(finish, photo_cut.PHOTO_PBR["painted"])
++        return trimesh.visual.material.PBRMaterial(
++            baseColorTexture=texture, metallicFactor=metallic, roughnessFactor=rough
++        )
++    return trimesh.visual.material.PBRMaterial(
++        baseColorFactor=T.srgb_to_linear(color_hex), metallicFactor=metallic, roughnessFactor=rough
++    )
++
++
++def recolor(
++    geometry,
++    colors: dict,
++    finish: str,
++    *,
++    replace_all: bool = False,
++    replace: set[str] | None = None,
++    cue_near: bool = False,
++) -> trimesh.Scene:
++    """The model's pieces painted from the product (`colors` {body, trim} from photo_cut):
++    `replace_all` (a Hunyuan mesh, a box) every piece gets the body colour; else the pieces named
++    in `replace` (a template's shell roles in their default colour) and any piece in a placeholder
++    grey (PLACEHOLDER_GREYS: the body colour when it's a big piece, the trim colour when it's
++    small). `cue_near` (CAD): pieces painted about the body colour keep their paint and take the
++    finish's material cue. Returns a Scene; `metadata["recolored"]` names what changed."""
++    scene = geometry if isinstance(geometry, trimesh.Scene) else trimesh.Scene(geometry)
++    total = sum(g.area for g in scene.geometry.values()) or 1.0
++    body = photo_cut.hex_rgb(colors["body"])
++    changed = []
++    for name, g in scene.geometry.items():
++        mat = getattr(g.visual, "material", None)
++        if getattr(mat, "baseColorTexture", None) is not None:
++            continue  # already a photo
++        paint = _hex_of(mat) if mat is not None else None
++        if replace_all or name in (replace or ()) or paint in PLACEHOLDER_GREYS or paint is None:
++            small = (
++                not replace_all and g.area / total < TRIM_MAX_AREA and paint in PLACEHOLDER_GREYS
++            )
++            new = colors["trim"] if small else colors["body"]
++            g.visual = trimesh.visual.TextureVisuals(material=_pbr(new, finish))
++            changed.append(name)
++        elif cue_near and np.linalg.norm(photo_cut.hex_rgb(paint) - body) < CUE_NEAR:
++            g.visual = trimesh.visual.TextureVisuals(material=_pbr(paint, finish))
++            changed.append(name)
++    scene.metadata["recolored"] = changed
++    return scene
++
++
++def project(
++    geometry: trimesh.Scene | trimesh.Trimesh,
++    photo: Path,
++    face: str,
++    rotate_cw: int = 0,
++    *,
++    finish: str | None = None,
++) -> trimesh.Scene:
++    """The product photo on the triangles facing `face` (E5). ASSET_PHOTO_CUT: the cut-out
++    (photo_cut) fitted to the front footprint of the triangles that face that way (normal within
++    FACE_DOT_CUT) and can see the camera (a ray from the centre or a corner escapes the part),
++    straightened when the photo has a keystone and that footprint is a rectangle; every other
++    triangle keeps its material. A profile photo goes on both sides, mirrored or not, whichever
++    silhouette matches the photo better. One JPEG on one extra `photo` primitive; `finish` sets its
++    subtle material cue. `metadata["texture"]` says how (cut method, keystone, triangles).
++    ASSET_PHOTO_CUT off: `_project_legacy`."""
++    if not get_settings().ASSET_PHOTO_CUT:
++        return _project_legacy(geometry, photo, face, rotate_cw)
++    scene = geometry if isinstance(geometry, trimesh.Scene) else trimesh.Scene(geometry)
++    n, r, up = (np.array(v, float) for v in FACES[face])
++    meshes = _world_meshes(scene)
++    allv = np.vstack([m.vertices for _, m in meshes])
++    aspect = float(np.ptp(allv @ r) / max(np.ptp(allv @ up), 1e-9))
++    if rotate_cw in (90, 270):
++        aspect = 1.0 / aspect
++    c = photo_cut.cut(photo, aspect)
++    side = face in SIDES
++    whole = trimesh.util.concatenate([m for _, m in meshes])
++    eps = 1e-4 * float(np.linalg.norm(whole.extents))
++    hits = []
++    for _, m in meshes:
++        dots = m.face_normals @ n
++        hit = np.abs(dots) >= FACE_DOT_CUT if side else dots >= FACE_DOT_CUT
++        idx = np.nonzero(hit)[0]
++        if len(idx):
++            d = np.sign(dots[idx])[:, None] * n
++            ctr = m.triangles_center[idx]
++            pts = [ctr] + [ctr + 0.9 * (m.triangles[idx][:, k] - ctr) for k in range(3)]
++            blocked = np.logical_and.reduce([whole.ray.intersects_any(p + d * eps, d) for p in pts])
++            hit[idx[blocked]] = False
++        hits.append(hit)
++    info = {**c.info(), "photo": False, "keystone": False, "front_tris": 0}
++    hit_tris = [m.triangles[h] for (_, m), h in zip(meshes, hits, strict=True) if h.any()]
++    if not hit_tris:
++        scene.metadata["texture"] = info
++        return scene
++    hv = np.concatenate(hit_tris).reshape(-1, 3)
++    lo = np.array([(hv @ r).min(), (hv @ up).min()])
++    ext = np.maximum(np.array([np.ptp(hv @ r), np.ptp(hv @ up)]), 1e-9)
++    foot = [("front", trimesh.Trimesh(*_tri_soup(np.concatenate(hit_tris))))]
++    rect = _silhouette(foot, r, up, lo, ext).mean() >= RECT_FILL
++    keystone = bool(rect and c.quad is not None)
++    crop = c.texture(rectify=keystone).rotate(-rotate_cw, expand=True)
++    flip = False
++    if side:  # which way round does the profile run? compare silhouettes both ways
++        pm = Image.fromarray(c.mask).rotate(-rotate_cw, expand=True).resize((SIL, SIL))
++        pm = np.asarray(pm, bool)
++        geo = _silhouette(foot, r, up, lo, ext)
++        scores = [float((pm & g).sum() / max((pm | g).sum(), 1)) for g in (geo, geo[:, ::-1])]
++        flip = scores[1] > scores[0]
++    tex = crop.copy()
++    tex.thumbnail((TEX_MAX, TEX_MAX))
++    buf = io.BytesIO()
++    tex.save(buf, "JPEG", quality=JPEG_Q)
++    tex = Image.open(io.BytesIO(buf.getvalue()))  # format JPEG: kept as JPEG on export
++
++    out, photo_parts = trimesh.Scene(), []
++    for (name, m), hit in zip(meshes, hits, strict=True):
++        if (~hit).any():
++            rest = m.submesh([np.nonzero(~hit)[0]], append=True)
++            material = getattr(m.visual, "material", None) or T.material("#B0B0B0", "body")
++            rest.visual = trimesh.visual.TextureVisuals(material=material)
++            out.add_geometry(rest, node_name=name, geom_name=name)
++        if hit.any():
++            photo_parts.append(m.submesh([np.nonzero(hit)[0]], append=True))
++    pm_ = trimesh.util.concatenate(photo_parts)
++    pm_.unmerge_vertices()
++    u = np.clip((pm_.vertices @ r - lo[0]) / ext[0], 0.0, 1.0)
++    v = np.clip((pm_.vertices @ up - lo[1]) / ext[1], 0.0, 1.0)
++    pm_.visual = trimesh.visual.TextureVisuals(
++        uv=np.c_[1 - u if flip else u, v], material=_pbr("#FFFFFF", finish or "painted", tex)
++    )
++    pm_.merge_vertices()
++    out.add_geometry(pm_, node_name="photo", geom_name="photo")
++    info.update(photo=True, keystone=keystone, front_tris=len(pm_.faces))
++    out.metadata["texture"] = info
++    return out
++
++
++def _tri_soup(tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
++    return tris.reshape(-1, 3), np.arange(len(tris) * 3).reshape(-1, 3)
++
++
++# ---------------------------------------------------------------- orientation (texture lane)
++#
++# The contract (api.md §2, SCAD_PROMPT): Y up, the back / mounting face at Z=0, the front the
++# viewer sees at +Z. `orientation()` checks a model against it from what each side shows: the
++# pieces a viewer sees from the front vs from behind (a front carries the handles, the control
++# strip and the kick plate as their own painted pieces; a back is one plain slab), how much relief
++# each side has, and -- with the product photo -- which side's colours look like the photo (the
++# back view mirrored, as a viewer behind the part sees it). `turn_around()` fixes a model built
++# backwards: 180 degrees about Y, the mount face still at Z=0.
++
++ORIENT_RES = 64
++ORIENT_MIN_SHARE = 0.01  # a piece covering this share of a side's view counts as seen there
++ORIENT_PHOTO_MARGIN = 0.15  # the back matches the photo this much better than the front
++ORIENT_PHOTO_MIN = 0.3  # ... and matches it at least this well (NCC of the paint vs the photo)
++ORIENT_DETAIL_MARGIN = 0.35  # the back shows this much more detail than the front
++
++
++def _lin_to_srgb255(c: np.ndarray) -> np.ndarray:
++    c = np.clip(c, 0.0, 1.0)
++    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055) * 255.0
++
++
++def _piece_srgb(m: trimesh.Trimesh) -> np.ndarray:
++    """A piece's paint (sRGB 0..255) from its material's linear baseColorFactor; mid grey for a
++    textured or unpainted piece."""
++    mat = getattr(m.visual, "material", None)
++    bc = getattr(mat, "baseColorFactor", None) if mat is not None else None
++    if bc is None or getattr(mat, "baseColorTexture", None) is not None:
++        return np.array([128.0, 128.0, 128.0])
++    bc = np.asarray(bc, float)[:3]
++    return _lin_to_srgb255(bc / 255.0 if bc.max() > 1.0 else bc)
++
++
++def side_view(meshes, side: str = "front", res: int = ORIENT_RES):
++    """Orthographic view of `meshes` [(name, mesh)] from +Z ("front") or -Z ("back", mirrored so
++    +X is on the viewer's left, as seen from behind), stretched over the XY bbox: (piece index
++    per pixel, -1 = none; depth 0..1 from that side's bbox face). Painter's order, PIL polygons."""
++    tris = np.concatenate([m.triangles for _, m in meshes])
++    idx = np.concatenate([np.full(len(m.faces), i) for i, (_, m) in enumerate(meshes)])
++    lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
++    ext = np.maximum(hi - lo, 1e-9)
++    u = (tris[:, :, 0] - lo[0]) / ext[0]
++    if side == "back":
++        u = 1.0 - u
++    u = u * (res - 1)
++    v = (1.0 - (tris[:, :, 1] - lo[1]) / ext[1]) * (res - 1)
++    z = tris[:, :, 2].mean(axis=1)
++    depth = (hi[2] - z) / ext[2] if side == "front" else (z - lo[2]) / ext[2]
++    ids = Image.new("I", (res, res), -1)
++    dep = Image.new("F", (res, res), 0.0)
++    di, dd = ImageDraw.Draw(ids), ImageDraw.Draw(dep)
++    for t in np.argsort(-depth):  # far first, the nearest drawn last
++        poly = list(zip(u[t].tolist(), v[t].tolist(), strict=True))
++        di.polygon(poly, fill=int(idx[t]))
++        dd.polygon(poly, fill=float(depth[t]))
++    return np.asarray(ids, np.int32), np.asarray(dep, np.float32)
++
++
++def _ncc(a: np.ndarray, b: np.ndarray) -> float:
++    a, b = a - a.mean(), b - b.mean()
++    den = float(np.sqrt((a * a).sum() * (b * b).sum()))
++    return float((a * b).sum() / den) if den > 1e-6 else 0.0
++
++
++def orientation(scene, photo: Image.Image | None = None, res: int = ORIENT_RES) -> dict:
++    """Which way the model faces: per side (front = +Z, back = -Z) the pieces seen, the share of
++    the view that isn't the main body (`detail`), the relief (depth spread) and, with `photo` (the
++    product cut-out, front view), the luminance correlation of the side's paint with it. `reversed`
++    when the back looks like the front should: it matches the photo clearly better and shows no
++    less detail, or it shows clearly more detail and matches the photo no worse."""
++    scene = scene if isinstance(scene, trimesh.Scene) else trimesh.Scene(scene)
++    meshes = [(n, m) for n, m in _world_meshes(scene) if len(m.faces)]
++    if not meshes:
++        return {"reversed": False, "reason": "empty"}
++    body = int(np.argmax([m.area for _, m in meshes]))
++    paint = np.array([_piece_srgb(m) for _, m in meshes])
++    lum_paint = paint @ np.array([0.299, 0.587, 0.114])
++    target = None
++    if photo is not None:
++        target = np.asarray(photo.convert("L").resize((res, res), Image.BILINEAR), np.float32)
++    out: dict = {}
++    for side in ("front", "back"):
++        ids, depth = side_view(meshes, side, res)
++        cov = ids >= 0
++        n = max(int(cov.sum()), 1)
++        share = np.bincount(ids[cov], minlength=len(meshes)) / n
++        rec = {
++            "pieces": int((share >= ORIENT_MIN_SHARE).sum()),
++            "detail": round(float(1.0 - share[body]), 3),
++            "relief": round(float(depth[cov].std()) if cov.any() else 0.0, 3),
++        }
++        if target is not None and cov.any():
++            lum = np.where(cov, lum_paint[np.clip(ids, 0, None)], 255.0)
++            rec["photo"] = round(_ncc(lum[cov], target[cov]), 3)
++        out[side] = rec
++    f, b = out["front"], out["back"]
++    detail = (b["detail"] - f["detail"]) + 0.1 * (b["pieces"] - f["pieces"])
++    detail += 0.5 * (b["relief"] - f["relief"])
++    photo_m = (b["photo"] - f["photo"]) if "photo" in f and "photo" in b else None
++    by_photo = (
++        photo_m is not None
++        and photo_m > ORIENT_PHOTO_MARGIN
++        and b["photo"] >= ORIENT_PHOTO_MIN  # a real match, not two poor ones
++        and detail > -0.05
++    )
++    by_detail = detail > ORIENT_DETAIL_MARGIN and (photo_m is None or photo_m > -0.05)
++    out["detail_margin"] = round(float(detail), 3)
++    out["photo_margin"] = None if photo_m is None else round(float(photo_m), 3)
++    out["reversed"] = bool(by_photo or by_detail)
++    out["reason"] = (
++        "the back matches the photo" if by_photo else "the back has the detail" if by_detail else ""
++    )
++    return out
++
++
++def turn_around(scene: trimesh.Scene) -> trimesh.Scene:
++    """The model turned 180 degrees about Y, its mount face still at Z=0 and X/Y still centred:
++    (x, y, z) -> (-x, y, zmin + zmax - z)."""
++    lo, hi = scene.bounds
++    tf = np.diag([-1.0, 1.0, -1.0, 1.0])
++    tf[0, 3] = lo[0] + hi[0]
++    tf[2, 3] = lo[2] + hi[2]
++    out = scene.copy()
++    out.apply_transform(tf)
++    return out
++
++
++RELIEF_MIN = 0.01  # front-view depth spread (share of D) under this: a flat slab of a front
++RELIEF_NOTE = (
++    "The front (Z=D) is flat: the handles, controls and door features are painted flush on one "
++    "slab, so the model reads as its back. Stop the body short of the front (box(z1=D-t), t about "
++    "3 % of D) and build the handles, control panel, knobs and door or drawer fronts as their own "
++    "painted pieces in the last t mm, standing proud. Keep everything else."
++)
++# Products whose front carries handles / controls / doors (a flat front is a modelling miss).
++_RELIEF_NAME = re.compile(
++    r"\b(?:dishwasher|range|oven|stove|cooktop|refrigerator|fridge|freezer|microwave|hood|washer"
++    r"|dryer|air conditioner|dehumidifier|wine cooler|beverage|ice maker|cabinet|vanity|dresser)\b",
++    re.IGNORECASE,
++)
++
++
++def wants_relief(part: Part) -> bool:
++    """A product whose front should stand proud (handles, controls, doors), by its name."""
++    return bool(_RELIEF_NAME.search(part.name or ""))
++
++
++def front_relief(scene) -> float:
++    """The depth spread of what a viewer sees from the front (0 = one flat slab)."""
++    scene = scene if isinstance(scene, trimesh.Scene) else trimesh.Scene(scene)
++    meshes = [(n, m) for n, m in _world_meshes(scene) if len(m.faces)]
++    if not meshes:
++        return 0.0
++    ids, depth = side_view(meshes, "front")
++    cov = ids >= 0
++    return float(depth[cov].std()) if cov.any() else 0.0
+ 
+ 
+ # ---------------------------------------------------------------- Grok OpenSCAD (E4), offline
+@@ -553,6 +905,12 @@ at Y=0). Z depth, 0..D: Z=0 is the back / mounting face (against the wall, floor
+ structure), Z=D is the front the viewer sees. W, H, D are predefined; write sizes as \
+ expressions of them.
+ 
++Front and back: everything the photo shows on the product's front (handles, control panel, \
++display, knobs, door and drawer seams, grilles, the kick plate) goes on the FRONT, at Z=D; the \
++back at Z=0 is plain. Make the front read as the front in 3D: stop the body short of it \
++(box(z1=D-t)) and build each front feature as its own painted piece in the last t mm, so \
++handles and controls stand proud; a front that is one flat slab looks like the back.
++
+ Library:
+ {api}
+ 
+@@ -960,6 +1318,30 @@ async def grok_scad_run(part: Part, photo: Path, out: Path) -> dict:
+                 if fixed is not None and fixed_err < raw_err:
+                     scene, raw_err = fixed, fixed_err
+             record["bbox_err_pct"] = round(raw_err, 2)
++            # texture lane: the front is the front -- proud features, and never built backwards
++            if wants_relief(part) and front_relief(scene) < RELIEF_MIN:
++                text = await ask(follow_up(code, RELIEF_NOTE + f" {envelope} {FULL_CODE}"))
++                proud, proud_err, proud_code, _ = await _scad_attempt(exe, text, dims)
++                better = (
++                    proud is not None
++                    and proud_err <= max(raw_err, SCAD_FIT_PCT)
++                    and front_relief(proud) > front_relief(scene)
++                )
++                record["relief_pass"] = "kept" if better else "rejected"
++                if better:
++                    scene, raw_err, code = proud, proud_err, proud_code
++                    record["bbox_err_pct"] = round(raw_err, 2)
++            record["front_relief"] = round(front_relief(scene), 4)
++            if get_settings().ASSET_SCAD_ORIENT:
++                cut = await asyncio.to_thread(photo_cut.cut, photo, dims[0] / dims[1])
++                ori = await asyncio.to_thread(orientation, scene, cut.texture(rectify=True))
++                record["orientation"] = {k: ori.get(k) for k in ("front", "back", "reason")}
++                if ori["reversed"]:
++                    scene = turn_around(scene)
++                    record["turned"] = ori["reason"]
++                    logger.info(
++                        "grok_scad: %s was built backwards (%s): turned", part.id, ori["reason"]
++                    )
+     # Blind except is deliberate: an offline batch job over many parts; one part's network,
+     # quota or build failure is logged and the job moves on.
+     except Exception as exc:  # noqa: BLE001
+diff --git a/server/models.py b/server/models.py
+index 6827110..682a23f 100644
+--- a/server/models.py
++++ b/server/models.py
+@@ -73,6 +73,10 @@ class Asset(BaseModel):
+     # {status: "writing" | "ready" | "failed" | "none", started_at, eta_s, made_by, reason}.
+     # Only on responses (part.json?mode=, POST /parts/{id}/model); never stored.
+     cad: dict | None = None
++    # texture: how the model was textured (server/assets.py _textured): {cut: "flood" | "u2netp" |
++    # "frame" | "whole", background, keystone, photo (projected), front_tris, body, trim, finish,
++    # recolored: [pieces], turned (a CAD model turned around), retextured_at}.
++    texture: dict | None = None
+ 
+ 
+ class Fit(BaseModel):
+diff --git a/server/photo_cut.py b/server/photo_cut.py
+new file mode 100644
+index 0000000..b393e0e
+--- /dev/null
++++ b/server/photo_cut.py
+@@ -0,0 +1,629 @@
++"""texture: the product cut out of its photo, for the photo texture (server/meshgen.py `project`).
++
++The pipeline paints the product photo onto the model's front (every tier). A catalogue photo on a
++white studio background only needs its background removed; a showroom photo (the LG fridge between
++its neighbours, on carpet) needs the one product picked out. `cut()`:
++
++1. **Plain background** (>= PLAIN_BORDER_FRAC of the border within TOL of the border's median
++   colour): flood that colour in from the edges, keep the biggest blob, fill holes (the old
++   `meshgen.photo_mask`, ~10-30 ms). A white product on white keeps its body: the flood only takes
++   background connected to the border.
++2. **Cluttered**: U^2-Netp salient-object mask (4.6 MB onnx, CPU, ~0.1 s a photo after a ~0.3 s
++   load; rembg's model, run here through onnxruntime without rembg) -> components -> the largest
++   central one whose box aspect matches the part's listed size (`aspect`, W/H of the face the photo
++   shows). No onnxruntime or no model file (and OFFLINE, so no download): the flood result when it
++   looks like one object, else the whole photo (method "whole", the old behaviour).
++3. **Keystone**: a boxy product (the mask fills >= KEY_FILL of the quadrilateral fitted to its
++   four edges) shot slightly off-axis is warped back to a rectangle when its corners are 1.5-20 %
++   off the bounding box. A real 3/4 view (a range's cooktop seen from above) is left as is.
++
++The cut-out is cached next to the photo: `image.cut.png` (RGBA, cropped to the product, alpha =
++the product) and `image.cut.json` {version, photo_sha1, aspect, method, background, box (x0, y0, x1,
++y1 in photo px), quad (4 corners in photo px when warped) or null, seconds, colors {body, trim}}.
++
++`colors()` samples the product's dominant material colours (a small k-means over the cut-out's
++pixels): the body (the largest cluster: stainless ~#B9BCC0, black, white) and the trim (the next
++big cluster that differs from it). `finish_for()` names the material cue (metal / plastic /
++painted) from the part's listing text, else the colours.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import logging
++import re
++import threading
++import time
++from dataclasses import dataclass, field
++from pathlib import Path
++
++import numpy as np
++from PIL import Image, ImageDraw
++from scipy import ndimage
++
++from server import cache
++from server.config import get_settings
++
++logger = logging.getLogger(__name__)
++
++VERSION = 1
++PLAIN_BORDER_FRAC = 0.4  # this share of the border near its median colour = a studio background
++TOL = 12  # max per-channel distance from the border colour that still counts as background
++MAX_SIDE = 1600  # photos are worked on at most this big (catalogue photos are <= 1000 px)
++RIM = 2  # px of the outline that are part background (anti-aliased), replaced from inside
++EXTEND = 0.015  # background this near the outline (share of the size) takes the edge's colour
++MIN_BLOB = 0.01  # a component smaller than this share of the photo isn't a candidate
++FG_MIN, FG_MAX = 0.03, 0.97  # a flood "foreground" outside this share of the photo isn't one object
++SAL_MATCH = 0.25  # |ln| aspect mismatch of the model's object still taken as the product
++FRAME_MATCH = 0.06  # |ln(photo aspect / product aspect)| under this: the product fills the frame
++KEY_FILL = 0.95  # IoU of mask vs fitted quad: the product is a box face seen in perspective
++KEY_MIN, KEY_MAX = 0.02, 0.20  # corner offset (share of the size) worth warping / too big to
++KEY_STRAIGHT = 0.01  # median edge-fit residual (share of the size) of a straight edge
++
++MODEL_NAME = "u2netp"
++MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
++MODEL_MD5 = "8e83ca70e441ab06c318d82300c84806"
++_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
++_STD = np.array([0.229, 0.224, 0.225], np.float32)
++_session = None
++_session_lock = threading.Lock()
++_session_failed = False
++
++# Listing words -> the material cue (first match wins; "matte black steel" is painted metal).
++_FINISH_WORDS = [
++    ("painted", r"matte?|powder[- ]?coat(?:ed)?|enamel(?:ed)?|painted"),
++    (
++        "metal",
++        (
++            r"stainless|steel|chrome|nickel|alumin(?:i)?um|brass|bronze|copper|zinc|galvani[sz]ed"
++            r"|metal(?:lic)?|iron|titanium"
++        ),
++    ),
++    ("plastic", r"plastic|vinyl|resin|pvc|abs|polypropylene|rubber|acrylic|polycarbonate"),
++]
++# (metallicFactor, roughnessFactor) of the sides and top per cue; "slightly" metallic because a
++# Quest scene without a reflection probe renders full metal almost black (part_templates.FINISHES).
++FINISH_PBR = {"metal": (0.35, 0.35), "plastic": (0.0, 0.7), "painted": (0.0, 0.5)}
++# ... and of the photo itself: its reflections are baked in, so only a hint of sheen.
++PHOTO_PBR = {"metal": (0.12, 0.5), "plastic": (0.0, 0.8), "painted": (0.0, 0.7)}
++
++
++@dataclass
++class Cut:
++    """The product cut out of its photo. `image`: RGBA cropped to the product's box, alpha = the
++    product. `quad`: when the product is a box face seen slightly off-axis, its four corners (tl,
++    tr, br, bl) in `image` px; `rectified()` warps them to a rectangle (the caller decides: only a
++    model whose front is a rectangle wants it, a tapered planter doesn't)."""
++
++    image: Image.Image
++    box: tuple[int, int, int, int]
++    method: str
++    background: str
++    seconds: float = 0.0
++    quad: list | None = None
++    colors: dict = field(default_factory=dict)
++    aspect: float | None = None
++
++    @property
++    def mask(self) -> np.ndarray:
++        return np.asarray(self.image.getchannel("A")) > 127
++
++    def rectified(self) -> Image.Image:
++        return warp_quad(self.image, self.quad) if self.quad else self.image
++
++    def texture(self, rectify: bool = False) -> Image.Image:
++        """RGB for the texture, never the background: a pixel just outside the outline (texture
++        filtering, a silhouette a little off the model's) takes the nearest product pixel's
++        colour; further out (a round knob's corners on a box front) it fades to the body colour."""
++        img = self.rectified() if rectify else self.image
++        rgb = np.asarray(img.convert("RGB")).astype(np.float32)
++        fg = np.asarray(img.getchannel("A")) > 127
++        if fg.all() or not fg.any():
++            return Image.fromarray(rgb.astype(np.uint8))
++        # the outline's own pixels are part background (anti-aliasing on white): the core's
++        core = ndimage.binary_erosion(fg, iterations=RIM)
++        core = core if core.any() else fg
++        dist, (iy, ix) = ndimage.distance_transform_edt(~core, return_indices=True)
++        reach = max(2.0, EXTEND * min(fg.shape))
++        near = ndimage.gaussian_filter(rgb[iy, ix], sigma=(reach / 2, reach / 2, 0))  # no streaks
++        body = hex_rgb(self.colors.get("body") or "#B0B0B0").astype(np.float32)
++        k = np.clip(dist / reach - 0.5, 0.0, 1.0)[..., None]  # 0 at the edge, 1 a reach out
++        out = np.where(core[..., None], rgb, near * (1 - k) + body * k)
++        return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
++
++    def info(self) -> dict:
++        return {
++            "cut": self.method,
++            "background": self.background,
++            "cut_s": round(self.seconds, 3),
++            "box": list(self.box),
++        }
++
++
++def cut_paths(photo: Path) -> tuple[Path, Path]:
++    """(image.cut.png, image.cut.json) for image.jpg."""
++    return photo.with_name(f"{photo.stem}.cut.png"), photo.with_name(f"{photo.stem}.cut.json")
++
++
++def _sha1(path: Path) -> str:
++    return hashlib.sha1(path.read_bytes()).hexdigest()
++
++
++def _same_aspect(a: float | None, b: float | None) -> bool:
++    if a is None or b is None:
++        return a is b
++    return abs(np.log(a / b)) < 0.01
++
++
++def cached(photo: Path, aspect: float | None = None) -> Cut | None:
++    """The cut-out made for this very photo (and aspect) by this version, else None. A cluttered
++    photo cut without the model is made again once the model is there."""
++    png, meta_path = cut_paths(photo)
++    try:
++        meta = json.loads(meta_path.read_text())
++        if (
++            meta.get("version") != VERSION
++            or meta.get("photo_sha1") != _sha1(photo)
++            or not _same_aspect(meta.get("aspect"), aspect)
++        ):
++            return None
++        if (
++            meta.get("background") == "cluttered"
++            and meta.get("method") != MODEL_NAME
++            and _model_path().exists()
++            and not _session_failed
++        ):
++            return None
++        image = Image.open(png)
++        image.load()
++    except (OSError, ValueError):
++        return None
++    return Cut(
++        image=image.convert("RGBA"),
++        box=tuple(meta["box"]),
++        method=meta["method"],
++        background=meta["background"],
++        seconds=meta.get("seconds", 0.0),
++        quad=meta.get("quad"),
++        colors=meta.get("colors") or {},
++        aspect=meta.get("aspect"),
++    )
++
++
++def cut(photo: Path, aspect: float | None = None, *, save: bool = True) -> Cut:
++    """The product cut out of `photo` (module docstring), cached next to it. `aspect`: width /
++    height of the product face the photo shows (the part's W/H for a front photo), used to pick
++    the product among several objects. Raises OSError when the photo won't load."""
++    hit = cached(photo, aspect)
++    if hit is not None:
++        return hit
++    t0 = time.monotonic()
++    img = Image.open(photo).convert("RGB")
++    scale = 1.0
++    if max(img.size) > MAX_SIDE:
++        scale = MAX_SIDE / max(img.size)
++        img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
++    rgb = np.asarray(img)
++    alpha, method, background = segment(rgb, aspect)
++    fg = alpha > 127
++    ys, xs = np.nonzero(fg)
++    box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
++    rgba = np.dstack([rgb, alpha]).astype(np.uint8)[box[1] : box[3], box[0] : box[2]]
++    quad = (
++        keystone_quad(fg[box[1] : box[3], box[0] : box[2]])
++        if method in ("flood", MODEL_NAME)
++        else None
++    )
++    out = Image.fromarray(rgba, "RGBA")
++    result = Cut(
++        image=out,
++        box=tuple(round(v / scale) for v in box),
++        method=method,
++        background=background,
++        quad=[[round(x, 1), round(y, 1)] for x, y in quad] if quad else None,
++        aspect=aspect,
++    )
++    result.colors = colors(np.asarray(out.convert("RGB")), result.mask)
++    result.seconds = time.monotonic() - t0
++    if save:
++        _save(photo, result)
++    logger.info(
++        "photo_cut %s: %s (%s) box=%s keystone=%s body=%s in %.2f s",
++        photo.parent.name or photo.name,
++        method,
++        background,
++        result.box,
++        quad is not None,
++        result.colors.get("body"),
++        result.seconds,
++    )
++    return result
++
++
++def _save(photo: Path, c: Cut) -> None:
++    png, meta_path = cut_paths(photo)
++    try:
++        tmp = png.with_name(f".{png.name}.tmp")
++        c.image.save(tmp, "PNG")
++        tmp.replace(png)
++        meta = {
++            "version": VERSION,
++            "photo_sha1": _sha1(photo),
++            "aspect": c.aspect,
++            "method": c.method,
++            "background": c.background,
++            "box": list(c.box),
++            "quad": c.quad,
++            "size": list(c.image.size),
++            "seconds": round(c.seconds, 3),
++            "colors": c.colors,
++        }
++        cache.write_json_atomic(meta_path, json.dumps(meta, indent=2))
++    except OSError as exc:  # a read-only photo dir still gets its texture
++        logger.info("photo_cut: couldn't cache %s: %s", png, exc)
++
++
++# --------------------------------------------------------------------------------- segmentation
++
++
++def border_pixels(rgb: np.ndarray, width: int = 2) -> np.ndarray:
++    w = width
++    return np.concatenate(
++        [
++            rgb[:w].reshape(-1, 3),
++            rgb[-w:].reshape(-1, 3),
++            rgb[:, :w].reshape(-1, 3),
++            rgb[:, -w:].reshape(-1, 3),
++        ]
++    ).astype(np.int16)
++
++
++def is_plain(rgb: np.ndarray) -> bool:
++    """A studio background: most of the border is one colour (a product touching an edge still
++    leaves the rest of the border)."""
++    border = border_pixels(rgb)
++    near = np.abs(border - np.median(border, axis=0)).max(axis=1) <= TOL
++    return float(near.mean()) >= PLAIN_BORDER_FRAC
++
++
++def flood_mask(rgb: np.ndarray, tol: int = TOL) -> np.ndarray:
++    """Foreground of a plain-background photo: the border colour flooded in from the edges, the
++    biggest remaining blob, holes filled (meshgen.photo_mask's method)."""
++    img = rgb.astype(np.int16)
++    near_bg = np.abs(img - np.median(border_pixels(rgb, 1), axis=0)).max(axis=2) <= tol
++    lab, _ = ndimage.label(near_bg)
++    edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
++    fg = ndimage.binary_opening(~np.isin(lab, edge[edge > 0]))
++    lab, n = ndimage.label(fg)
++    if n > 1:
++        fg = lab == (np.argmax(np.bincount(lab.ravel())[1:]) + 1)
++    return ndimage.binary_fill_holes(fg)
++
++
++def pick_object(fg: np.ndarray, aspect: float | None) -> np.ndarray:
++    """The product among the mask's components: the largest central one whose box aspect matches
++    `aspect` (score = area x aspect match x centrality); holes filled."""
++    lab, n = ndimage.label(fg)
++    if n == 0:
++        return fg
++    h, w = fg.shape
++    areas = np.bincount(lab.ravel())[1:]
++    best, best_score = 0, -1.0
++    for i, sl in enumerate(ndimage.find_objects(lab)):
++        area = areas[i] / fg.size
++        if area < MIN_BLOB and i != int(np.argmax(areas)):
++            continue
++        bh, bw = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
++        cy, cx = (sl[0].start + sl[0].stop) / 2 / h, (sl[1].start + sl[1].stop) / 2 / w
++        central = 1.0 - 0.8 * min(1.0, np.hypot(cx - 0.5, cy - 0.5) / 0.7071)
++        match = 1.0 if aspect is None else float(np.exp(-1.5 * abs(np.log((bw / bh) / aspect))))
++        score = area * match * central
++        if score > best_score:
++            best, best_score = i + 1, score
++    return ndimage.binary_fill_holes(lab == best)
++
++
++def _aspect_off(fg: np.ndarray, aspect: float | None) -> float:
++    """|ln(box aspect / aspect)| of the mask's bounding box (0 without an aspect)."""
++    if aspect is None or not fg.any():
++        return 0.0
++    ys, xs = np.nonzero(fg)
++    return float(abs(np.log((np.ptp(xs) + 1) / (np.ptp(ys) + 1) / aspect)))
++
++
++def segment(rgb: np.ndarray, aspect: float | None = None) -> tuple[np.ndarray, str, str]:
++    """(alpha uint8 HxW, method, background) for the product in `rgb`: "flood" on a plain
++    background; on a cluttered one the saliency model's object when its box has about the
++    product's aspect, else "frame" when the photo itself has it (a catalogue crop the product
++    fills: the border is the product, not a background), else the model's object anyway, else a
++    plausible flood, else "whole"."""
++    h, w = rgb.shape[:2]
++    whole = np.full((h, w), 255, np.uint8)
++    background = "cluttered"
++    if is_plain(rgb):
++        fg = flood_mask(rgb)
++        if fg.mean() >= FG_MIN:
++            return _feather(fg), "flood", "plain"
++        background = "plain"  # a product the flood swallowed (white on white): try the model
++    frame = aspect is not None and abs(np.log((w / h) / aspect)) < FRAME_MATCH
++    pred = saliency(rgb)
++    if pred is not None:
++        fg = ndimage.binary_opening(pred > 0.5, iterations=2)
++        if fg.mean() >= FG_MIN:
++            obj = pick_object(fg, aspect)
++            if not frame or _aspect_off(obj, aspect) < SAL_MATCH:
++                # soft edges from the model, only around the chosen object
++                near = ndimage.binary_dilation(obj, iterations=3)
++                alpha = np.where(near, np.clip(pred * 255.0, 0, 255), 0).astype(np.uint8)
++                alpha[obj & (alpha < 128)] = 255  # holes the fill closed stay solid
++                return alpha, MODEL_NAME, background
++    if frame:
++        return whole, "frame", background
++    fg = flood_mask(rgb)
++    if FG_MIN <= fg.mean() <= FG_MAX:
++        return _feather(pick_object(fg, aspect)), "flood", background
++    return whole, "whole", background
++
++
++def _feather(fg: np.ndarray) -> np.ndarray:
++    """A binary mask as alpha with a one-pixel soft rim (no staircase on the outline)."""
++    soft = ndimage.uniform_filter(fg.astype(np.float32), size=3)
++    return (np.where(fg, np.maximum(soft, 0.5), 0.0) * 255).astype(np.uint8)
++
++
++# ------------------------------------------------------------------------------ U^2-Netp (onnx)
++
++
++def _model_path() -> Path:
++    return Path(get_settings().DATA_DIR) / "cache" / "models" / f"{MODEL_NAME}.onnx"
++
++
++def ensure_model() -> Path | None:
++    """The U^2-Netp onnx file, downloaded once (4.6 MB, checksummed) into <DATA_DIR>/cache/models;
++    None when it isn't there and can't be fetched (OFFLINE, no network)."""
++    path = _model_path()
++    if path.exists():
++        return path
++    if get_settings().OFFLINE:
++        return None
++    import httpx
++
++    try:
++        resp = httpx.get(MODEL_URL, timeout=60, follow_redirects=True)
++        resp.raise_for_status()
++    except httpx.HTTPError as exc:
++        logger.info("photo_cut: model download failed: %s", exc)
++        return None
++    if hashlib.md5(resp.content).hexdigest() != MODEL_MD5:
++        logger.info("photo_cut: model download has the wrong checksum; not used")
++        return None
++    path.parent.mkdir(parents=True, exist_ok=True)
++    tmp = path.with_name(f".{path.name}.tmp")
++    tmp.write_bytes(resp.content)
++    tmp.replace(path)
++    return path
++
++
++def _get_session():
++    global _session, _session_failed
++    with _session_lock:
++        if _session is not None or _session_failed:
++            return _session
++        try:
++            import onnxruntime as ort
++
++            path = ensure_model()
++            if path is None:
++                return None
++            opts = ort.SessionOptions()
++            opts.intra_op_num_threads = 2
++            opts.log_severity_level = 3
++            _session = ort.InferenceSession(
++                str(path), sess_options=opts, providers=["CPUExecutionProvider"]
++            )
++        except Exception as exc:  # noqa: BLE001 -- no onnxruntime / a broken model: no saliency
++            logger.info("photo_cut: no saliency model: %s", exc)
++            _session_failed = True
++        return _session
++
++
++def saliency(rgb: np.ndarray) -> np.ndarray | None:
++    """U^2-Netp's salient-object map (0..1, photo size), None without the model. rembg's
++    preprocessing: 320x320 LANCZOS, / max, ImageNet mean/std, min-max normalised output."""
++    session = _get_session()
++    if session is None:
++        return None
++    small = np.asarray(Image.fromarray(rgb).resize((320, 320), Image.LANCZOS), np.float32)
++    small = small / max(float(small.max()), 1e-6)
++    x = ((small - _MEAN) / _STD).transpose(2, 0, 1)[None].astype(np.float32)
++    pred = session.run(None, {session.get_inputs()[0].name: x})[0][0, 0]
++    pred = (pred - pred.min()) / max(float(pred.max() - pred.min()), 1e-6)
++    up = Image.fromarray((pred * 255).astype(np.uint8)).resize(
++        (rgb.shape[1], rgb.shape[0]), Image.BILINEAR
++    )
++    return np.asarray(up, np.float32) / 255.0
++
++
++# ------------------------------------------------------------------------------------ keystone
++
++
++def _fit_line(t: np.ndarray, v: np.ndarray) -> tuple[float, float, float]:
++    """v = a t + b, least squares with one round of outlier trimming; (a, b, median |residual|)."""
++    a, b = np.polyfit(t, v, 1)
++    resid = np.abs(v - (a * t + b))
++    keep = resid <= max(2.5 * np.median(resid), 1.0)
++    if keep.sum() >= 4:
++        a, b = np.polyfit(t[keep], v[keep], 1)
++    return float(a), float(b), float(np.median(np.abs(v - (a * t + b))))
++
++
++def _edges(fg: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
++    """For each row (axis=1) or column (axis=0) of the middle 80 % that the mask crosses: (index,
++    first, last) mask pixel."""
++    m = fg if axis == 1 else fg.T
++    idx = np.nonzero(m.any(axis=1))[0]
++    if len(idx) < 10:
++        return idx[:0], idx[:0], idx[:0]
++    lo, hi = idx[0], idx[-1]
++    span = hi - lo
++    idx = idx[(idx >= lo + 0.1 * span) & (idx <= hi - 0.1 * span)]
++    first = np.argmax(m[idx], axis=1)
++    last = m.shape[1] - 1 - np.argmax(m[idx, ::-1], axis=1)
++    return idx.astype(float), first.astype(float), last.astype(float)
++
++
++def keystone_quad(fg: np.ndarray) -> list | None:
++    """The product's four corners (tl, tr, br, bl; x, y px) when it's a box face seen slightly off
++    axis: the mask fills the quadrilateral fitted to its four edges (IoU >= KEY_FILL) and a corner
++    sits KEY_MIN..KEY_MAX of the size off the bounding box. None otherwise (already square-on, not
++    a box, or a real 3/4 view)."""
++    ys, xl, xr = _edges(fg, 1)
++    xs, yt, yb = _edges(fg, 0)
++    if len(ys) < 10 or len(xs) < 10:
++        return None
++    left, right = _fit_line(ys, xl), _fit_line(ys, xr + 1)
++    top, bottom = _fit_line(xs, yt), _fit_line(xs, yb + 1)
++    h, w = fg.shape
++    # four straight edges (a leaky or curved outline isn't a box face)
++    if max(left[2], right[2]) > KEY_STRAIGHT * w or max(top[2], bottom[2]) > KEY_STRAIGHT * h:
++        return None
++
++    def meet(vert, horiz):  # x = a y + b  and  y = c x + d
++        a, b, _ = vert
++        c, d, _ = horiz
++        y = (c * b + d) / max(1 - c * a, 1e-9)
++        return [a * y + b, y]
++
++    quad = [meet(left, top), meet(right, top), meet(right, bottom), meet(left, bottom)]
++    poly = Image.new("1", (w, h), 0)
++    ImageDraw.Draw(poly).polygon([tuple(p) for p in quad], fill=1)
++    q = np.asarray(poly, bool)
++    iou = (q & fg).sum() / max((q | fg).sum(), 1)
++    if iou < KEY_FILL:
++        return None
++    ys_, xs_ = np.nonzero(fg)
++    x0, x1, y0, y1 = xs_.min(), xs_.max() + 1, ys_.min(), ys_.max() + 1
++    corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
++    size = np.array([x1 - x0, y1 - y0], float)
++    off = max(float(np.max(np.abs(np.array(p) - c) / size)) for p, c in zip(quad, corners))
++    if not KEY_MIN <= off <= KEY_MAX:
++        return None
++    return [[float(x), float(y)] for x, y in quad]
++
++
++def _perspective_coeffs(src: list, dst: list) -> list[float]:
++    """PIL PERSPECTIVE coefficients mapping output points `dst` to input points `src`."""
++    rows, rhs = [], []
++    for (x, y), (u, v) in zip(dst, src):
++        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
++        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
++        rhs += [u, v]
++    return np.linalg.solve(np.array(rows, float), np.array(rhs, float)).tolist()
++
++
++def warp_quad(img: Image.Image, quad: list) -> Image.Image:
++    """The quad (tl, tr, br, bl) warped to an upright rectangle as big as its mean sides."""
++    q = np.array(quad, float)
++    w = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
++    h = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
++    w, h = max(2, round(w)), max(2, round(h))
++    dst = [[0, 0], [w, 0], [w, h], [0, h]]
++    coeffs = _perspective_coeffs(q.tolist(), dst)
++    out = img.transform((w, h), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
++    a = np.asarray(out.getchannel("A")).copy()  # inside the quad is the product: solid
++    a[:] = np.maximum(a, 255 * (ndimage.binary_erosion(a > 127, iterations=2)))
++    out.putalpha(Image.fromarray(a))
++    return out
++
++
++# -------------------------------------------------------------------------------------- colours
++
++
++def _hex(c) -> str:
++    return "#{:02X}{:02X}{:02X}".format(*(round(float(v)) for v in c))
++
++
++def hex_rgb(h: str) -> np.ndarray:
++    h = h.lstrip("#")
++    return np.array([int(h[i : i + 2], 16) for i in (0, 2, 4)], float)
++
++
++def _kmeans(x: np.ndarray, k: int, iters: int = 12) -> tuple[np.ndarray, np.ndarray]:
++    """Deterministic k-means (centres seeded at luminance quantiles)."""
++    order = np.argsort(x @ np.array([0.299, 0.587, 0.114]))
++    centres = x[order[((np.arange(k) + 0.5) / k * (len(x) - 1)).astype(int)]].astype(float)
++    labels = np.zeros(len(x), int)
++    for _ in range(iters):
++        labels = ((x[:, None, :] - centres[None]) ** 2).sum(axis=2).argmin(axis=1)
++        for j in range(k):
++            members = x[labels == j]
++            if len(members):
++                centres[j] = members.mean(axis=0)
++    return centres, labels
++
++
++BAND = 0.08  # the outline band the body colour is read from (share of the product's size)
++SAME = 75.0  # sRGB distance: a neighbouring slice of the same material (a steel gradient)
++TRIM_GAP = 60.0  # the trim differs from the body by at least this (sRGB distance)
++
++
++def colors(rgb: np.ndarray, fg: np.ndarray, k: int = 4) -> dict:
++    """{body, trim, body_share, trim_share}: the product's dominant colours (sRGB hex). The
++    product's pixels in k colour clusters; the body is the cluster with the most pixels within
++    SAME of it (the light and dark slices of brushed steel are one material), overall plus in a
++    band just inside the outline (the shell wraps the product; an oven window or a microwave door
++    sits inside it), read as the median of those pixels; the trim is the biggest cluster that isn't
++    a slice of the body's material (a steel highlight isn't trim) and differs from it by >= TRIM_GAP
++    (else a darker body)."""
++    inner = ndimage.binary_erosion(fg, iterations=max(1, min(fg.shape) // 100))
++    region = inner if inner.sum() >= 50 else fg
++    if not region.any():
++        return {"body": "#B0B0B0", "trim": "#505050", "body_share": 0.0, "trim_share": 0.0}
++    depth = max(2, int(BAND * min(fg.shape)))
++    band = region & ~ndimage.binary_erosion(region, iterations=depth)
++    step = max(1, int(np.sqrt(region.sum() / 20000)))
++    sub = np.zeros_like(region)
++    sub[::step, ::step] = True
++    px = rgb[region & sub].reshape(-1, 3).astype(float)
++    in_band = band[region & sub]
++    if not in_band.any():
++        in_band = np.ones(len(px), bool)
++    k = max(1, min(k, len(px)))
++    centres, labels = _kmeans(px, k)
++    dist = np.linalg.norm(px[:, None, :] - centres[None], axis=2) < SAME  # N x k; slices count
++    score = dist.mean(axis=0) + (dist & in_band[:, None]).sum(axis=0) / in_band.sum()
++    b = int(np.argmax(score))
++    near = dist[:, b]
++    body = np.median(px[near], axis=0)
++    shares = np.bincount(labels, minlength=k) / len(px)
++    gap = np.linalg.norm(centres[:, None] - centres[None], axis=2) < SAME
++    slices = gap[b] | (gap & gap[b][:, None]).any(axis=0)  # the body's material, two hops
++    trim, trim_share = body * 0.45, 0.0
++    for i in np.argsort(shares)[::-1]:
++        c = np.median(px[labels == i], axis=0) if shares[i] else body
++        if not slices[i] and shares[i] >= 0.04 and np.linalg.norm(c - body) >= TRIM_GAP:
++            trim, trim_share = c, float(shares[i])
++            break
++    return {
++        "body": _hex(body),
++        "trim": _hex(trim),
++        "body_share": round(float(near.mean()), 3),
++        "trim_share": round(trim_share, 3),
++    }
++
++
++def _chroma(c: np.ndarray) -> float:
++    return float((c.max() - c.min()) / 255.0)
++
++
++def finish_for(texts: list[str | None], body_hex: str) -> str:
++    """ "metal" | "plastic" | "painted": the listing's words first -- "matte"/"painted" anywhere,
++    then metal words (a "Plastic Tub" dishwasher in "Stainless Steel" is steel outside), then
++    plastic ones -- else a light low-chroma body reads as metal and anything else as painted."""
++    for cue, words in _FINISH_WORDS:  # "matte" anywhere wins, then metal words, then plastic
++        for text in texts:
++            if re.search(rf"\b(?:{words})\b", (text or "").lower()):
++                return cue
++    c = hex_rgb(body_hex)
++    return "metal" if _chroma(c) < 0.06 and 120 <= c.mean() <= 215 else "painted"
+diff --git a/server/warm.py b/server/warm.py
+index 59558d2..be5be77 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -8,6 +8,7 @@ scripted demo needs is cached locally; only the live search is lost").
+                                  [--no-focus] [--max-searches N]
+     uv run python -m server.warm --scad [--sites kitchen] [--scad-match window] [--scad-jobs 3]
+         [--scad-parts id,id] [--no-demo-parts] [--retry-failed] [--estimate]
++    uv run python -m server.warm --retexture [--parts id,id] [--match fridge] [--modes auto,hf,llm_scad]
+ 
+ For each `{"query": ..., "measurement": {...}}` entry: runs the same `find_parts` +
+ `resolve_asset` path `jobs.py` runs for a live search (sequential -- `assets.py` rate-limits the
+@@ -49,6 +50,15 @@ another process is writing. Prints the plan with an estimate first (`--estimate`
+ one row per part, and the totals; the run's rows land in <DATA_DIR>/scad_warm.json. The model
+ each part shows is unchanged.
+ 
++`--retexture` (texture) re-textures the models already on disk (every part's auto / hf / llm_scad
++variants, or `--parts` / `--match`) with today's texturing: the product cut out of its photo
++(image.cut.png), the photo on the front footprint only, the sides and top in the product's sampled
++colour with a material cue, and a CAD model built backwards turned around. The geometry is reused
++(scad.glb, the raw Hunyuan mesh cached by photo hash, the template from the cached plan, the box);
++it runs OFFLINE, so it makes no LLM, Hunyuan or search call: $0. The U^2-Netp cut-out model (4.6
++MB, free) is fetched first if it isn't in <DATA_DIR>/cache/models. Prints one row per variant and
++the totals; the rows land in <DATA_DIR>/retexture.json.
++
+ Idempotent: `find_parts` (whole-result cache), `resolve_asset` (skips re-resolving a part whose
+ model.glb + "ready" part.json already exist) and `voice.speak` (tts cache) all check their own
+ disk cache first, so re-running this after a successful warm costs nothing.
+@@ -446,6 +456,68 @@ async def warm_scad(
+     return {**counts, "seconds": round(took, 1), "usd": round(usd, 4), "made": made}
+ 
+ 
++RETEXTURE_MODES = ("auto", "hf", "llm_scad")
++
++
++async def warm_retexture(
++    ids: list[str] | None = None, match: str | None = None, modes=RETEXTURE_MODES
++) -> dict:
++    """texture: `assets.retexture` for every variant of every part on disk (or `ids`; `match`
++    keeps those whose id or name holds it). {outcome: count, seconds, turned, parts}; one row per
++    variant, the rows in <DATA_DIR>/retexture.json."""
++    parts = [p for p in (jobs.load_part(i) for i in ids) if p] if ids else cached_parts()
++    if match:
++        parts = [p for p in parts if match.lower() in f"{p.id} {p.name}".lower()]
++    print(
++        f"retexture: {len(parts)} parts, modes {', '.join(modes)} (offline: no LLM/Hunyuan calls)"
++    )
++    counts: dict = {}
++    rows: dict = {}
++    turned: list[str] = []
++    t_all = time.monotonic()
++    for part in parts:
++        for mode in modes:
++            res = await assets.retexture(part, mode)
++            if res["outcome"] == "none":
++                continue
++            counts[res["outcome"]] = counts.get(res["outcome"], 0) + 1
++            tex = res.get("texture") or {}
++            if tex.get("turned"):
++                turned.append(f"{part.id} ({mode})")
++            rows.setdefault(part.id, {})[mode] = res
++            print(
++                f"  {part.id[:52]:<52} {mode:<8} {res['tier'] or '-':<7} {res['outcome']:<5}"
++                f" cut={tex.get('cut', '-'):<6} key={'y' if tex.get('keystone') else '-'}"
++                f" body={tex.get('body', '-')} {tex.get('finish', '-'):<7}"
++                f" photo_tris={tex.get('front_tris', '-')!s:<5}"
++                f"{' TURNED' if tex.get('turned') else ''}"
++                f" {res.get('seconds', 0):5.2f} s"
++                + (f"  ({res['reason']})" if res["reason"] else ""),
++                flush=True,
++            )
++    took = time.monotonic() - t_all
++    log = Path(get_settings().DATA_DIR) / "retexture.json"
++    cache.write_json_atomic(log, json.dumps(rows, indent=2, default=str))
++    print(
++        f"retexture: {counts} in {took:.1f} s ({took / max(1, sum(counts.values())):.2f} s a model),"
++        f" {len(turned)} CAD models turned around, $0 (no paid calls)"
++    )
++    return {**counts, "seconds": round(took, 1), "turned": turned, "parts": len(parts)}
++
++
++def _retexture_main(ids: list[str], match: str | None, modes: list[str]) -> None:
++    """Fetch the cut-out model while online, then re-texture OFFLINE (a cache miss can't call)."""
++    import os
++
++    from server import photo_cut
++
++    if photo_cut.ensure_model() is None:
++        print("retexture: no U^2-Netp model (offline?): cluttered photos keep the old crop")
++    os.environ["OFFLINE"] = "true"
++    get_settings.cache_clear()
++    asyncio.run(warm_retexture(ids or None, match, tuple(modes)))
++
++
+ async def _run(
+     queries: list[dict], retry_proxies: bool = False, grok_moulded: bool = False
+ ) -> None:
+@@ -525,9 +597,24 @@ def main() -> None:
+     parser.add_argument(
+         "--estimate", action="store_true", help="with --scad: print the plan and estimate only"
+     )
++    parser.add_argument(
++        "--retexture",
++        action="store_true",
++        help="only re-texture the models on disk (cut-out photo, front-only, side colours); $0",
++    )
++    parser.add_argument("--parts", help="with --retexture: comma-separated part ids")
++    parser.add_argument("--match", help="with --retexture: only parts whose id/name holds this")
++    parser.add_argument(
++        "--modes", default=",".join(RETEXTURE_MODES), help="with --retexture: variants to redo"
++    )
+     args = parser.parse_args()
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry SerpApi api_key
++    if args.retexture:
++        ids = [x.strip() for x in (args.parts or "").split(",") if x.strip()]
++        modes = [assets.normalize_mode(m) for m in args.modes.split(",") if m.strip()]
++        _retexture_main(ids, args.match, list(dict.fromkeys(modes)))
++        return
+     if args.labels:
+         asyncio.run(warm_labels(args.labels, max(1, args.every)))
+         return
+diff --git a/tests/test_cad.py b/tests/test_cad.py
+index 6591c6b..5b7a942 100644
+--- a/tests/test_cad.py
++++ b/tests/test_cad.py
+@@ -233,7 +233,7 @@ async def test_the_cad_model_can_be_served_without_the_photo(monkeypatch, router
+     monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
+     projected = []
+ 
+-    def fake_project(geometry, photo, face, rotate=0):
++    def fake_project(geometry, photo, face, rotate=0, **kw):  # texture: finish=
+         projected.append(face)
+         return geometry
+ 
+@@ -384,6 +384,7 @@ def test_budget_by_model(monkeypatch):
+ async def test_three_answers_at_once_and_the_first_that_builds_wins(monkeypatch, photo, tmp_path):
+     monkeypatch.setenv("ASSET_SCAD_SAMPLES", "3")
+     get_settings.cache_clear()
++    monkeypatch.setattr(meshgen, "wants_relief", lambda part: False)  # texture: no relief pass
+     calls = _scad_llm(monkeypatch, ["```openscad\nA\n```", "```openscad\nB\n```", "```\nC\n```"])
+     monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/openscad")
+     dims = (614.68, 368.3, 515.62)
+diff --git a/uv.lock b/uv.lock
+index 62442a6..42bb9a3 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -116,6 +116,7 @@ dependencies = [
+     { name = "httpx" },
+     { name = "manifold3d" },
+     { name = "numpy" },
++    { name = "onnxruntime" },
+     { name = "openai" },
+     { name = "pillow" },
+     { name = "pydantic" },
+@@ -154,6 +155,7 @@ requires-dist = [
+     { name = "httpx", specifier = ">=0.28.1" },
+     { name = "manifold3d", specifier = ">=3.5.4" },
+     { name = "numpy", specifier = ">=2.5.3" },
++    { name = "onnxruntime", specifier = ">=1.20" },
+     { name = "openai", specifier = ">=3.19.2" },
+     { name = "opencv-python-headless", marker = "extra == 'pipeline'", specifier = ">=4.7.0" },
+     { name = "pillow", specifier = ">=12.3.0" },
+@@ -308,6 +310,14 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/7a/6d/db8b86e168fef0cf904737e275bccb683558088ef971e92d3b41ce980699/filelock-4.0.3-py3-none-any.whl", hash = "sha256:30cd166e2aee2c7534ce2c33c6367c4cd051b8368e20e2c4eb0c34f699bacfab", size = 108444, upload-time = "2026-09-23T23:40:20.819Z" },
+ ]
+ 
++[[package]]
++name = "flatbuffers"
++version = "25.12.19"
++source = { registry = "https://pypi.org/simple" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
++]
++
+ [[package]]
+ name = "frozenlist"
+ version = "1.8.0"
+@@ -858,6 +868,33 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/fb/0b/b12a2df5d1b774bd9007a6fdff9381145b6223d37f11afc9c37ab0efd9a1/numpy-2.5.3-cp315-cp315t-win_arm64.whl", hash = "sha256:befa1ae5bd6030b3f512b43ff3fa5290bbed6b84411a44244b14adf835f5b89d", size = 10850807, upload-time = "2026-09-06T16:27:43.868Z" },
+ ]
+ 
++[[package]]
++name = "onnxruntime"
++version = "1.30.0"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "flatbuffers" },
++    { name = "numpy" },
++    { name = "packaging" },
++    { name = "protobuf" },
++]
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/f0/75/508454c5d01f31641dabc597fe559594c931a520a2673031179319d0afd8/onnxruntime-1.30.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:05e4fc41711d1f4abd19a9124b5be7a65a506cb2670a7f14b16162ef13c58134", size = 21544990, upload-time = "2026-09-10T16:31:37.685Z" },
++    { url = "https://files.pythonhosted.org/packages/89/06/e603c71f43f4fe3fd156a053af79cbed6e27a2c649f0988a67d97fedd39f/onnxruntime-1.30.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:5327cf6aa15a02bad805fac8bd6882a62571e8b72f6f2938a8f37e6bd1966ce9", size = 21344996, upload-time = "2026-09-10T16:31:40.915Z" },
++    { url = "https://files.pythonhosted.org/packages/f1/a1/ede48ab5dc54907a2999362777f541e132639fb06628ded1932058aa8a36/onnxruntime-1.30.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:86f940afc801ea9681a4da8af84fbe95e1d9ea7d80903952cc1bfad54faad38f", size = 23585560, upload-time = "2026-09-10T16:31:44.941Z" },
++    { url = "https://files.pythonhosted.org/packages/3c/dd/c57c529dbc6dd55eca24b12cfbeab1b6a690de72083824eca689085f55b0/onnxruntime-1.30.0-cp313-cp313-win_amd64.whl", hash = "sha256:4b63041bd623a9a9ac5e353948436c6fa7f43edd12d6b4a4ebc340bca959ba93", size = 14311378, upload-time = "2026-09-10T16:31:48.034Z" },
++    { url = "https://files.pythonhosted.org/packages/11/2f/ef00b45b911e7f2115273a24ed1b43e73c8c6c9ec17f9bfa13f8492581f8/onnxruntime-1.30.0-cp313-cp313-win_arm64.whl", hash = "sha256:c389b6887fc95e0fcb80e89b156bc2cb18e662c29df55e9326fe64140e7d7b4f", size = 14175134, upload-time = "2026-09-10T16:31:50.799Z" },
++    { url = "https://files.pythonhosted.org/packages/92/0a/284fd6fe701c9a8aff39dbc119c37582ca40e9cff1ea05425a7cc8606a02/onnxruntime-1.30.0-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:e5224ba2b00284cb1c48b3edcd303c109245d66df9ec1b861858fd6de672a38e", size = 21349453, upload-time = "2026-09-10T16:31:53.898Z" },
++    { url = "https://files.pythonhosted.org/packages/d6/72/4f4466f8fa1ec267a9ef5e2f3bd175c203d3da0facbdf4049dc93abbe91c/onnxruntime-1.30.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:3f9e002417f1e3bbb31ed43dafa4f22ca1b2b68832244fdee192fcaa1ae19bca", size = 23579837, upload-time = "2026-09-10T16:31:56.82Z" },
++    { url = "https://files.pythonhosted.org/packages/6a/03/05c9a9234688757d2876ddecf80bba908561ee11debf125bc1a427ae6f48/onnxruntime-1.30.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:8b6169c16a48429890d2f4a0c774ebf54dfe9066a998514aad0518a16d398547", size = 21545313, upload-time = "2026-09-10T16:31:59.654Z" },
++    { url = "https://files.pythonhosted.org/packages/c6/bc/1069e58b24779ba9d2fd479db5ecb3a15a6f49b585107c898819c0789558/onnxruntime-1.30.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:d2184fddb6798136e7c478244391ca82443f5c757f59f15bb9e5ad2da5e03175", size = 21346830, upload-time = "2026-09-10T16:32:02.275Z" },
++    { url = "https://files.pythonhosted.org/packages/f1/38/8138eed225c5bc6ddfc05879ecac7dacc63c34b9b6f99be72839c1f6dc49/onnxruntime-1.30.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:8b611d24db2954545ce6bd9acd4670183cb368e4642450de7a9ab6474eb374ec", size = 23586333, upload-time = "2026-09-10T16:32:04.996Z" },
++    { url = "https://files.pythonhosted.org/packages/4d/0a/748b86000fbf9518b5dfc5bdc1b924eeaca976203740fd9d30649e568ee6/onnxruntime-1.30.0-cp314-cp314-win_amd64.whl", hash = "sha256:3bdd1752a8502ac1a7ccc6e878d16db6943df574d54ed7f01058a6806ae05be4", size = 14675319, upload-time = "2026-09-10T16:32:07.5Z" },
++    { url = "https://files.pythonhosted.org/packages/2f/db/db8e4c0cf6f70f1311060560630fd21763648e01dfbba5195a2592c052ef/onnxruntime-1.30.0-cp314-cp314-win_arm64.whl", hash = "sha256:83d543843cbd352cfa9996a6c7b92f8a480f114a18f95ff2a1acaf6921e85b6d", size = 14569360, upload-time = "2026-09-10T16:32:09.896Z" },
++    { url = "https://files.pythonhosted.org/packages/24/0a/ec0a9d656e39b43887c378a5388b20c3b1e1ee43bded84580b0936466694/onnxruntime-1.30.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:265de607ba6f9814264e1d5d413fa7069d70f48e3049b5e460b3b04bdfcef294", size = 21348433, upload-time = "2026-09-10T16:32:12.772Z" },
++    { url = "https://files.pythonhosted.org/packages/91/f0/40f74b7c00077e1e25627067ed98a70df1fef5c0e21b82849190d312554e/onnxruntime-1.30.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:67ad7f03433b6462c627d0f555dece80e6a26bc71e8542ced35cebd32142d1b7", size = 23579340, upload-time = "2026-09-10T16:32:15.532Z" },
++]
++
+ [[package]]
+ name = "openai"
+ version = "3.19.2"
+@@ -1068,6 +1105,21 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/f5/cd/785c64ed382f3f04201870267b02783f63b4678c2acfddc177a3ebcc2727/propcache-0.5.4-py3-none-any.whl", hash = "sha256:62c60aec739ed00124573cce1178138fd690c7676352d67a37328c1cf51d7468", size = 16338, upload-time = "2026-09-16T00:17:13.106Z" },
+ ]
+ 
++[[package]]
++name = "protobuf"
++version = "7.36.2"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/d9/89/5b8517baa72f84a67b8a307ba953c91057af618bf40bf676f3c03551f8f0/protobuf-7.36.2.tar.gz", hash = "sha256:497d0463ff3316681da6c0b9e8d06cb465d61abce00b613ab42226175644d1bb", size = 512737, upload-time = "2026-09-17T20:07:59.326Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/32/72/98342feb672507c8f3a69e34b4fa8961f608edba5c1a48a6f47156d92cb5/protobuf-7.36.2-cp310-abi3-macosx_10_9_universal2.whl", hash = "sha256:cbc70b17ee27e28894c7fee8bb04be1abead49e936bc70eb60052531eee2079e", size = 456039, upload-time = "2026-09-17T20:07:51.542Z" },
++    { url = "https://files.pythonhosted.org/packages/b6/ea/91fdf7c2b8bbd49cde056f00a9df6773532987e1c00fe2830b895af95c7e/protobuf-7.36.2-cp310-abi3-manylinux2014_aarch64.whl", hash = "sha256:e11e1f0180583a2af89db6a2ecd9e8dc40aa6d2988ca175bfd0e6d12ea72d74e", size = 344219, upload-time = "2026-09-17T20:07:52.914Z" },
++    { url = "https://files.pythonhosted.org/packages/17/ab/5fd5f8ece73fad885c5a09aa849b32d70472f954ba3a92d3bb5974ea953b/protobuf-7.36.2-cp310-abi3-manylinux2014_s390x.whl", hash = "sha256:f4fee11ec330d238b34a05c9b675f693c20415d1c5bd7d5320cc2f8a798eb9cf", size = 357223, upload-time = "2026-09-17T20:07:53.985Z" },
++    { url = "https://files.pythonhosted.org/packages/db/f3/3996583dd2906297a637af12114deddf7658af6e683fedb83be061983fb5/protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl", hash = "sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2", size = 343223, upload-time = "2026-09-17T20:07:54.931Z" },
++    { url = "https://files.pythonhosted.org/packages/fc/1b/dcc64f358fcb51811b58ae40b3d28f820725f116d86487cc20bd4b130701/protobuf-7.36.2-cp310-abi3-win32.whl", hash = "sha256:912c1221170e16c08d1f086762f563dd61ff83c18b5fa6652952dfaded66f728", size = 442998, upload-time = "2026-09-17T20:07:55.826Z" },
++    { url = "https://files.pythonhosted.org/packages/8a/55/b77bda4e5e5f5971fb51b07663694690e9afdb9402136c16a522bd621cad/protobuf-7.36.2-cp310-abi3-win_amd64.whl", hash = "sha256:a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353", size = 456514, upload-time = "2026-09-17T20:07:57.188Z" },
++    { url = "https://files.pythonhosted.org/packages/e4/04/d52c7016b04b6c5108f26691f9d33ec82a9b65d041f1a9c771137693d618/protobuf-7.36.2-py3-none-any.whl", hash = "sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e", size = 179806, upload-time = "2026-09-17T20:07:58.211Z" },
++]
++
+ [[package]]
+ name = "pycolmap"
+ version = "4.2.0"
+-- 
+2.50.1 (Apple Git-155)
+

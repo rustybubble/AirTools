@@ -1,0 +1,23 @@
+{
+ "name": "kitchen",
+ "units": "meters",
+ "up": [
+  0,
+  1,
+  0
+ ],
+ "north": null,
+ "scale_method": "altitude",
+ "mesh": {
+  "file": "mesh.r1.glb",
+  "triangles": 199997,
+  "texture_px": 4096
+ },
+ "collision": {
+  "file": "collision.r1.glb",
+  "triangles": 4327
+ },
+ "cameras": "cameras.r1.json",
+ "quality": "full",
+ "revision": 1
+}

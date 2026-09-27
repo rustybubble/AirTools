@@ -1,0 +1,89 @@
+From 39fc4516f8ec582c5f33442a57ec26be8e0a9d08 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:19:57 -0400
+Subject: [PATCH 09/12] fix(replace job): counts in words ("Found three 30 inch
+ induction ranges"), "two fit"; a pick over the purchase limit says so in the
+ spoken summary too
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/replace_job.py     | 14 +++++++++++---
+ tests/test_replace_job.py |  5 +++++
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/server/replace_job.py b/server/replace_job.py
+index 0c705c5..f473ed8 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -219,6 +219,7 @@ class State:
+     label: str
+     cavity: Cavity | None = None
+     scale_note: str | None = None
++    pick_note: str = ""  # " It's over your $1,200; nothing under it fits."
+     job: Any = None  # the search Job used
+     search_note: str = ""
+     index: int = -1
+@@ -290,6 +291,11 @@ def _gap_words(cav: Cavity) -> str:
+     return f"{w * 100:.0f} × {h * 100:.0f} × {d * 100:.0f} cm"
+ 
+ 
++def _count(n: int) -> str:
++    """ "three" (so "Found three 30 inch ranges", not "3 30 inch")."""
++    return ("no", "one", "two", "three", "four", "five")[n] if 0 <= n <= 5 else str(n)
++
++
+ def _price(part: Part) -> float | None:
+     return runjob._part_total(part)
+ 
+@@ -408,12 +414,13 @@ async def _search(run: runjob.Run, step: dict[str, Any], session: Any, st: State
+     session.gap_index = None
+     fits = [replace.fits_word(replace.fit(p.dims_mm, cav)) for p in job.candidates]
+     n = len(fits)
++    said = {"fits": ("fits", "fit"), "tight": ("tight", "tight"), "too_big": ("too big", "too big")}
+     counts = ", ".join(
+-        f"{fits.count(w)} {w.replace('_', ' ')}"
++        f"{_count(fits.count(w))} {said[w][fits.count(w) > 1]}"
+         for w in ("fits", "tight", "too_big")
+         if fits.count(w)
+     )
+-    spoken = f"Found {n} {what} for the {_gap_words(cav)} gap: {counts}.{st.search_note}"
++    spoken = f"Found {_count(n)} {what} for the {_gap_words(cav)} gap: {counts}.{st.search_note}"
+     return spoken, [{"name": "search_started", "args": {"job_id": job.id}}], None
+ 
+ 
+@@ -452,6 +459,7 @@ async def _pick(session: Any, st: State):
+     session.selected_part_id = part.id
+     price = _price(part)
+     cost = f", ${price:,.0f}" if price is not None else ""
++    st.pick_note = note
+     spoken = f"Picked the {replace.short_name(part)}: {fit_phrase(st.fit)}{cost}.{note}"
+     return spoken, [], None
+ 
+@@ -533,7 +541,7 @@ def _done_args(run: runjob.Run, st: State, by: dict[str, dict[str, Any]]) -> dic
+         short = replace.short_name(st.part)
+         phrase = fit_phrase(st.fit)
+         lines = [st.scale_note] if st.scale_note else []
+-        lines.append(f"Put a {short} in the {st.label} gap, {phrase}.")
++        lines.append(f"Put a {short} in the {st.label} gap, {phrase}.{st.pick_note}")
+         if ready:
+             lines.append(
+                 f"Say next one to see the other {'two' if ready == 2 else 'one'}."
+diff --git a/tests/test_replace_job.py b/tests/test_replace_job.py
+index f3543aa..5a1090b 100644
+--- a/tests/test_replace_job.py
++++ b/tests/test_replace_job.py
+@@ -451,6 +451,11 @@ async def test_over_the_limit_when_only_that_fits(monkeypatch, shop):
+         "Picked the Frigidaire GCRI3060AF: 2 mm to spare, $1,099. It's over your $500; nothing "
+         "under it fits."
+     )
++    done = runjob.body(run, 0)["actions"][-1]["args"]
++    assert "It's over your $500; nothing under it fits." in done["spoken"]  # said, not only shown
++    assert steps["search"]["spoken"] == (
++        "Found three ranges for the 76 × 117 × 65 cm gap: two fit, one too big."
++    )
+ 
+ 
+ @pytest.mark.asyncio
+-- 
+2.50.1 (Apple Git-155)
+

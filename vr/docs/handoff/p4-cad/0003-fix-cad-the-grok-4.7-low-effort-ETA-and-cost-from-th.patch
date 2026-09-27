@@ -1,0 +1,68 @@
+From 6bd3d4d2e99d6baa6ccc87d5b668c1d3011ad294 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 00:56:33 -0400
+Subject: [PATCH 3/3] fix(cad): the grok-4.7 low-effort ETA and cost from the
+ kitchen warm (median 45 s, $0.03 a part)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md       | 6 +++---
+ server/config.py  | 2 +-
+ server/meshgen.py | 4 ++--
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 945a164..c4fd239 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -94,9 +94,9 @@ The headset can choose how the models are made (Settings ▸ 3D models) and comp
+   (the run in progress; any process). At most 2 live runs at once (a search in `llm_scad` mode queues the rest).
+ - **Model and speed.** `LLM_ASSET_SCAD` (default `xai:grok-4.7`) and `ASSET_SCAD_EFFORT` (default `"low"`; `""` = the
+   model's own). Measured on the dishwasher, a window frame and a cabinet knob (every run compiled; bbox 0 % after
+-  the snap): grok-4.7 at low effort 34-127 s (median ~70 s), $0.016-0.056 a part, geometry close to grok-4.7 at its
+-  default effort (216-400 s, $0.10-0.20); grok-4.20 non-reasoning 9-19 s, $0.005-0.015, but flatter shapes (a window
+-  as a slab, a knob mounted backwards); grok-4.20 reasoning 118-180 s, $0.03-0.05. `ASSET_SCAD_FIXES` (compile-fix
++  the snap): grok-4.7 at low effort 15-157 s (median 45 s over 57 parts), ~$0.03 a part, geometry close to grok-4.7 at
++  its default effort (216-400 s, $0.10-0.20; medium 178-332 s); grok-4.20 non-reasoning 9-19 s, $0.005-0.015, but
++  flatter shapes (a window as a slab, a knob mounted backwards); grok-4.20 reasoning 118-180 s, $0.03-0.05. `ASSET_SCAD_FIXES` (compile-fix
+   rounds; 2 for a non-reasoning model, else 1) and `ASSET_SCAD_SAMPLES` (parallel first answers, default 1) tune the loop.
+ - **`ASSET_SCAD_PHOTO`** (default `true`): the product photo on the CAD model's front like every other tier. `false`
+   serves Grok's geometry and paint only (the CAD model as written: a cleaner generator comparison; the photo over CAD
+diff --git a/server/config.py b/server/config.py
+index c166f33..319093d 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -56,7 +56,7 @@ class Settings(BaseSettings):
+     ASSET_SCAD_SAMPLES: int | None = None
+     ASSET_SCAD_FIXES: int | None = None
+     # cad: reasoning effort for the OpenSCAD writer (LLM_ASSET_SCAD, default xai:grok-4.7):
+-    # "low" (~70 s, ~$0.03 a part, measured) | "medium" | "high"; "" = the model's own default
++    # "low" (~45-55 s, ~$0.03 a part, measured) | "medium" | "high"; "" = the model's own default
+     # (grok-4.7: ~280 s, ~$0.14). Dropped for models that take none (grok-4.20).
+     ASSET_SCAD_EFFORT: str | None = "low"
+     # cad: the product photo on the CAD model's front, like the other tiers (true), or Grok's own
+diff --git a/server/meshgen.py b/server/meshgen.py
+index 5b02cc2..dd18ccc 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -15,7 +15,7 @@
+ - `project()`: the product photo on the triangles facing the face it shows (E5).
+ - `decal_box()`: the exact-size box with the photo on one face (E3), the instant/last-resort tier.
+ - `grok_scad()` / `grok_scad_run()`: E4's Grok OpenSCAD loop (role `asset_scad`, LLM_ASSET_SCAD at
+-  ASSET_SCAD_EFFORT; default grok-4.7 at low effort, ~70 s and ~$0.03 a part). cad: the asset-mode
++  ASSET_SCAD_EFFORT; default grok-4.7 at low effort, ~45-55 s and ~$0.03 a part). cad: the asset-mode
+   "llm_scad" tier runs it in the background (server/assets.py) and `server.warm --scad` ahead of
+   need; each run leaves its record next to the GLB (scad.json / scad.failed.json, and
+   scad.writing.json while it runs).
+@@ -719,7 +719,7 @@ SCAD_TYPICAL = {
+     "grok-4.7": (280.0, 0.14),  # 216-400 s, $0.10-0.20
+     "grok-4.7@high": (280.0, 0.14),
+     "grok-4.7@medium": (240.0, 0.11),  # 178-332 s, $0.08-0.17
+-    "grok-4.7@low": (70.0, 0.034),  # 34-127 s, $0.016-0.056 (7 runs): the default
++    "grok-4.7@low": (55.0, 0.032),  # 15-157 s, median 45, $0.03 (58 runs incl. a warm): the default
+     "grok-4.20-0309-reasoning": (140.0, 0.036),  # 118-180 s
+     "grok-4.20-0309-non-reasoning": (15.0, 0.008),  # 9-19 s, $0.005-0.015
+     "grok-4.3@low": (20.0, 0.007),  # 14-27 s
+-- 
+2.50.1 (Apple Git-155)
+

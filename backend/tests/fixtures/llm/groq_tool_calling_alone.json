@@ -1,0 +1,55 @@
+{
+  "id": "chatcmpl-3fb2bcdd-09fe-4342-ab5d-f5b7ae5d09cc",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "content": null,
+        "refusal": null,
+        "role": "assistant",
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "tool_calls": [
+          {
+            "id": "fc_a63a547e-5281-4e7c-8d4a-9b126e601ac5",
+            "function": {
+              "arguments": "{\"location\":\"rear fascia\"}",
+              "name": "get_gutter_measurement"
+            },
+            "type": "function"
+          }
+        ],
+        "reasoning": "The user asks: \"What's the last gutter measurement at the rear fascia?\" We have a tool to fetch last recorded gutter measurement in millimetres, given location string. We need to call function get_gutter_measurement with location \"rear fascia\". Then respond with the measurement.\n\nWe need to call the function."
+      }
+    }
+  ],
+  "created": 1790232835,
+  "model": "openai/gpt-oss-120b",
+  "object": "chat.completion",
+  "service_tier": "on_demand",
+  "system_fingerprint": "fp_93703442d9",
+  "usage": {
+    "completion_tokens": 95,
+    "prompt_tokens": 156,
+    "total_tokens": 251,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": null,
+      "reasoning_tokens": 64,
+      "rejected_prediction_tokens": null
+    },
+    "prompt_tokens_details": null,
+    "queue_time": 0.074056667,
+    "prompt_time": 0.005874457,
+    "completion_time": 0.19905512,
+    "total_time": 0.204929577
+  },
+  "usage_breakdown": null,
+  "x_groq": {
+    "id": "req_01m3932d01eh7r2b4t77mhpfw8",
+    "seed": 1842389644
+  }
+}

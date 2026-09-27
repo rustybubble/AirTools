@@ -1,0 +1,382 @@
+From a7e7a2bf887332fba51b680df20f40bab7f59e50 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 18:12:44 -0400
+Subject: [PATCH 3/3] feat: set the scale from the gap by voice; switch models
+ with cycle_model once one stands in the gap; tight fits
+
+- "the opening is 34 and a half inches tall" / "the gap is 24 inches wide" -> scale_gap {component_id,
+  axis, real_m}: the headset sets its scale from its own tape of the gap (the kitchen scan reads
+  ~1.47x small indoors). The rest of the same reply ("... and find a dishwasher that fits") uses the
+  corrected size. "34 and a half" is one amount, not two phrases.
+- "next / previous one", "option N" with a model already in the gap -> cycle_model {index, part_id}:
+  the app's placement editor swaps it where it stands (its adjusted pose, one undo step). The first
+  "put it in there" (or "option N" into an empty gap) stays place_part.
+- place_part fits: "tight" when at most 5 mm over on one axis (amber on the headset), and the spoken
+  line says so ("It's tight: 3 millimetres too wide.").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md           |  6 ++-
+ server/agent.py       | 58 ++++++++++++++++++++++++++--
+ server/replace.py     | 64 +++++++++++++++++++++++++++++--
+ tests/test_replace.py | 88 ++++++++++++++++++++++++++++++++++++++++---
+ 4 files changed, 200 insertions(+), 16 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 5ef7a47..8170317 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1871,9 +1871,11 @@ running coach there too.
+ | `remove_component` | `{component_id}` | Measure and replace ("remove / take out the dishwasher"): hide `part_<id>` in the visual and collision meshes and show `cavity_<id>` (see `parts.r<rev>.json`). One undoable edit. The reply says the gap's size from the file ("about 60 by 82 by 58 centimetres, estimated") |
+ | `restore_component` | `{component_id}` | "Put it back": the part back in, its cavity hidden, and any model standing in its gap removed |
+ | `measure_cavity` | `{component_id}` | "Measure it / the gap": tape the removed part's cavity with the real tape (height, depth, then width), one notebook entry each; the next command's context carries them in `cavity.measured` |
+-| `place_part` | `{part_id, model_url, name, component_id, fits, clearance_mm, cycle, pose?}` | "Put it in there" / "next one" / "previous one" / "show me option 2": load the GLB and stand it in `component_id`'s gap, front-bottom-centre on `cavity.insert.p`, facing out along `insert.axes` (or at `pose`, glTF frame). One model per gap: a new `place_part` for the same gap replaces the one there. `fits` = `fits`/`too_big` against the gap's three axes, `clearance_mm` = `{w, h, d}` (gap − part, negative = over), `cycle` = `{index, count}` into `candidate_ids` |
++| `place_part` | `{part_id, model_url, name, component_id, fits, clearance_mm, cycle, pose?}` | "Put it in there" (and "option 2" while the gap is empty): load the GLB and stand it in `component_id`'s gap, front-bottom-centre on `cavity.insert.p`, facing out along `insert.axes` (or at `pose`, glTF frame: position (-x, y, z), rotation (x, -y, -z, w) in Unity). One model per gap: a new `place_part` for the same gap replaces the one there. `fits` = `fits` / `tight` (at most 5 mm over on one axis) / `too_big` against the gap's three axes, `clearance_mm` = `{w, h, d}` (gap − part, negative = over), `cycle` = `{index, count}` into `candidate_ids` |
++| `cycle_model` | `{index, part_id, component_id, cycle}` | "Next one" / "previous one" / "option 2" once a model stands in the gap: the placement editor puts candidate `index` (into `candidate_ids`) where the current model stands (its adjusted pose), one undo step |
++| `scale_gap` | `{component_id, axis, real_m}` | "The opening is 34 and a half inches tall": set the scene's scale so the headset's tape of the gap on `axis` (`w`/`h`/`d`) reads `real_m`; the next context's `scale` and `cavity` carry it. Say the assumption on screen |
+ 
+-Measure and replace runs on the fast path (no LLM) when the scene state makes the phrase unambiguous: a removable component by that name in the site's parts file ("remove the dishwasher"); a gap open (`context.removed` non-empty, else the server's memory of its own `remove_component`) for "measure it", "find a dishwasher that fits" (`find_part` with `SearchRequest.cavity`) and "put it back"; and candidates (`candidate_ids`, else the last search's) for "put it in there" (the first candidate that fits, else the one that overruns least), "next / previous one" (from `selected_part_id`'s position) and "option N". Up to four such phrases joined by "and" / "then" / commas run in order in one reply ("take out the dishwasher and measure the gap"). A running install coach keeps "next" / "back", and a reimagine on screen keeps "remove ..." / "swap ...".
++Measure and replace runs on the fast path (no LLM) when the scene state makes the phrase unambiguous: a removable component by that name in the site's parts file ("remove the dishwasher"); a gap open (`context.removed` non-empty, else the server's memory of its own `remove_component`) for "measure it", "the opening is 34 and a half inches tall" (`scale_gap`; a later phrase in the same reply uses the corrected size), "find a dishwasher that fits" (`find_part` with `SearchRequest.cavity`) and "put it back"; and candidates (`candidate_ids`, else the last search's) for "put it in there" (the first candidate that fits, else the one that overruns least), "next / previous one" (from `selected_part_id`'s position) and "option N". Up to four such phrases joined by "and" / "then" / commas run in order in one reply ("take out the dishwasher and measure the gap"). A running install coach keeps "next" / "back", and a reimagine on screen keeps "remove ..." / "swap ...".
+ 
+ "Place them" after a plan (fast path, no LLM): a plan with points returns `place_array`
+ `{spacing_mm, plan_id}` (place ghosts at that plan's points) and records `count` of the selected
+diff --git a/server/agent.py b/server/agent.py
+index f8cbce6..42665df 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -590,6 +590,7 @@ _REPLACE_TOOLS = (
+     "remove_component",
+     "restore_component",
+     "measure_cavity",
++    "scale_gap",
+     "find_in_gap",
+     "place_in_gap",
+     "cycle_in_gap",
+@@ -647,6 +648,7 @@ _CANNED_REPLY = {
+     "remove_component": "Took it out.",
+     "restore_component": "It's back.",
+     "measure_cavity": "Taping the gap.",
++    "scale_gap": "Scale set.",
+     "find_in_gap": "Searching for one that fits the gap.",
+     "place_in_gap": "Putting it in.",
+     "cycle_in_gap": "Next one.",
+@@ -1197,6 +1199,12 @@ def _replace_step(session: Session, phrase: dict[str, Any]) -> tuple[str, dict[s
+         return None
+     if kind == "measure":
+         return "measure_cavity", {}
++    if kind == "scale":
++        return "scale_gap", {
++            "axis": phrase["axis"],
++            "real_m": phrase["metres"],
++            "said": phrase["said"],
++        }
+     if kind == "find":
+         return "find_in_gap", {"query": replace.singular(thing) if thing else None}
+     if not _gap_candidates(session):
+@@ -1229,25 +1237,50 @@ def _replace_route(
+ 
+ 
+ def _gap_cavity(session: Session, c: dict[str, Any], ctx: dict[str, Any]):
++    """The gap's size: the headset's `cavity` context, else the file x the scale. After a
++    scale_gap in this reply (session.cavity cleared, session.scale corrected): the file x the new
++    scale."""
++    if session.cavity is None:
++        return replace.cavity_for(c, session.scale, None)
+     ctx_cavity = ctx.get("cavity") if isinstance(ctx.get("cavity"), dict) else session.cavity
+     return replace.cavity_for(c, session.scale, ctx_cavity)
+ 
+ 
+-def _place_action(session: Session, c: dict[str, Any], cavity, index: int, count: int, part):
++def _place_action(
++    session: Session, c: dict[str, Any], cavity, index: int, count: int, part, swap: bool = False
++):
++    """place_part into the gap -- or, with a model already standing there (`swap`), the placement
++    editor's cycle_model {index} (it keeps the model's adjusted pose and its own undo)."""
+     f = replace.fit(part.dims_mm, cavity) if cavity is not None else part.fit
++    cycle = {"index": index, "count": count}
++    if swap:
++        args = {"index": index, "part_id": part.id, "component_id": c["id"], "cycle": cycle}
++        return f, {"name": "cycle_model", "args": args}
+     args = {
+         "part_id": part.id,
+         "model_url": f"/parts/{part.id}/model.glb",
+         "name": part.name,
+         "component_id": c["id"],
+-        "fits": f.status,
+-        "cycle": {"index": index, "count": count},
++        "fits": replace.fits_word(f) if cavity is not None else f.status,
++        "cycle": cycle,
+     }
+     if cavity is not None:
+         args["clearance_mm"] = replace.clearance_mm(part.dims_mm, cavity)
+     return f, {"name": "place_part", "args": args}
+ 
+ 
++def _model_in_gap(session: Session, ids: list[str], ctx: dict[str, Any]) -> bool:
++    """A candidate already stands in the gap: this server put one there, or the headset's placed
++    parts or selection is one of the candidates."""
++    placed = ctx.get("placed") or session.placed or []
++    placed_ids = {p.get("part_id") for p in placed if isinstance(p, dict)}
++    return (
++        session.gap_index is not None
++        or bool(placed_ids & set(ids))
++        or ctx.get("selected_part_id") in ids
++    )
++
++
+ def _short_name(part) -> str:
+     """What to call a candidate aloud: "Whirlpool WDP540HAMW", else the first words of its name."""
+     if part.manufacturer:
+@@ -1331,6 +1364,22 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+             None,
+         )
+ 
++    if name == "scale_gap":
++        # "the opening is 34 and a half inches tall": the headset sets its scale from its tape of
++        # the gap; the rest of this reply (and the next context) already uses the corrected gap.
++        axis, real = args.get("axis") or "h", float(args.get("real_m") or 0)
++        now = dict(zip("whd", cav.size_m())) if cav is not None else {}
++        if real > 0 and now.get(axis):
++            session.scale = (session.scale or 1.0) * real / now[axis]
++            session.cavity = None
++        word = {"w": "width", "h": "height", "d": "depth"}[axis]
++        said = args.get("said") or f"{real:.3f} metres"
++        return (
++            {"spoken": f"Setting the scale from the gap's {word}: {said}."},
++            {"name": "scale_gap", "args": {"component_id": c["id"], "axis": axis, "real_m": real}},
++            None,
++        )
++
+     if name == "find_in_gap":
+         query = (args.get("query") or replace.label(c)).strip()
+         job = jobs.start_search(
+@@ -1376,7 +1425,8 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+     if not 0 <= index < n or parts[index] is None:
+         return {"error": f"there's no option {index + 1}"}, None, None
+     part = parts[index]
+-    f, action = _place_action(session, c, cav, index, n, part)
++    swap = name == "cycle_in_gap" or (say_option and _model_in_gap(session, ids, ctx))
++    f, action = _place_action(session, c, cav, index, n, part, swap=swap)
+     session.gap_index = index
+     session.selected_part_id = part.id
+     lead = (
+diff --git a/server/replace.py b/server/replace.py
+index 7e1e71b..bc5391a 100644
+--- a/server/replace.py
++++ b/server/replace.py
+@@ -149,6 +149,16 @@ def fit(dims: Dims, cavity: Cavity) -> Fit:
+     )
+ 
+ 
++TIGHT_MM = 5.0  # up to this much over on one axis is "tight" (amber): the gap is an estimate
++
++
++def fits_word(f: Fit) -> str:
++    """place_part's `fits`: "fits", "tight" (within TIGHT_MM over) or "too_big"."""
++    if f.status == "fits":
++        return "fits"
++    return "tight" if f.spare_mm is not None and f.spare_mm >= -TIGHT_MM else "too_big"
++
++
+ def clearance_mm(dims: Dims, cavity: Cavity) -> dict[str, float]:
+     w, h, d = cavity.size_mm()
+     return {"w": round(w - dims.w), "h": round(h - dims.h), "d": round(d - dims.d)}
+@@ -187,6 +197,10 @@ def spoken_fit(f: Fit) -> str:
+             else f"It fits with {f.spare_mm:.0f} millimetres to spare."
+         )
+     word = {"w": "wide", "h": "tall", "d": "deep"}.get(f.axis or "", "big")
++    if fits_word(f) == "tight":
++        over = abs(f.spare_mm or 0)
++        amount = "under a millimetre" if over < 1 else f"{over:.0f} millimetres"
++        return f"It's tight: {amount} too {word}."
+     return f"It's too {word} by {abs(f.spare_mm or 0):.0f} millimetres."
+ 
+ 
+@@ -320,8 +334,48 @@ _FIND_RE = re.compile(
+     + _TAIL,
+     _I,
+ )
+-_SPLIT_RE = re.compile(
+-    r"\s*(?:,\s*(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+|\s+and\s+|\s+then\s+)\s*", _I
++_AMOUNT = (
++    r"(?P<n>\d+(?:\.\d+)?)(?P<half>\s*(?:and\s+a\s+half|½|1/2))?\s*"
++    r"(?P<u>inches|inch|in\b|\"|″|centimet(?:re|er)s?|cm|millimet(?:re|er)s?|mm)"
++)
++_SCALE_RE = re.compile(
++    _LEAD
++    + r"(?:(?:set\s+the\s+scale|scale\s+it)\W+)?"
++    + r"(?:(?:the\s+)?(?:gap|opening|hole|space|cavity|cutout)(?:'s)?\s+(?P<axis2>width|height|depth)\s+is\s+"
++    + _AMOUNT
++    + r"|(?:(?:the\s+)?(?:gap|opening|hole|space|cavity|cutout)\s+(?:is|should\s+be|was)"
++    + r"|it(?:'s|\s+is|\s+should\s+be))\s+"
++    + _AMOUNT.replace("?P<n>", "?P<n2>").replace("?P<half>", "?P<half2>").replace("?P<u>", "?P<u2>")
++    + r"\s+(?P<axis>wide|tall|high|deep))"
++    + _TAIL,
++    _I,
++)
++
++
++def _scale_of(m: re.Match) -> dict[str, Any] | None:
++    """ "the opening is 34 and a half inches tall" -> {axis: "h", metres: 0.8763, said: "34 and a half inches"}."""
++    g = m.groupdict()
++    axis_word = (g.get("axis") or g.get("axis2") or "").lower()
++    axis = "w" if axis_word.startswith("wid") else "d" if axis_word.startswith("dep") else "h"
++    n, half = g.get("n") or g.get("n2"), g.get("half") or g.get("half2")
++    unit = (g.get("u") or g.get("u2") or "").lower()
++    try:
++        value = float(n) + (0.5 if half else 0.0)
++    except (TypeError, ValueError):
++        return None
++    per = (
++        0.01 if unit.startswith("c") else 0.001 if unit == "mm" or unit.startswith("mi") else 0.0254
++    )
++    metres = value * per
++    if not 0.01 < metres < 5.0:
++        return None
++    word = {0.0254: "inches", 0.01: "centimetres", 0.001: "millimetres"}[per]
++    said = f"{n}{' and a half' if half else ''} {word}"
++    return {"kind": "scale", "axis": axis, "metres": round(metres, 4), "said": said}
++
++
++_SPLIT_RE = re.compile(  # "34 and a half inches" is one amount, not two phrases
++    r"\s*(?:,\s*(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+|\s+and\s+(?!a\s+half\b)|\s+then\s+)\s*", _I
+ )
+ _PRONOUNS = {
+     "it",
+@@ -369,11 +423,13 @@ def _thing_of(m: re.Match) -> str | None:
+ 
+ 
+ def match(text: str) -> dict[str, Any] | None:
+-    """One phrase: {kind, thing, index, fits} or None. kind: remove | put_back | measure | option |
+-    previous | next | place | find."""
++    """One phrase: {kind, thing, index, fits} or None. kind: remove | put_back | measure | scale |
++    option | previous | next | place | find."""
+     t = re.sub(r"\s+", " ", (text or "").strip())
+     if not t:
+         return None
++    if (m := _SCALE_RE.match(t)) and (scale := _scale_of(m)):
++        return scale
+     if m := _PUT_BACK_RE.match(t):
+         return {"kind": "put_back", "thing": _thing_of(m)}
+     if _MEASURE_RE.match(t):
+diff --git a/tests/test_replace.py b/tests/test_replace.py
+index f17ed05..6487612 100644
+--- a/tests/test_replace.py
++++ b/tests/test_replace.py
+@@ -252,27 +252,36 @@ async def test_the_whole_flow(monkeypatch, candidates):
+     assert a["cycle"] == {"index": 1, "count": 3}
+     assert "fits with 3 millimetres to spare" in r["reply"]
+ 
++    # A model stands in the gap now: switching is the placement editor's cycle_model {index}.
+     r = await _say(
+         "next one", removed=["dw1"], cavity=cavity, candidate_ids=ids, selected_part_id="ok"
+     )
+-    assert r["actions"][0]["args"]["part_id"] == "slim"
+-    assert r["actions"][0]["args"]["cycle"] == {"index": 2, "count": 3}
++    assert r["actions"] == [
++        {
++            "name": "cycle_model",
++            "args": {
++                "index": 2,
++                "part_id": "slim",
++                "component_id": "dw1",
++                "cycle": {"index": 2, "count": 3},
++            },
++        }
++    ]
+     assert r["reply"].startswith("Option 3 of 3")
+ 
+     r = await _say(
+         "next one", removed=["dw1"], cavity=cavity, candidate_ids=ids, selected_part_id="slim"
+     )
+-    a = r["actions"][0]["args"]
+-    assert (a["part_id"], a["fits"]) == ("tall", "too_big")
++    assert r["actions"][0]["args"]["part_id"] == "tall"
+     assert "too tall" in r["reply"] or "too deep" in r["reply"]
+ 
+     r = await _say(
+         "previous one", removed=["dw1"], cavity=cavity, candidate_ids=ids, selected_part_id="tall"
+     )
+-    assert r["actions"][0]["args"]["part_id"] == "slim"
++    assert r["actions"][0]["args"]["index"] == 2
+ 
+     r = await _say("show me option 2", removed=["dw1"], cavity=cavity, candidate_ids=ids)
+-    assert r["actions"][0]["args"]["part_id"] == "ok"
++    assert (r["actions"][0]["name"], r["actions"][0]["args"]["index"]) == ("cycle_model", 1)
+ 
+     r = await _say("put it back", removed=["dw1"], cavity=cavity, candidate_ids=ids)
+     assert r["actions"] == [{"name": "restore_component", "args": {"component_id": "dw1"}}]
+@@ -372,3 +381,70 @@ async def test_remove_find_and_put_it_in_in_one_breath(monkeypatch):
+     assert started["req"].query == "24-inch dishwasher"
+     assert started["req"].cavity.size_mm() == pytest.approx((600.0, 820.0, 580.0))
+     assert r["reply"].endswith("Say put it in when the options are up.")
++
++
++@pytest.mark.asyncio
++async def test_option_before_anything_is_in_the_gap_places_it(monkeypatch, candidates):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("show me option 3", removed=["dw1"], candidate_ids=["tall", "ok", "slim"])
++    (act,) = r["actions"]
++    assert (act["name"], act["args"]["part_id"], act["args"]["fits"]) == (
++        "place_part",
++        "slim",
++        "fits",
++    )
++
++
++def test_a_tight_fit_is_amber_not_red():
++    cav = Cavity(w_m=0.61, h_m=0.876, d_m=0.65)
++    f = replace.fit(Dims(w=606.3, h=876.3, d=622.3), cav)
++    assert (f.status, replace.fits_word(f)) == ("too_big", "tight")
++    assert replace.spoken_fit(f) == "It's tight: under a millimetre too tall."
++    f3 = replace.fit(Dims(w=613, h=870, d=600), cav)
++    assert (replace.fits_word(f3), replace.spoken_fit(f3)) == (
++        "tight",
++        "It's tight: 3 millimetres too wide.",
++    )
++    assert replace.fits_word(replace.fit(Dims(w=620, h=870, d=600), cav)) == "too_big"
++
++
++@pytest.mark.parametrize(
++    "text,axis,metres",
++    [
++        ("the opening is 34 and a half inches tall", "h", 0.8763),
++        ("The gap is 24 inches wide.", "w", 0.6096),
++        ("it's 610 mm wide", "w", 0.61),
++        ("the opening's height is 87.6 cm", "h", 0.876),
++    ],
++)
++def test_scale_phrases(text, axis, metres):
++    m = replace.match(text)
++    assert (m["kind"], m["axis"]) == ("scale", axis)
++    assert m["metres"] == pytest.approx(metres, abs=1e-4)
++
++
++@pytest.mark.asyncio
++async def test_scale_from_the_gap_then_search(monkeypatch):
++    """The kitchen reads ~1.47x small: "the opening is 34 and a half inches tall" sets the scale
++    (the headset applies it to its own tape), and the search in the same breath uses it."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    started = {}
++
++    def fake_start_search(req):
++        started["req"] = req
++        return Job(id="job3", status="running", query=req.query)
++
++    monkeypatch.setattr(jobs, "start_search", fake_start_search)
++    # the headset's context: the file's gap at its current scale (1.0 here)
++    small = {"component_id": "dw1", "label": "dishwasher", "w_m": 0.6, "h_m": 0.82, "d_m": 0.58}
++    r = await _say(
++        "the opening is 34 and a half inches tall and find a dishwasher that fits",
++        removed=["dw1"],
++        cavity=small,
++    )
++    assert [a["name"] for a in r["actions"]] == ["scale_gap", "search_started"]
++    assert r["actions"][0]["args"] == {"component_id": "dw1", "axis": "h", "real_m": 0.8763}
++    assert r["reply"].startswith("Setting the scale from the gap's height: 34 and a half inches.")
++    w, h, _ = started["req"].cavity.size_mm()
++    assert h == pytest.approx(876.3, abs=0.5)
++    assert w == pytest.approx(600 * 0.8763 / 0.82, abs=0.5), "the file x the corrected scale"
+-- 
+2.50.1 (Apple Git-155)
+

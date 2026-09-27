@@ -1,0 +1,448 @@
+{
+  "id": "608f93a1-b958-9334-af32-63e3c57168d3",
+  "model": "grok-4.20-0309-non-reasoning",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "DeKalb County GA unincorporated water heater replacement permit requirements",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application%20Fillable_0.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application%20Fillable%20%28Revised%2001012025%29.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/public-works/transportation/permitting"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Commercial%20Alterations%20and%20Repairs%20Guide%202023%20-%20fillable.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/DeKalb%20County%20Third-Party%20Inspections%20Application%209-29-2025.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-09/2026%20-%20Fee%20Schedule%20Revised%20Updated-%20final.1.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/temp_waterapp.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://library.municode.com/ga/dekalb_county/codes/code_of_ordinances"
+          },
+          {
+            "type": "url",
+            "url": "https://sos.ga.gov/georgia-state-board-electrical-contractors"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/watershed-management/special-programs"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Watershed%20Packet%20-%20SCR%20update_0.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.dekalbcountyga.gov/planning-and-sustainability/other-permitting-services-1"
+          },
+          {
+            "type": "url",
+            "url": "https://library.municode.com/ga/fayette_county/codes/code_of_ordinances?nodeId=PTIICOCO_CH102BUBURE_ARTIVPRADREOMIDWCO_DIV6CEOC"
+          },
+          {
+            "type": "url",
+            "url": "https://library.municode.com/HTML/10637/level2/CODECO_CH5AN.html"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "\"DeKalb County\" \"water heater\" permit OR inspection site:dekalbcountyga.gov",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Residential-Commercial%20Inspection%20Card.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.dekalbcountyga.gov/planning-and-sustainability/permits-plan-review-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/HVAC%20Mechanical%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/DeKalb%20County%20Third-Party%20Inspections%20Application%209-29-2025.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-09/2026%20-%20Fee%20Schedule%20Revised%20Updated-%20final.1.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/DeKalb_LCRR%20FAQs_1.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/temp_waterapp.pdf"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "DeKalb County GA building permits residential mechanical plumbing water heater",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/HVAC%20Mechanical%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Residential-Commercial%20Inspection%20Card.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-09/2026%20-%20Fee%20Schedule%20Revised%20Updated-%20final.1.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Commercial%20Alterations%20and%20Repairs%20Guide%202023%20-%20fillable.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Building%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-08/WATERSHED%20PACKET%20UPDATED%20WEBSITE.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://library.municode.com/ga/dekalb_county/codes/code_of_ordinances"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Residential-Commercial%20Inspection%20Card.pdf"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application%20Fillable_0.pdf"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "DeKalb County GA \"water heater\" inspection OR permit \"replacement\" OR \"like for like\"",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Residential-Commercial%20Inspection%20Card.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application%20Fillable%20%28Revised%2001012025%29.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/HVAC%20Mechanical%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application%20Fillable_0.pdf"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "DeKalb County GA adopted building codes OR \"residential code\" OR \"IPC\" OR \"IMC\" OR \"IRC\" water heater",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dca.georgia.gov/community-assistance/construction-codes/mandatory-and-permissive-state-codes"
+          },
+          {
+            "type": "url",
+            "url": "https://dca.georgia.gov/document/publications/irc2024amendmentspdf/download"
+          },
+          {
+            "type": "url",
+            "url": "https://dca.georgia.gov/community-assistance/construction-codes/current-state-minimum-codes-construction"
+          },
+          {
+            "type": "url",
+            "url": "https://dca.georgia.gov/announcement/2025-12-09/new-codes-jan-2027"
+          },
+          {
+            "type": "url",
+            "url": "https://library.municode.com/ga/dekalb_county/codes/code_of_ordinances"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "\"homeowner\" permit OR pull OR affidavit \"water heater\" OR plumbing DeKalb County GA",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Owner-Occupant%20Affidavit%209-8-2025.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/user3576/B%20P%20%20Assembly%20Installation%20Affidavit%20V5.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://dekalbcountyga.gov/sites/default/files/users/user2778/AUTHORIZATION%20TO%20RELEASE%20INFORMATION%20Revised%20-%20.pdf"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\n  \"permit_required\": \"yes\",\n  \"permits\": [\n    {\n      \"name\": \"Plumbing Permit\",\n      \"office\": \"DeKalb County Department of Planning & Sustainability\",\n      \"fee_note\": \"$10 per water heater (minimum permit fee applies)\",\n      \"url\": \"https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application%20Fillable_0.pdf\",\n      \"quote\": \"Water heaters No. _____ X $10.00 = __________ ... Check One: ... Replacement\"\n    },\n    {\n      \"name\": \"Mechanical Permit (if gas-fired)\",\n      \"office\": \"DeKalb County Department of Planning & Sustainability\",\n      \"fee_note\": null,\n      \"url\": \"https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections\",\n      \"quote\": \"Mechanical Permit * Must be submitted by a licensed mechanical contractor * Includes mechanical systems within a building or structure * Gas pressure tests must be applied for by the licensed contractor\"\n    }\n  ],\n  \"who_can_pull\": {\n    \"homeowner_allowed\": \"no\",\n    \"licence\": \"State of Georgia licensed plumbing contractor (and mechanical contractor if applicable)\"\n  },\n  \"inspections\": [\n    \"Water Heater\",\n    \"Gas Line (if gas-fired)\",\n    \"Plumbing Final\",\n    \"Mechanical Final (if applicable)\"\n  ],\n  \"code_basis\": [\n    \"2024 International Residential Code with Georgia Amendments\",\n    \"2024 International Plumbing Code with Georgia Amendments\",\n    \"2024 International Mechanical Code with Georgia Amendments\",\n    \"2024 International Fuel Gas Code with Georgia Amendments\"\n  ],\n  \"caveats\": [\n    \"Trade permits (plumbing/mechanical) must be pulled by licensed contractors; homeowners may only pull certain building permits with affidavit and restrictions.\",\n    \"Reusing existing gas line/vent or electric circuit may still require gas pressure test or verification.\",\n    \"No building permit typically required for this scope in single-family replacement.\",\n    \"Confirm jurisdiction is unincorporated DeKalb County.\",\n    \"Inspection card lists specific Water Heater inspection under plumbing.\"\n  ],\n  \"summary\": \"A plumbing permit (and mechanical permit if gas) is required for water heater replacement in unincorporated DeKalb County, GA; must be pulled by a licensed contractor; inspections include Water Heater, gas line if applicable, and finals.\"\n}",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Owner-Occupant%20Affidavit%209-8-2025.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application%20Fillable_0.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.dekalbcountyga.gov/planning-and-sustainability/permits-plan-review-inspections"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://library.municode.com/HTML/10637/level2/CODECO_CH5AN.html"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/departments/planning-and-sustainability/permits-plan-review-and-inspections"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://sos.ga.gov/georgia-state-board-electrical-contractors"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/user3576/B%20P%20%20Assembly%20Installation%20Affidavit%20V5.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-09/2026%20-%20Fee%20Schedule%20Revised%20Updated-%20final.1.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/users/user2778/AUTHORIZATION%20TO%20RELEASE%20INFORMATION%20Revised%20-%20.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/HVAC%20Mechanical%20Permit%20Application.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://library.municode.com/ga/fayette_county/codes/code_of_ordinances?nodeId=PTIICOCO_CH102BUBURE_ARTIVPRADREOMIDWCO_DIV6CEOC"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dca.georgia.gov/announcement/2025-12-09/new-codes-jan-2027"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/temp_waterapp.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/departments/watershed-management/special-programs"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.dekalbcountyga.gov/planning-and-sustainability/other-permitting-services-1"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-08/WATERSHED%20PACKET%20UPDATED%20WEBSITE.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dca.georgia.gov/community-assistance/construction-codes/mandatory-and-permissive-state-codes"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Commercial%20Alterations%20and%20Repairs%20Guide%202023%20-%20fillable.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/DeKalb%20County%20Third-Party%20Inspections%20Application%209-29-2025.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dca.georgia.gov/document/publications/irc2024amendmentspdf/download"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Watershed%20Packet%20-%20SCR%20update_0.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Plumbing%20Permit%20Application.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Residential-Commercial%20Inspection%20Card.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Electrical%20Permit%20Application%20Fillable%20%28Revised%2001012025%29.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/Building%20Permit%20Application.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://library.municode.com/ga/dekalb_county/codes/code_of_ordinances"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/departments/public-works/transportation/permitting"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dca.georgia.gov/community-assistance/construction-codes/current-state-minimum-codes-construction"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://dekalbcountyga.gov/sites/default/files/2026-01/DeKalb_LCRR%20FAQs_1.pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 71414,
+    "output_tokens": 1092,
+    "cost_in_usd_ticks": 961671000,
+    "server_side_tool_usage_details": {
+      "web_search_calls": 10,
+      "x_search_calls": 0,
+      "x_posts_fetched": 0,
+      "x_users_fetched": 0,
+      "code_interpreter_calls": 0,
+      "file_search_calls": 0,
+      "mcp_calls": 0,
+      "document_search_calls": 0,
+      "image_generation_calls": 0
+    }
+  }
+}

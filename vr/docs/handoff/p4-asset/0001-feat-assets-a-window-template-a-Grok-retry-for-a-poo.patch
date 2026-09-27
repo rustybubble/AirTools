@@ -1,0 +1,777 @@
+From 0e7c3447202d9a734359c36c349c72c97163679e Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:38:13 -0400
+Subject: [PATCH 1/5] feat(assets): a window template, a Grok retry for a poor
+ answer, and who made each asset
+
+The asset pipeline (meshgen llm tier) had no window: a "Double Hung Vinyl Window" came back as a
+flat_panel (a 6 x 10 grid of solar cells) or a box. Now:
+
+- part_templates: `window` (outer frame filling W x H x D; double / single hung, slider,
+  casement, fixed; sashes set back from the frame front, glass at mid depth, grille bars, a sash
+  lock). Glass gets the glass finish by default (DEFAULT_FINISH); flat_panel's description points
+  windows at it. Photo mode drops the grille and lock (the photo shows them).
+- meshgen.ask: a poor answer -- none at all, or not the template the product's name needs
+  (`expected_template`: window, box_appliance, cylinder_tank, ...) -- is asked once more on role
+  `asset_retry` (LLM_ASSET_RETRY, default xai:grok-4.20-0309-non-reasoning); Grok's answer wins
+  when it's better. `cached_chat_by` records which provider:model answered (a Groq call that
+  llm.chat re-sent to xAI says xai) next to the cached answer.
+- part.json asset gains made_by, template, retried and seconds (additive).
+- tests/conftest.py blanks LLM_ASSET_RETRY like LLM_FALLBACK: tests opt in.
+
+Live on :8007 (Groq keys exhausted, so llm.chat's fallback answered): three Jeld-Wen 59.5 x 47.5 in
+sliders -> template window/slider by xai:grok-4.20-0309-non-reasoning, 2.1-2.6 s per call, 2.4-3.0 s
+per asset.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/assets.py           |  32 +++++-
+ server/config.py           |   3 +
+ server/meshgen.py          | 123 ++++++++++++++++++--
+ server/models.py           |   7 ++
+ server/part_templates.py   | 127 ++++++++++++++++++++-
+ tests/conftest.py          |   1 +
+ tests/test_asset_window.py | 223 +++++++++++++++++++++++++++++++++++++
+ 7 files changed, 499 insertions(+), 17 deletions(-)
+ create mode 100644 tests/test_asset_window.py
+
+diff --git a/server/assets.py b/server/assets.py
+index 13b08c9..767202d 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -32,6 +32,7 @@ import itertools
+ import logging
+ import os
+ import tempfile
++import time
+ from pathlib import Path
+ 
+ import httpx
+@@ -329,8 +330,9 @@ async def _hunyuan(part: Part, photo: Path) -> tuple[trimesh.Trimesh, float] | N
+ 
+ 
+ async def _generated(part: Part, photo: Path | None, pdir: Path):
+-    """The `llm` / `scad` / `ai_mesh` tiers (module docstring): (geometry, tier, residual), or
+-    None when none of them produced anything. Photo-textured when there's a one-product photo."""
++    """The `llm` / `scad` / `ai_mesh` tiers (module docstring): (geometry, tier, residual, info),
++    or None when none of them produced anything. Photo-textured when there's a one-product photo.
++    assetgen: `info` = {made_by, template, retried} from the template call (`meshgen.Plan`)."""
+     plan = await meshgen.ask(part, photo)  # never raises; None when both LLM paths failed
+     face = (plan and plan.face) or (
+         photo and await asyncio.to_thread(meshgen.aspect_guess, part.dims_mm, photo)
+@@ -355,7 +357,10 @@ async def _generated(part: Part, photo: Path | None, pdir: Path):
+         # still leaves a good untextured asset; not worth losing the tier over.
+         except Exception as exc:  # noqa: BLE001
+             logger.info("asset %s: photo projection failed: %s", part.id, exc)
+-    return geometry, tier, residual
++    info = {}
++    if plan is not None:
++        info = {"made_by": plan.made_by or None, "template": plan.template, "retried": plan.retried}
++    return geometry, tier, residual, info
+ 
+ 
+ def _box(part: Part, photo: Path | None):
+@@ -389,11 +394,12 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+             logger.info("resolve_asset: stale part.json for %s, re-resolving: %s", part.id, exc)
+ 
+     pdir.mkdir(parents=True, exist_ok=True)
++    start = time.monotonic()  # assetgen: asset.seconds
+ 
+     image_ok = bool(part.image_url) and await fetch_image(part.image_url, image_path)
+     photo = image_path if image_ok or image_path.exists() else None  # offline: last fetch's
+ 
+-    geometry, tier, residual, source_url = None, "proxy", 0.0, None
++    geometry, tier, residual, source_url, info = None, "proxy", 0.0, None, {}
+ 
+     if part.asset.source_url:
+         mesh = await _try_cad(part.asset.source_url)
+@@ -413,7 +419,8 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+             logger.warning("asset %s: generated tiers failed: %s", part.id, exc)
+             made = None
+         if made is not None:
+-            geometry, tier, residual = made
++            geometry, tier, residual, *more = made
++            info = more[0] if more else {}
+ 
+     if geometry is None:
+         geometry = await asyncio.to_thread(_box, part, photo)
+@@ -426,6 +433,17 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+         license=part.asset.license,
+         scale_residual_pct=round(residual, 3),
+         status="ready",
++        seconds=round(time.monotonic() - start, 2),
++        **info,
++    )
++    logger.info(
++        "asset %s ready: tier=%s template=%s made_by=%s retried=%s in %.1f s",
++        part.id,
++        tier,
++        part.asset.template,
++        part.asset.made_by,
++        part.asset.retried,
++        part.asset.seconds,
+     )
+     cache.write_json_atomic(json_path, part.model_dump_json(indent=2))
+     return part
+@@ -486,7 +504,8 @@ async def upgrade_proxy(part: Part) -> Part:
+         return current
+     if made is None:
+         return current
+-    geometry, tier, residual = made
++    geometry, tier, residual, *more = made
++    info = more[0] if more else {}
+     tmp = pdir / "model.glb.tmp"
+     geometry.export(tmp, file_type="glb")
+     os.replace(tmp, pdir / "model.glb")
+@@ -496,6 +515,7 @@ async def upgrade_proxy(part: Part) -> Part:
+         license=current.asset.license,
+         scale_residual_pct=round(residual, 3),
+         status="ready",
++        **info,
+     )
+     cache.write_json_atomic(pdir / "part.json", current.model_dump_json(indent=2))
+     logger.info("asset %s: upgraded proxy -> %s", part.id, tier)
+diff --git a/server/config.py b/server/config.py
+index e83e2e9..27bf297 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -47,6 +47,9 @@ class Settings(BaseSettings):
+     LLM_VISION: str | None = None
+     LLM_ASSET: str | None = None
+     LLM_ASSET_SCAD: str | None = None
++    # assetgen: a poor `asset` answer (none, or a known shape -- a window -- answered with another
++    # template) is asked once more here (server/meshgen.py ask). "" turns the retry off.
++    LLM_ASSET_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
+     LLM_REPORT: str | None = None  # site-walk report summary (server/report.py)
+     LLM_PLAN: str | None = None
+     LLM_SURVEY: str | None = None
+diff --git a/server/meshgen.py b/server/meshgen.py
+index a0acd6c..126ddfe 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -6,6 +6,11 @@
+   product photo shows, whether the photo shows one product, and a shape class. No photo, or a
+   failed vision call: the `extract` text model on the part's name and listing text instead, with
+   template colours. Cached through `server/cache.py`; `None` (never raises) when both fail.
++  assetgen: a poor answer -- none at all, or not the template a known shape needs (a "window"
++  answered as a flat panel or a box, `expected_template`) -- is asked once more on role
++  `asset_retry` (`LLM_ASSET_RETRY`, default xAI Grok 4.20 non-reasoning), and Grok's answer wins
++  when it's better. `Plan.made_by` says which provider:model answered (a Groq call that fell back
++  to xAI inside `llm.chat` says xai), `Plan.retried` whether the retry made it.
+ - `build()`: the template at exactly W x H x D in the api.md §2 frame.
+ - `project()`: the product photo on the triangles facing the face it shows (E5).
+ - `decal_box()`: the exact-size box with the photo on one face (E3), the instant/last-resort tier.
+@@ -23,6 +28,7 @@ import re
+ import shutil
+ import subprocess
+ import tempfile
++import time
+ from dataclasses import dataclass
+ from pathlib import Path
+ 
+@@ -33,6 +39,7 @@ from scipy import ndimage
+ 
+ from server import cache, llm
+ from server import part_templates as T
++from server.config import get_settings
+ from server.models import Dims, Part
+ 
+ logger = logging.getLogger(__name__)
+@@ -60,6 +67,7 @@ TEMPLATE_FACE = {"sink": "top"}
+ FLAT = {
+     "box_appliance": {"grille1_style": "none", "grille2_style": "none", "control": False},
+     "fixture": {"nozzle_rings": 0, "center_disc": False},
++    "window": {"grid_x": 0, "grid_y": 0, "hardware": False},  # assetgen: the photo shows them
+ }
+ 
+ PROMPT = """Map {subject} to ONE parametric 3D template and fill its parameters.
+@@ -108,6 +116,10 @@ class Plan:
+     rotate_cw: int
+     single: bool
+     shape_class: str
++    # assetgen: which provider:model answered ("groq:qwen/qwen3.8-27b", "xai:grok-4.20-...";
++    # "... (cached)" when the answer predates the record), and whether the Grok retry made it.
++    made_by: str = ""
++    retried: bool = False
+ 
+ 
+ def photo_data_url(photo: Path, max_side: int) -> str:
+@@ -131,14 +143,41 @@ def _user(text: str, photo_url: str | None = None) -> list[dict]:
+ async def cached_chat(role: str, messages: list[dict], **kw) -> str:
+     """`llm.chat`'s reply text through the disk cache, keyed by the role's provider:model and a
+     hash of the request: a warmed part costs no call, online or offline (OfflineMiss on a miss)."""
++    text, _ = await cached_chat_by(role, messages, **kw)
++    return text
++
++
++def made_by(provider: str, model: str, answered: str | None) -> str:
++    """assetgen: "provider:model" of the model that answered. `answered` is the response's own
++    model name: a Groq call `llm.chat` re-sent to xAI (LLM_FALLBACK) comes back as grok-*."""
++    if not answered:
++        return f"{provider}:{model}"
++    if answered.startswith("grok") and provider != "xai":
++        return f"xai:{answered}"
++    return f"{provider}:{answered}"
++
++
++async def cached_chat_by(role: str, messages: list[dict], **kw) -> tuple[str, str]:
++    """assetgen: `cached_chat` plus who answered ("provider:model", `made_by`). The first call
++    records it next to the answer (cache namespace `asset_llm_by`, same key) with its seconds;
++    an answer cached before that record existed says "<role's provider:model> (cached)"."""
+     provider, model = llm.resolve_role(role)
+     digest = hashlib.sha1(json.dumps([messages, kw], sort_keys=True).encode()).hexdigest()
++    key = {"model": f"{provider}:{model}", "req": digest}
+ 
+     async def call() -> str:
++        start = time.monotonic()
+         resp = await llm.chat(role, messages, **kw)
++        by = made_by(provider, model, getattr(resp, "model", None))
++        seconds = round(time.monotonic() - start, 2)
++        cache.put("asset_llm_by", key, {"by": by, "seconds": seconds})
++        logger.info("meshgen: role=%s answered by %s in %.1f s", role, by, seconds)
+         return resp.choices[0].message.content or ""
+ 
+-    return await cache.cached("asset_llm", {"model": f"{provider}:{model}", "req": digest}, call)
++    text = await cache.cached("asset_llm", key, call)
++    meta = cache.get("asset_llm_by", key)
++    by = meta.get("by") if isinstance(meta, dict) else None
++    return text, by or f"{provider}:{model} (cached)"
+ 
+ 
+ def _parse(text: str) -> dict:
+@@ -207,10 +246,12 @@ async def _ask(role: str, part: Part, photo: Path | None) -> Plan | None:
+         else:  # gpt-oss reasons before answering; keep it short, it counts as output
+             messages = [{"role": "system", "content": "Reasoning: low"}, *_user(prompt)]
+             kw = {"max_tokens": 2000}
+-        text = await cached_chat(
++        text, by = await cached_chat_by(
+             role, messages, response_format={"type": "json_object"}, temperature=0.2, **kw
+         )
+-        return parse_plan(_parse(text), photo is not None)
++        plan = parse_plan(_parse(text), photo is not None)
++        plan.made_by = by
++        return plan
+     # Blind except is deliberate: the tier must never raise. Network/SDK errors, rate limits,
+     # KeysExhausted, OfflineMiss and bad JSON all mean "no plan", and the caller falls through.
+     except Exception as exc:  # noqa: BLE001
+@@ -218,13 +259,77 @@ async def _ask(role: str, part: Part, photo: Path | None) -> Plan | None:
+         return None
+ 
+ 
++# assetgen: a window, not a window screen / film / lock / well ("... Window with Screen" is one).
++WINDOW_NAME = (
++    r"\bwindows?\b(?!\s+(?:(?!with\b|and\b|plus\b|in\b)\w+\s+)?(?:screens?|films?|shades?"
++    r"|blinds?|curtains?|locks?|cranks?|operators?|latch(?:es)?|wells?|trim|flashing|tape"
++    r"|treatments?|valances?|hardware|kits?|fans?)\b)"
++)
++
++# assetgen: the template a product's name asks for. A plan with another template is "poor" and
++# gets one Grok retry (`ask`). First match wins; `None` = any template will do.
++_EXPECTED = [
++    (r"\b(?:air conditioner|a/c|ac unit|dehumidifier|microwave)\b", "box_appliance"),
++    (WINDOW_NAME, "window"),
++    (r"\b(?:water heater|hot water tank)\b", "cylinder_tank"),
++    (r"\b(?:refrigerator|fridge|freezer)\b", "tall_box"),
++    (r"\b(?:sink|basin)\b", "sink"),
++    (r"\b(?:faucet|shower ?head)\b", "fixture"),
++    (r"\bsolar panel\b", "flat_panel"),
++    (r"\b(?:condenser|mini[- ]split|heat pump)\b", "fan_unit"),
++    (r"\bjoist hanger\b", "joist_hanger"),
++]
++
++
++def expected_template(part: Part) -> str | None:
++    """The template a known shape needs, from the part's name ("Double Hung Vinyl Window" ->
++    window), or None."""
++    name = (part.name or "").lower()
++    for pattern, template in _EXPECTED:
++        if re.search(pattern, name):
++            return template
++    return None
++
++
++def poor(plan: Plan | None, part: Part) -> bool:
++    """assetgen: no plan, or not the template the product's shape needs."""
++    if plan is None:
++        return True
++    want = expected_template(part)
++    return want is not None and plan.template != want
++
++
++def _retry_ready() -> bool:
++    """The retry role resolves to a provider with a key (Grok by default)."""
++    try:
++        provider, _ = llm.resolve_role("asset_retry")
++    except ValueError:
++        return False
++    return bool(getattr(get_settings(), llm.PROVIDERS[provider]["api_key_field"], None))
++
++
+ async def ask(part: Part, photo: Path | None) -> Plan | None:
+-    """The vision call on `photo`, else (no photo, or it failed) the text model. Never raises."""
+-    if photo is not None:
+-        plan = await _ask("asset", part, photo)
+-        if plan is not None:
+-            return plan
+-    return await _ask("extract", part, None)
++    """The vision call on `photo`, else (no photo, or it failed) the text model; a poor answer
++    gets one retry on `asset_retry` (assetgen). Never raises."""
++    plan = await _ask("asset", part, photo) if photo is not None else None
++    if plan is None:
++        plan = await _ask("extract", part, None)
++    if poor(plan, part) and _retry_ready():
++        first = f"{plan.template} by {plan.made_by}" if plan else "no answer"
++        better = await _ask("asset_retry", part, photo)
++        if better is not None and (plan is None or not poor(better, part)):
++            better.retried = True
++            logger.info(
++                "meshgen: %s: %s was poor (want %s); the retry's %s by %s wins",
++                part.id,
++                first,
++                expected_template(part),
++                better.template,
++                better.made_by,
++            )
++            return better
++        logger.info("meshgen: %s: the retry didn't do better than %s", part.id, first)
++    return plan
+ 
+ 
+ def build(plan: Plan, dims: Dims) -> trimesh.Scene:
+diff --git a/server/models.py b/server/models.py
+index 421765f..a79dddd 100644
+--- a/server/models.py
++++ b/server/models.py
+@@ -57,6 +57,13 @@ class Asset(BaseModel):
+     license: str | None = None
+     scale_residual_pct: float | None = None
+     status: Literal["pending", "ready", "failed"] = "pending"
++    # assetgen: who made it and how long it took (logged by the headset): the provider:model that
++    # answered the template call ("groq:qwen/qwen3.8-27b", "xai:grok-4.20-0309-non-reasoning"),
++    # the template it picked, whether the Grok retry made it, and the seconds from start to GLB.
++    made_by: str | None = None
++    template: str | None = None
++    retried: bool | None = None
++    seconds: float | None = None
+ 
+ 
+ class Fit(BaseModel):
+diff --git a/server/part_templates.py b/server/part_templates.py
+index 2781af4..648947c 100644
+--- a/server/part_templates.py
++++ b/server/part_templates.py
+@@ -618,6 +618,76 @@ def t_fan_unit(P: Parts, W, H, D, p):
+         P.add(role, cut(m, hit))
+ 
+ 
++def _sash(P: Parts, x0, x1, y0, y1, z0, z1, sw, p, lock=None):
++    """One sash: a profile ring `sw` wide (none when 0) round a glass pane at mid depth, grille
++    bars on the glass, and a lock / latch centred at `lock` = (x, y, vertical) on its front."""
++    sw = min(sw, 0.3 * (x1 - x0), 0.3 * (y1 - y0))
++    if sw > 1e-4:
++        P.box("sash", x0, x0 + sw, y0, y1, z0, z1)
++        P.box("sash", x1 - sw, x1, y0, y1, z0, z1)
++        P.box("sash", x0 + sw - EPS, x1 - sw + EPS, y0, y0 + sw, z0, z1)
++        P.box("sash", x0 + sw - EPS, x1 - sw + EPS, y1 - sw, y1, z0, z1)
++    gx0, gx1, gy0, gy1 = x0 + sw - EPS, x1 - sw + EPS, y0 + sw - EPS, y1 - sw + EPS
++    gt = min(0.006, 0.3 * (z1 - z0))
++    zm = (z0 + z1) / 2
++    P.box("glass", gx0, gx1, gy0, gy1, zm - gt / 2, zm + gt / 2)
++    bar = min(max(0.35 * sw, 0.008), 0.02) if sw > 1e-4 else 0.01
++    zb0, zb1 = zm - gt / 2 - 0.002, min(zm + gt / 2 + 0.004, z1)
++    for i in range(p["grid_x"]):
++        x = gx0 + (i + 1) * (gx1 - gx0) / (p["grid_x"] + 1)
++        P.box("grid", x - bar / 2, x + bar / 2, gy0, gy1, zb0, zb1)
++    for j in range(p["grid_y"]):
++        y = gy0 + (j + 1) * (gy1 - gy0) / (p["grid_y"] + 1)
++        P.box("grid", gx0, gx1, y - bar / 2, y + bar / 2, zb0, zb1)
++    if p["hardware"] and lock is not None:
++        lx, ly, vertical = lock
++        lw, lh = min(0.06, 0.2 * (x1 - x0), 0.2 * (y1 - y0)), min(0.012, 0.5 * max(sw, 0.01))
++        hx, hy = (lh / 2, lw / 2) if vertical else (lw / 2, lh / 2)
++        P.box("hardware", lx - hx, lx + hx, ly - hy, ly + hy, z1 - EPS, z1 + min(0.01, 0.002 + lh))
++
++
++def t_window(P: Parts, W, H, D, p):
++    """assetgen: a window unit (or a replacement window frame). The outer frame fills W x H x D;
++    sashes sit in it a little behind its front face (hung: the upper sash behind the lower one;
++    slider: the fixed half behind), glass at each sash's mid depth."""
++    m = min(W, H)
++    fw = min(max(p["frame_w"] * m, 0.01), 0.3 * m)
++    P.box("frame", -W / 2, -W / 2 + fw, -H / 2, H / 2, 0, D)
++    P.box("frame", W / 2 - fw, W / 2, -H / 2, H / 2, 0, D)
++    P.box("frame", -W / 2 + fw - EPS, W / 2 - fw + EPS, H / 2 - fw, H / 2, 0, D)
++    P.box("frame", -W / 2 + fw - EPS, W / 2 - fw + EPS, -H / 2, -H / 2 + fw, 0, D)
++    x0, x1, y0, y1 = -W / 2 + fw - EPS, W / 2 - fw + EPS, -H / 2 + fw - EPS, H / 2 - fw + EPS
++    p = {**p, "hardware": p["hardware"] and D >= 0.03}  # no room for a lock on a thin frame
++    lock_room = 0.012 if p["hardware"] else 0.0  # the lock stands proud: keep it inside Z <= D
++    zf = max(D - max(0.08 * D, 0.003, lock_room), 0.5 * D)  # front sash face, set back
++    sd = min(max(0.22 * D, 0.012), 0.05, zf / 2.2)  # sash depth
++    sw = p["sash_w"] * m
++    style = p["style"]
++    if style in ("double_hung", "single_hung"):
++        ym = y0 + p["split"] * (y1 - y0)
++        ov = min(max(sw, 0.01) * 0.5, 0.1 * (y1 - y0))  # the meeting rails overlap
++        _sash(P, x0, x1, ym - ov, y1, zf - 2 * sd, zf - sd, sw, p)
++        rail = min(max(sw, 0.01), 0.3 * (ym + ov - y0))
++        _sash(P, x0, x1, y0, ym + ov, zf - sd, zf, sw, p, lock=(0.0, ym + ov - rail / 2, False))
++    elif style == "slider":
++        xm = x0 + p["split"] * (x1 - x0)
++        ov = min(max(sw, 0.01) * 0.5, 0.1 * (x1 - x0))
++        _sash(P, xm - ov, x1, y0, y1, zf - 2 * sd, zf - sd, sw, p)
++        stile = min(max(sw, 0.01), 0.3 * (xm + ov - x0))
++        _sash(P, x0, xm + ov, y0, y1, zf - sd, zf, sw, p, lock=(xm + ov - stile / 2, 0.0, True))
++    else:  # casement / fixed: `panes` sashes side by side in one plane, mullions between them
++        n = p["panes"]
++        mull = min(max(fw * 0.8, 0.01), 0.2 * (x1 - x0) / n) if n > 1 else 0.0
++        pw = (x1 - x0 - (n - 1) * mull) / n
++        for k in range(n):
++            a = x0 + k * (pw + mull)
++            stile = min(max(sw, 0.01), 0.3 * pw)
++            lock = (a + pw - stile / 2, 0.0, True) if style == "casement" else None
++            _sash(P, a, a + pw, y0, y1, zf - sd, zf, sw, p, lock=lock)
++            if k:
++                P.box("frame", a - mull - EPS, a + EPS, y0, y1, 0, D)
++
++
+ TEMPLATES = {
+     "box": (
+         t_box,
+@@ -815,7 +885,7 @@ TEMPLATES = {
+     ),
+     "flat_panel": (
+         t_flat_panel,
+-        "thin framed panel facing +Z: solar panel, sign, glass panel",
++        "thin framed panel facing +Z: solar panel, sign, glass panel (a window: use window)",
+         {
+             "frame_w": ("f", 0.02, 0.0, 0.1, "frame width, frac of W"),
+             "cells_x": ("i", 6, 1, 24, "cell columns"),
+@@ -824,6 +894,49 @@ TEMPLATES = {
+         },
+         {"frame": "#B8BCC0", "backsheet": "#E8E8E8", "cell": "#1B2233"},
+     ),
++    # assetgen: windows (a window frame / replacement window), E5-style photo mode drops the grille
++    "window": (
++        t_window,
++        (
++            "window unit or replacement window frame: outer frame, sash(es) with glass panes; "
++            "double or single hung, slider, casement, fixed / picture. W x H = the frame's outside "
++            "size, D = the frame depth"
++        ),
++        {
++            "style": (
++                "e",
++                "double_hung",
++                ["double_hung", "single_hung", "slider", "casement", "fixed"],
++                "",
++            ),
++            "frame_w": ("f", 0.05, 0.015, 0.15, "outer frame member width, frac of min(W, H)"),
++            "sash_w": (
++                "f",
++                0.045,
++                0.0,
++                0.12,
++                "sash profile width, frac of min(W, H); 0 = glass straight in the frame",
++            ),
++            "split": (
++                "f",
++                0.5,
++                0.3,
++                0.7,
++                "meeting rail height (hung) or meeting stile (slider), frac of the opening",
++            ),
++            "panes": ("i", 1, 1, 4, "sashes side by side (casement, fixed)"),
++            "grid_x": ("i", 0, 0, 6, "vertical grille bars per sash"),
++            "grid_y": ("i", 0, 0, 6, "horizontal grille bars per sash"),
++            "hardware": ("b", True, "sash lock / casement latch"),
++        },
++        {
++            "frame": "#F4F4F2",
++            "sash": "#F4F4F2",
++            "glass": "#A9C0CE",
++            "grid": "#F4F4F2",
++            "hardware": "#9A9A9A",
++        },
++    ),
+     "fan_unit": (
+         t_fan_unit,
+         "housing with circular fan grille(s): AC condenser (fan on top, coil louvres on the sides), mini-split outdoor unit (fan on the front), fan",
+@@ -862,8 +975,12 @@ METALLIC = {
+     "metal": 0.6,
+     "frame": 0.5,
+     "screw": 0.6,
++    "hardware": 0.5,
+ }  # role -> metallic
+ 
++# assetgen: a role's finish when the answer gives none (glass reads as glass, not matte paint).
++DEFAULT_FINISH = {"glass": "glass"}
++
+ # Optional per-role finish (E5): name -> (metallicFactor, roughnessFactor). Metallic stays <= 0.8
+ # because a viewer without an environment map (pyrender here, a Quest passthrough scene without a
+ # reflection probe) renders full metal almost black; metal albedo is lifted to a bright
+@@ -984,7 +1101,9 @@ def build(
+         mesh = trimesh.util.concatenate([m for m, r in P.items if r == role])
+         mesh.apply_transform(fit)
+         mesh.visual = trimesh.visual.TextureVisuals(
+-            material=material(colors.get(role, "#B0B0B0"), role, finishes.get(role))
++            material=material(
++                colors.get(role, "#B0B0B0"), role, finishes.get(role) or DEFAULT_FINISH.get(role)
++            )
+         )
+         scene.add_geometry(mesh, node_name=role, geom_name=role)
+     info = {
+@@ -1017,6 +1136,10 @@ def _selfcheck() -> None:
+     variants["cylinder_tank"].append({"top": "dome", "top_h": 0.1, "bands": 0, "pipes": 0})
+     variants["sink"].append({"bowls": 2, "flange": 0.0})
+     variants["strap_hanger"].append({"brace": True, "hook": "lip"})
++    variants["window"] += [  # assetgen
++        {"style": s, "grid_x": 2, "grid_y": 1, "panes": 2, "sash_w": 0.0 if s == "fixed" else 0.05}
++        for s in ("single_hung", "slider", "casement", "fixed")
++    ]
+     variants["bent_strip"] += [
+         {"profile2": [[0, 0.2], [0.6, 1]], "back_plate_h": 0.8, "screw": True},
+         {"profile": [[0.1, 0.1], [0.9, 0.9]], "thickness_mm": 20},  # diagonal, fraction-inset
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 440f522..1dfad8e 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -28,6 +28,7 @@ _UNSET_KEYS = [
+     "X_CLIENT_SECRET",
+     "X_REFRESH_TOKEN",
+     "LLM_FALLBACK",  # a Groq failure a test simulates stays a failure (tests opt in)
++    "LLM_ASSET_RETRY",  # assetgen: no Grok retry of a poor asset answer (tests opt in)
+ ]
+ 
+ 
+diff --git a/tests/test_asset_window.py b/tests/test_asset_window.py
+new file mode 100644
+index 0000000..cf4eb94
+--- /dev/null
++++ b/tests/test_asset_window.py
+@@ -0,0 +1,223 @@
++"""assetgen: the window asset on the server -- the window template, the Grok retry of a poor
++template answer and who made it (meshgen), and that provenance in part.json (assets). No network,
++no keys: every LLM call is stubbed."""
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++import trimesh
++from PIL import Image
++
++from server import agent, assets, meshgen
++from server import part_templates as T
++from server.config import get_settings
++from server.models import Dims, Part
++
++WINDOW = Dims(w=1486, h=1181, d=80)
++NAME = "58.5 in. x 46.5 in. Double Hung White Vinyl Replacement Window"
++WINDOW_ANSWER = {
++    "template": "window",
++    "params": {"style": "double_hung", "grid_x": 2, "grid_y": 1},
++    "colors": {"frame": "#F2F2F2", "glass": "#9FB4C4"},
++    "finishes": {"frame": "plastic"},
++    "photo": {"face": "front", "rotate_cw": 0, "single": True},
++    "shape_class": "template",
++}
++PANEL_ANSWER = {**WINDOW_ANSWER, "template": "flat_panel", "params": {"frame_w": 0.1}}
++
++
++@pytest.fixture(autouse=True)
++def _data_dir(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    get_settings.cache_clear()
++    agent._sessions.clear()
++    yield tmp_path
++    get_settings.cache_clear()
++    agent._sessions.clear()
++
++
++@pytest.fixture
++def photo(tmp_path) -> Path:
++    """A white window frame with grey glass on a white catalogue background."""
++    path = tmp_path / "window.jpg"
++    img = Image.new("RGB", (500, 400), (255, 255, 255))
++    img.paste((230, 230, 228), (50, 40, 450, 360))
++    img.paste((120, 140, 160), (80, 70, 420, 330))
++    img.save(path)
++    return path
++
++
++def _part(**kw) -> Part:
++    return Part(**{"id": "win", "name": NAME, "dims_mm": WINDOW, **kw})
++
++
++def fake_llm(monkeypatch, replies: dict, answered: dict | None = None) -> list:
++    """Stub `llm.chat`: role -> reply text (or an exception); `answered`: role -> the model name
++    the response says answered it (a Groq call that fell back to xAI says grok-*)."""
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append(role)
++        reply = replies[role]
++        if isinstance(reply, Exception):
++            raise reply
++        msg = SimpleNamespace(content=reply)
++        return SimpleNamespace(
++            choices=[SimpleNamespace(message=msg)], model=(answered or {}).get(role)
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++def _bounds_mm(glb: Path) -> np.ndarray:
++    lo, hi = trimesh.load(glb, force="scene").bounds
++    return (hi - lo) * 1000
++
++
++# --- the window template -------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("style", ["double_hung", "single_hung", "slider", "casement", "fixed"])
++def test_every_window_style_fills_its_box_exactly(style):
++    scene, info = T.build("window", WINDOW.model_dump(), {"style": style, "panes": 2, "grid_x": 1})
++    assert info["fit_scale"] == pytest.approx([1, 1, 1], abs=0.01)
++    lo, hi = scene.bounds
++    assert (hi - lo) * 1000 == pytest.approx([WINDOW.w, WINDOW.h, WINDOW.d], abs=0.01)
++    assert [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]] == pytest.approx([0, 0, 0], abs=1e-6)
++    assert {"frame", "glass"} <= set(scene.geometry)
++    # glass reads as glass without being asked (DEFAULT_FINISH): glossy, not metal
++    glass = scene.geometry["glass"].visual.material
++    assert (glass.metallicFactor, glass.roughnessFactor) == T.FINISHES["glass"]
++
++
++def test_a_thin_frame_has_no_lock_and_stays_in_its_box():
++    scene, _ = T.build("window", {"w": 600, "h": 900, "d": 20}, {"style": "slider"})
++    lo, hi = scene.bounds
++    assert (hi - lo)[2] * 1000 == pytest.approx(20, abs=0.01)
++    assert "hardware" not in scene.geometry
++
++
++def test_the_catalogue_offers_the_window():
++    text = T.catalogue()
++    assert "- window: window unit or replacement window frame" in text
++    assert "style=double_hung (double_hung|single_hung|slider|casement|fixed)" in text
++    assert "(a window: use window)" in text  # flat_panel points windows at it
++    template, params, colors = T.validate("window", {"style": "bay", "grid_x": 99}, None)
++    assert template == "window" and params["style"] == "double_hung" and params["grid_x"] == 6
++    assert colors["glass"] == "#A9C0CE"
++
++
++# --- meshgen: the template a known shape needs, the Grok retry, who made it ------------------------
++
++
++@pytest.mark.parametrize(
++    ("name", "want"),
++    [
++        (NAME, "window"),
++        ("American Craftsman 70 Series Vinyl Replacement Window with Screen", "window"),
++        ("36 in. x 48 in. Vinyl Slider Window", "window"),
++        ("5,000 BTU 115-Volt Window Air Conditioner", "box_appliance"),
++        ("Window Screen Frame Kit", None),
++        ("Everbilt Window Lock", None),
++        ("Casement Window Crank", None),
++        ("5/16 in. x 84 in. Aluminum Screen Frame", None),
++        ("Rheem 40 Gal. Water Heater", "cylinder_tank"),
++        ("5 in. Aluminum Hidden Gutter Hanger", None),
++    ],
++)
++def test_expected_template(name, want):
++    assert meshgen.expected_template(_part(name=name)) == want
++
++
++def test_made_by_names_the_model_that_answered():
++    assert (
++        meshgen.made_by("groq", "qwen/qwen3.8-27b", "qwen/qwen3.8-27b") == "groq:qwen/qwen3.8-27b"
++    )
++    # llm.chat re-sent the Groq call to xAI (LLM_FALLBACK): the response says grok
++    by = meshgen.made_by("groq", "qwen/qwen3.8-27b", "grok-4.20-0309-non-reasoning")
++    assert by == "xai:grok-4.20-0309-non-reasoning"
++    assert meshgen.made_by("groq", "qwen/qwen3.8-27b", None) == "groq:qwen/qwen3.8-27b"
++
++
++@pytest.mark.asyncio
++async def test_a_window_answered_as_a_panel_is_asked_again_on_grok(monkeypatch, photo):
++    monkeypatch.setenv("LLM_ASSET_RETRY", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls = fake_llm(
++        monkeypatch,
++        {"asset": json.dumps(PANEL_ANSWER), "asset_retry": json.dumps(WINDOW_ANSWER)},
++        {"asset": "qwen/qwen3.8-27b", "asset_retry": "grok-4.20-0309-non-reasoning"},
++    )
++    plan = await meshgen.ask(_part(), photo)
++    assert calls == ["asset", "asset_retry"]
++    assert plan.template == "window" and plan.retried
++    assert plan.made_by == "xai:grok-4.20-0309-non-reasoning"
++    # both answers and who gave them are cached: the same plan again, no call (finish/resize rely
++    # on this to rebuild without an LLM call)
++    again = await meshgen.ask(_part(), photo)
++    assert again == plan and calls == ["asset", "asset_retry"]
++
++
++@pytest.mark.asyncio
++async def test_a_good_answer_is_not_retried(monkeypatch, photo):
++    monkeypatch.setenv("LLM_ASSET_RETRY", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls = fake_llm(
++        monkeypatch, {"asset": json.dumps(WINDOW_ANSWER)}, {"asset": "qwen/qwen3.8-27b"}
++    )
++    plan = await meshgen.ask(_part(), photo)
++    assert calls == ["asset"] and plan.template == "window" and not plan.retried
++    assert plan.made_by == "groq:qwen/qwen3.8-27b"
++
++
++@pytest.mark.asyncio
++async def test_a_retry_that_does_no_better_keeps_the_first_answer(monkeypatch, photo):
++    monkeypatch.setenv("LLM_ASSET_RETRY", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls = fake_llm(monkeypatch, {"asset": json.dumps(PANEL_ANSWER), "asset_retry": "nope"})
++    plan = await meshgen.ask(_part(), photo)
++    assert calls == ["asset", "asset_retry"]
++    assert plan.template == "flat_panel" and not plan.retried
++
++
++@pytest.mark.asyncio
++async def test_no_answer_at_all_is_retried_on_grok(monkeypatch, photo):
++    monkeypatch.setenv("LLM_ASSET_RETRY", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls = fake_llm(
++        monkeypatch,
++        {
++            "asset": RuntimeError("groq down"),
++            "extract": "not json",
++            "asset_retry": json.dumps(WINDOW_ANSWER),
++        },
++    )
++    plan = await meshgen.ask(_part(), photo)
++    assert calls == ["asset", "extract", "asset_retry"] and plan.template == "window"
++
++
++@pytest.mark.asyncio
++async def test_the_retry_is_off_without_its_setting(monkeypatch, photo):
++    calls = fake_llm(monkeypatch, {"asset": json.dumps(PANEL_ANSWER)})  # LLM_ASSET_RETRY="" here
++    plan = await meshgen.ask(_part(), photo)
++    assert calls == ["asset"] and plan.template == "flat_panel"
++
++
++@pytest.mark.asyncio
++async def test_resolve_asset_records_who_made_it(monkeypatch):
++    fake_llm(
++        monkeypatch, {"extract": json.dumps(WINDOW_ANSWER)}, {"extract": "openai/gpt-oss-120b"}
++    )
++    part = await assets.resolve_asset(_part())  # no image_url: the text path
++    stored = json.loads((assets.part_dir("win") / "part.json").read_text())["asset"]
++    assert part.asset.tier == "llm" and stored["tier"] == "llm"
++    assert stored["template"] == "window" and stored["retried"] is False
++    assert stored["made_by"] == "groq:openai/gpt-oss-120b"
++    assert stored["seconds"] is not None and stored["seconds"] >= 0
++    assert _bounds_mm(assets.part_dir("win") / "model.glb") == pytest.approx(
++        [WINDOW.w, WINDOW.h, WINDOW.d], abs=0.01
++    )
+-- 
+2.50.1 (Apple Git-155)
+

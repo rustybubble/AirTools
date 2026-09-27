@@ -1,0 +1,2394 @@
+From 4398ffb7b3e41fe2b02cade57aecc1581113f63b Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:05:09 -0400
+Subject: [PATCH 07/12] feat: one sentence -> the whole replace, autonomously
+ (replace_component)
+
+"Replace the dishwasher with a new one that fits" runs a server-side job (server/replace_job.py)
+on the run table and poll of "do the whole job" (runjob.register; GET /job/run/{id}):
+remove_component -> measure_cavity -> scale_gap (when the gap is implausible for its kind and
+the scale isn't calibrated: a standard 34.5 in dishwasher opening, 30 in range, 30/33/36 in
+fridge, 34.5 in base cabinet; the standard that leaves the other axes plausible wins) ->
+a search fitted to the gap (progress lines while it runs, the plain kind as a fallback,
+150 s cap) -> the best fit, fits or tight only, within the purchase limit -> its GLB and the
+next two's (assets.resolve_shared: one build per part; a proxy box gets one more try at a real
+model) -> place_part -> job_done {kind: replace, spoken, summary, part_id, fits, total_usd}.
+The follow-ups (next one, option 2, undo, put it back) work on the state it leaves.
+
+Routing: fast-path phrases (replace / swap out / "X is broken, get a new one" / "take out X
+and put in a new one" / "remove X. find a Y that fits" / "get a counter-depth fridge in
+here"), and the replace_component tool for the LLM agent (offered when the scene has parts;
+the system prompt names them).
+
+The orchestrator's voice test (14 prompts on :8006), fixed here:
+- p01: a provider failure (KeysExhausted, openai/httpx errors) is a "busy" reply with no
+  actions, never a 500.
+- p03: Whisper's "34 1/2" with U+2044 FRACTION SLASH, vulgar fractions and number words before
+  a unit ("thirty-four and a half inches", "twelve hundred dollars") are normalised first.
+- p09: "Remove the range. Find a 30-inch induction range under $1,200 that fits." removes the
+  range, fits its gap (not the fridge's), keeps the limit (sentences split like "and").
+- p14: "show me the gym model" is show_model {site} (server/sites.py aliases), not a search.
+- p05/p06: the job never places a red fit; the step flow says how to set the scale when the
+  gap no real part fits ("say 'the opening is 34 and a half inches tall'"), and so does the
+  search summary.
+- "undo" with a gap open is undo_edit (the headset's EditHistory.Undo).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/agent.py           | 214 +++++++++++-
+ server/assets.py          |  71 ++++
+ server/jobs.py            |  16 +-
+ server/replace.py         | 266 ++++++++++++++-
+ server/replace_job.py     | 542 ++++++++++++++++++++++++++++++
+ server/runjob.py          |  46 ++-
+ server/sites.py           |  87 +++++
+ tests/test_replace.py     |  39 ++-
+ tests/test_replace_job.py | 684 ++++++++++++++++++++++++++++++++++++++
+ 9 files changed, 1926 insertions(+), 39 deletions(-)
+ create mode 100644 server/replace_job.py
+ create mode 100644 server/sites.py
+ create mode 100644 tests/test_replace_job.py
+
+diff --git a/server/agent.py b/server/agent.py
+index 42665df..6cc5906 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -47,6 +47,7 @@ from server import (
+     postcard,
+     quote,
+     replace,
++    replace_job,
+     report,
+     rules,
+     runjob,
+@@ -54,11 +55,13 @@ from server import (
+     scene_digest,
+     search,
+     sellers,
++    sites,
+     survey,
+     tape_survey,
+     vision,
+ )
+ from server.config import get_settings
++from server.keys import KeysExhausted
+ from server.llm import chat
+ from server.models import SearchRequest
+ 
+@@ -566,6 +569,48 @@ TOOLS: list[dict[str, Any]] = [
+             },
+         },
+     },
++    {
++        "type": "function",
++        "function": {
++            "name": "replace_component",
++            "description": "Replace a part of the scanned scene with a new one that fits, on its "
++            "own from start to finish: take it out, tape the gap, check the scan's scale, search "
++            "for ones that fit the gap, pick the best, build its 3D model and put it in. For "
++            "'replace the dishwasher', 'swap out the range for an induction one', 'the fridge is "
++            "broken, get me a new one', 'get a counter-depth fridge in here'. Runs in the "
++            "background; never pays.",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "component": {
++                        "type": ["string", "null"],
++                        "description": "the scene part to replace, as named ('dishwasher', "
++                        "'stove', 'fridge', 'base cabinet'); null = the part the user points at",
++                    },
++                    "query": {
++                        "type": ["string", "null"],
++                        "description": "what to search for when the user asked for a kind "
++                        "('30 inch induction range', 'counter-depth fridge'); null = the same kind",
++                    },
++                    "max_price_usd": {"type": ["number", "null"]},
++                },
++                "required": ["component", "query", "max_price_usd"],
++            },
++        },
++    },
++    {
++        "type": "function",
++        "function": {
++            "name": "show_model",
++            "description": "Model view: put a scanned site on the table as a model ('show me "
++            "the gym model', 'open the hospital scan', 'the GT tower').",
++            "parameters": {
++                "type": "object",
++                "properties": {"site": {"type": "string", "description": "the site's name or id"}},
++                "required": ["site"],
++            },
++        },
++    },
+     {
+         "type": "function",
+         "function": {
+@@ -595,6 +640,7 @@ _REPLACE_TOOLS = (
+     "place_in_gap",
+     "cycle_in_gap",
+     "replace_flow",
++    "undo_edit",
+ )
+ # set_finish (F11) and start_checkout (F6) run server-side now; these just echo to the headset.
+ _CLIENT_ONLY_TOOLS = {"place_array", "equip_tool", "stop_survey"}
+@@ -653,7 +699,15 @@ _CANNED_REPLY = {
+     "place_in_gap": "Putting it in.",
+     "cycle_in_gap": "Next one.",
+     "replace_flow": "Done.",
++    "undo_edit": "Undone.",
++    # autonomy: one sentence, the whole replace (server/replace_job.py); Model view by voice
++    "replace_component": "On it.",
++    "show_model": "Here's the model.",
+ }
++# Said when a provider fails (every Groq key limited and no fallback, xAI down, ...): a reply
++# with no actions instead of an HTTP 500 (the voice test's p01).
++BUSY_REPLY = "The assistant's busy; try again in a moment."
++_PROVIDER_ERRORS = (KeysExhausted, openai.APIError, httpx.HTTPError)
+ # Their `spoken` is the step text: the voice relay says it word for word (force_message).
+ COACH_TOOLS = ("start_coach", "coach_step", "check_step")
+ RULES_WAIT_S = 20.0  # show_rules in this reply if the check lands in time, else on the next one
+@@ -1153,11 +1207,112 @@ def _fast_route(
+         fast
+         or _coach_intent(session, text)
+         or _reimagine_intent(session, text)
++        or _show_model_intent(text)
++        or _replace_job_route(session, text, ctx)
+         or _replace_route(session, text, ctx)
+         or _tape_survey_intent(session, text)
+     )
+ 
+ 
++# --- autonomy: Model view by voice; one sentence, the whole replace (server/replace_job.py) ----
++
++_SHOW_MODEL_RE = re.compile(
++    replace._LEAD
++    + r"(?:show(?:\s+me)?|open(?:\s+up)?|load|go\s+to|switch\s+to|take\s+me\s+to|bring\s+up"
++    + r"|let\s+me\s+see|let'?s\s+see|put\s+(?:up|on))\s+(?:the\s+|a\s+)?"
++    + r"(?:(?P<name>[a-z0-9][a-z0-9 '\-]{1,40}?)\s+(?:model|scan|scene|site)"
++    + r"|(?:model|scan|scene)\s+of\s+(?:the\s+)?(?P<name2>[a-z0-9][a-z0-9 '\-]{1,40}?))"
++    + r"(?:\s+(?:on\s+the\s+table|here))?"
++    + replace._TAIL,
++    re.IGNORECASE,
++)
++
++
++def _show_model_intent(text: str) -> tuple[str, dict[str, Any], str] | None:
++    """ "show me the gym model" / "open the hospital scan" -> show_model {site}, when the name
++    is a site (else None: "show me the next model" is the replace flow's)."""
++    m = _SHOW_MODEL_RE.match(text)
++    if not m:
++        return None
++    said = m.group("name") or m.group("name2")
++    site = sites.match(said)
++    if site is None:
++        return None
++    return "show_model", {"site": site}, f"Here's the {sites.name(site)}."
++
++
++def _replace_job_route(
++    session: Session, text: str, ctx: dict[str, Any]
++) -> tuple[str, dict[str, Any], str] | None:
++    """ "replace the dishwasher (with a new one that fits)", "swap out the range for an induction
++    one", "the fridge is broken, find me a new one", "take out the dishwasher and put in a new
++    one", "remove the range. find a 30-inch induction range that fits" -> replace_component, the
++    autonomous job. Only for a part of the open scene (else the LLM decides); a "find a new
++    dishwasher that fits" with its gap already open stays the step flow's search."""
++    if not session.site:
++        return None
++    comps = replace.components(session.site)
++    if not comps:
++        return None
++    want = replace_job.parse(text)
++    if want is None:
++        phrases = replace.match_all(text)
++        if (
++            len(phrases) < 2
++            or phrases[0]["kind"] != "remove"
++            or not any(p["kind"] in ("find", "place") for p in phrases[1:])
++        ):
++            return None
++        find = next((p for p in phrases if p["kind"] == "find"), None)
++        want = {"thing": phrases[0]["thing"], "words": (find or {}).get("thing"), "strict": False}
++    c = replace_job.resolve(comps, want["thing"], ctx.get("pointer"))
++    if c is None and want["thing"] is None and session.removed:
++        c = replace.find(comps, session.removed[-1])  # "replace it": the part taken out last
++    if c is None or not c.get("removable", True):
++        return None
++    if want["strict"] and c["id"] in session.removed:
++        return None
++    query = replace_job.query_for(replace.label(c), want["words"])
++    args = {"component": c["id"], "query": query, "max_price_usd": None}
++    return "replace_component", args, _CANNED_REPLY["replace_component"]
++
++
++def _replace_job_tool(session: Session, args: dict[str, Any], ctx: dict[str, Any]):
++    """replace_component: start the autonomous replace (job_started now; its steps, their
++    actions and job_done come through GET /job/run/{run_id})."""
++    site = session.site or ctx.get("site")
++    comps = replace.components(site)
++    if not comps:
++        return {"error": "open a scanned scene with parts first"}, None, None
++    thing = str(args.get("component") or "").strip() or None
++    c = replace_job.resolve(comps, thing, ctx.get("pointer"))
++    if c is None and thing is None and session.removed:
++        c = replace.find(comps, session.removed[-1])
++    if c is None:
++        what = f"no {thing} in this scan" if thing else "nothing where you're pointing"
++        return {"error": f"there's {what} to replace"}, None, None
++    label = replace.label(c)
++    if not c.get("removable", True):
++        return {"error": f"the {label} can't come out"}, None, None
++    query = replace_job.query_for(label, args.get("query"))
++    try:
++        max_usd = float(args["max_price_usd"]) if args.get("max_price_usd") else None
++    except (TypeError, ValueError):
++        max_usd = None
++    actions: list[dict[str, Any]] = []
++    if max_usd:
++        limited, action, _ = _set_limits_tool(session, {"max_total_usd": max_usd})
++        if action and "error" not in limited:
++            actions.append(action)
++    try:
++        run = replace_job.start(session, site, replace_job.Want(c, query, max_usd), ctx)
++    except runjob.Busy:
++        return {"error": "a job is already running; give it a moment"}, None, None
++    looking = f"{query}s" if not query.endswith("s") else query
++    spoken = f"Replacing the {label}: out, tape the gap, then {looking} that fit."
++    return {"run_id": run.id, "spoken": spoken}, [*actions, run.actions[0]], None
++
++
+ # --- e2e: measure and replace (server/replace.py; the app's hand-off docs/handoff/p4-e2e) ------
+ 
+ 
+@@ -1199,6 +1354,8 @@ def _replace_step(session: Session, phrase: dict[str, Any]) -> tuple[str, dict[s
+         return None
+     if kind == "measure":
+         return "measure_cavity", {}
++    if kind == "undo":
++        return "undo_edit", {}
+     if kind == "scale":
+         return "scale_gap", {
+             "axis": phrase["axis"],
+@@ -1281,14 +1438,7 @@ def _model_in_gap(session: Session, ids: list[str], ctx: dict[str, Any]) -> bool
+     )
+ 
+ 
+-def _short_name(part) -> str:
+-    """What to call a candidate aloud: "Whirlpool WDP540HAMW", else the first words of its name."""
+-    if part.manufacturer:
+-        return (
+-            f"{part.manufacturer} {part.model_no}".strip() if part.model_no else part.manufacturer
+-        )
+-    words = re.sub(r"\s*\(.*?\)", "", part.name or "").split()
+-    return " ".join(words[:4]) if words else "that one"
++_short_name = replace.short_name
+ 
+ 
+ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx: dict[str, Any]):
+@@ -1352,6 +1502,12 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+         return {"error": "take a part out first"}, None, None
+     cav = _gap_cavity(session, c, ctx)
+ 
++    if name == "undo_edit":
++        # The headset's EditHistory.Undo: the last edit (a model into the gap, a swap, the
++        # scale, the tape) comes off. Which model stands in the gap is the headset's to say now.
++        session.gap_index = None
++        return {"spoken": "Undone."}, {"name": "undo_edit", "args": {}}, None
++
+     if name == "measure_cavity":
+         spoken = "Taping the gap." + (
+             f" The scan says about {replace.spoken_gap(cav)}."
+@@ -1396,6 +1552,9 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+         plural = query if query.endswith("s") else f"{query}s"
+         gap = f": {replace.spoken_gap(cav)}" if cav else ""
+         spoken = f"Searching for {plural} that fit the gap{gap}."
++        hint = replace.scale_hint(cav, [], session.scale)  # a gap no real one fits: say why
++        if hint:
++            spoken += f" {hint}"
+         return (
+             {"spoken": spoken, "job_id": job.id},
+             {"name": "search_started", "args": {"job_id": job.id}},
+@@ -1434,7 +1593,13 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+         if say_option
+         else f"Putting the {_short_name(part)} in."
+     )
+-    return {"spoken": f"{lead} {replace.spoken_fit(f)}", "part_id": part.id}, action, None
++    spoken = f"{lead} {replace.spoken_fit(f)}"
++    hint = (  # once, when it goes in; "next one" doesn't repeat it
++        replace.scale_hint(cav, [replace.fits_word(f)], session.scale) if cav and not swap else None
++    )
++    if hint:
++        spoken += f" {hint}"
++    return {"spoken": spoken, "part_id": part.id}, action, None
+ 
+ 
+ # --- reimagine refine stack (F18) -------------------------------------------------------
+@@ -1925,6 +2090,18 @@ async def _run_tool(
+         return await _check_rules(session, args, context)
+     if name == "run_job":
+         return _run_job(session, args, context)
++    if name == "replace_component":
++        return _replace_job_tool(session, args, context)
++    if name == "show_model":
++        site = sites.match(str(args.get("site") or ""))
++        if site is None:
++            return {"error": f"no scanned site called {args.get('site')!r}"}, None, None
++        spoken = f"Here's the {sites.name(site)}."
++        return (
++            {"site": site, "spoken": spoken},
++            {"name": "show_model", "args": {"site": site}},
++            None,
++        )
+ 
+     if name == "check_quote":
+         return await _check_quote(context)
+@@ -2484,14 +2661,18 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+     `show_rules`."""
+     session = _get_session(session_id)
+     ready = [r for r in (_flythrough_ready(session), _rules_ready(session)) if r]
+-    result = await _handle_command(session_id, text, context)
++    try:
++        result = await _handle_command(session_id, text, context)
++    except _PROVIDER_ERRORS as exc:
++        logger.warning("agent: %r failed on a provider: %s: %s", text, type(exc).__name__, exc)
++        result = {"reply": BUSY_REPLY, "actions": [], "job_id": None}
+     if ready:
+         result["actions"] = [*ready, *result["actions"]]
+     return result
+ 
+ 
+ async def _handle_command(session_id: str, text: str, context: dict[str, Any]) -> dict[str, Any]:
+-    text = (text or "")[:MAX_TEXT_LEN]
++    text = replace.normalize((text or "")[:MAX_TEXT_LEN])  # "34 1⁄2 inches", number words
+     ctx = context or {}
+     session = _get_session(session_id)
+     _apply_context(session, ctx)
+@@ -2550,6 +2731,13 @@ async def _handle_command(session_id: str, text: str, context: dict[str, Any]) -
+ 
+     d = _digest(session)  # the scene's structure counts: numbers the model may say
+     system = SYSTEM_PROMPT + (" " + d.llm_line() if d is not None else "")
++    removable = [c for c in replace.components(session.site) if c.get("removable", True)]
++    if removable:  # autonomy: what replace_component can take out
++        names = ", ".join(replace.label(c) for c in removable)
++        system += (
++            f" Scene parts that come out: {names}. To replace one with a new one that fits, "
++            "call replace_component (it does the whole job)."
++        )
+     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, *session.history]
+     actions: list[dict[str, Any]] = []
+     job_id: str | None = None
+@@ -2590,6 +2778,8 @@ async def _handle_command(session_id: str, text: str, context: dict[str, Any]) -
+         hidden.add("share_design")
+     if not session.tape_survey:  # no tape survey reported yet: nothing to answer from
+         hidden.add("survey_query")
++    if not removable:  # autonomy: nothing in this scene comes out
++        hidden.add("replace_component")
+     tools = [t for t in TOOLS if t["function"]["name"] not in hidden]
+     for _turn in range(MAX_TURNS):
+         resp = await chat("agent", messages, tools=tools, reasoning_effort="low")
+@@ -2619,6 +2809,8 @@ async def _handle_command(session_id: str, text: str, context: dict[str, Any]) -
+                 "send_packet",
+                 "revoke_packet",
+                 "run_job",
++                "replace_component",
++                "show_model",
+                 "label_view",
+                 *COACH_TOOLS,
+                 "share_design",
+diff --git a/server/assets.py b/server/assets.py
+index e8a0a31..13b08c9 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -429,3 +429,74 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+     )
+     cache.write_json_atomic(json_path, part.model_dump_json(indent=2))
+     return part
++
++
++# --- shared resolution + upgrades (the replace job, server/replace_job.py) --------------------
++
++_inflight: dict[str, asyncio.Task] = {}
++_upgrade_tried: set[str] = set()
++
++
++def ready(part_id: str) -> Part | None:
++    """The part as on disk when its model.glb is ready, else None."""
++    pdir = part_dir(part_id)
++    if not (pdir / "model.glb").exists():
++        return None
++    try:
++        cached = Part.model_validate_json((pdir / "part.json").read_text())
++    except (OSError, ValueError):
++        return None
++    return cached if cached.asset.status == "ready" else None
++
++
++async def resolve_shared(part: Part, *, allow_ai: bool = True) -> Part:
++    """`resolve_asset`, one run per part at a time: a second caller (the search's background
++    worker and the replace job both want the same GLB) awaits the first one's task instead of
++    generating it twice. Cancelling a caller (a timeout) leaves the task running."""
++    done = ready(part.id)
++    if done is not None:
++        return done
++    task = _inflight.get(part.id)
++    if task is None or task.done():
++        task = asyncio.create_task(resolve_asset(part, allow_ai=allow_ai))
++        _inflight[part.id] = task
++
++        def _forget(t: asyncio.Task, pid: str = part.id) -> None:
++            if _inflight.get(pid) is t:
++                del _inflight[pid]
++
++        task.add_done_callback(_forget)
++    return await asyncio.shield(task)
++
++
++async def upgrade_proxy(part: Part) -> Part:
++    """A part whose GLB is still the `proxy` box (its LLM call failed or was rate limited when it
++    was first resolved) gets one more try at the generated tiers; a better model replaces
++    model.glb in place (same URL). Once per part per server run; never offline; never raises."""
++    current = ready(part.id) or part
++    if current.asset.tier != "proxy" or part.id in _upgrade_tried or get_settings().OFFLINE:
++        return current
++    _upgrade_tried.add(part.id)
++    pdir = part_dir(part.id)
++    photo = pdir / "image.jpg"
++    try:
++        made = await _generated(current, photo if photo.exists() else None, pdir)
++    except Exception as exc:  # noqa: BLE001 -- the proxy stays; an upgrade is a bonus
++        logger.info("asset %s: upgrade failed: %s", part.id, exc)
++        return current
++    if made is None:
++        return current
++    geometry, tier, residual = made
++    tmp = pdir / "model.glb.tmp"
++    geometry.export(tmp, file_type="glb")
++    os.replace(tmp, pdir / "model.glb")
++    current.asset = Asset(
++        tier=tier,
++        source_url=current.asset.source_url,
++        license=current.asset.license,
++        scale_residual_pct=round(residual, 3),
++        status="ready",
++    )
++    cache.write_json_atomic(pdir / "part.json", current.model_dump_json(indent=2))
++    logger.info("asset %s: upgraded proxy -> %s", part.id, tier)
++    return current
+diff --git a/server/jobs.py b/server/jobs.py
+index 8796478..dcd8a59 100644
+--- a/server/jobs.py
++++ b/server/jobs.py
+@@ -10,9 +10,9 @@ import uuid
+ from collections import OrderedDict
+ from collections.abc import Awaitable, Callable
+ 
+-from server import assets, cache, search
++from server import assets, cache, replace, search
+ from server.config import get_settings
+-from server.models import Job, Part, SearchRequest
++from server.models import Cavity, Job, Part, SearchRequest
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -20,6 +20,7 @@ MAX_JOBS = 512  # ponytail: simple LRU cap keyed on creation order, not last-acc
+ 
+ _jobs: "OrderedDict[str, Job]" = OrderedDict()
+ _done_events: dict[str, asyncio.Event] = {}
++_cavities: dict[str, Cavity] = {}  # a gap-fitted search's gap (the summary's scale hint)
+ 
+ _NUMBER_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+ 
+@@ -42,6 +43,7 @@ def _evict_old_jobs() -> None:
+             continue
+         del _jobs[job_id]
+         _done_events.pop(job_id, None)
++        _cavities.pop(job_id, None)
+ 
+ 
+ def start_search(req: SearchRequest) -> Job:
+@@ -53,6 +55,8 @@ def start_search(req: SearchRequest) -> Job:
+     )
+     _jobs[job.id] = job
+     _done_events[job.id] = asyncio.Event()
++    if req.cavity is not None:
++        _cavities[job.id] = req.cavity
+     asyncio.create_task(_run_search(job, req))
+     _evict_old_jobs()
+     return job
+@@ -111,7 +115,7 @@ async def _resolve_assets(candidates: list[Part]) -> None:
+     (anon HF ZeroGPU quota), but this also keeps disk/CPU work off the request path in order."""
+     for part in candidates:
+         try:
+-            await assets.resolve_asset(part)
++            await assets.resolve_shared(part)  # the replace job may be awaiting this one too
+         except Exception:
+             logger.exception("asset resolution failed for part %s", part.id)
+             failed = load_part(part.id) or part
+@@ -213,4 +217,8 @@ def summary(job: Job) -> str:
+     else:
+         second = "Fit against the measurement is unknown."
+ 
+-    return f"{count_word} {noun}. {second}"
++    # A gap-fitted search where nothing fits a gap no real one could fill: the scale is off.
++    cavity = _cavities.get(job.id)
++    words = [replace.fits_word(p.fit) for p in job.candidates]
++    hint = replace.scale_hint(cavity, words) if cavity is not None else None
++    return f"{count_word} {noun}. {second}" + (f" {hint}" if hint else "")
+diff --git a/server/replace.py b/server/replace.py
+index bc5391a..bcabf5a 100644
+--- a/server/replace.py
++++ b/server/replace.py
+@@ -16,6 +16,7 @@ calibrated) when it sent one, else the file's `cavity.size_m` x the scale calibr
+ import json
+ import logging
+ import re
++from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -179,6 +180,16 @@ def best(dims: list[Dims | None], cavity: Cavity) -> int:
+     return least if least >= 0 else (0 if dims else -1)
+ 
+ 
++def short_name(part: Any) -> str:
++    """What to call a candidate aloud: "Whirlpool WDP540HAMW", else the first words of its name."""
++    if part.manufacturer:
++        return (
++            f"{part.manufacturer} {part.model_no}".strip() if part.model_no else part.manufacturer
++        )
++    words = re.sub(r"\s*\(.*?\)", "", part.name or "").split()
++    return " ".join(words[:4]) if words else "that one"
++
++
+ def cm(v_m: float) -> str:
+     return f"{v_m * 100:.0f}"
+ 
+@@ -204,6 +215,150 @@ def spoken_fit(f: Fit) -> str:
+     return f"It's too {word} by {abs(f.spare_mm or 0):.0f} millimetres."
+ 
+ 
++# --- kinds: the words for a scene part, its standard sizes, the scale prior (replace_job) -----
++
++IN = 0.0254
++
++KINDS: dict[str, tuple[str, ...]] = {
++    "dishwasher": ("dishwasher", "dish washer", "dishwashing machine"),
++    "range": ("range", "stove", "oven", "cooker", "cooktop", "cook top", "stovetop", "stove top"),
++    "fridge": ("fridge", "refrigerator", "fridge freezer", "freezer", "icebox"),
++    "base cabinet": (
++        "base cabinet",
++        "sink cabinet",
++        "lower cabinet",
++        "sink base",
++        "cabinet",
++        "cupboard",
++    ),
++}
++
++# Inches. plausible_in: what a real opening for the kind measures, per axis (w across, h, d).
++# standards: (axis, inches, words) in order of preference; the first that leaves every axis
++# plausible wins.
++PRIORS: dict[str, dict[str, Any]] = {
++    "dishwasher": {
++        "plausible_in": {"w": (20.0, 26.0), "h": (32.0, 36.5), "d": (21.0, 28.0)},
++        "standards": [
++            ("h", 34.5, "34½″ dishwasher opening"),
++            ("w", 24.0, "24″ dishwasher opening"),
++        ],
++    },
++    "range": {
++        "plausible_in": {"w": (19.0, 37.0), "h": (34.0, 50.0), "d": (22.0, 30.0)},
++        "standards": [("w", 30.0, "30″ range"), ("w", 36.0, "36″ range"), ("w", 24.0, "24″ range")],
++    },
++    "fridge": {
++        "plausible_in": {"w": (23.0, 40.0), "h": (60.0, 76.0), "d": (24.0, 36.0)},
++        "standards": [
++            ("w", 36.0, "36″ fridge opening"),
++            ("w", 33.0, "33″ fridge opening"),
++            ("w", 30.0, "30″ fridge opening"),
++        ],
++    },
++    "base cabinet": {
++        "plausible_in": {"w": (9.0, 60.0), "h": (30.0, 36.5), "d": (20.0, 28.0)},
++        "standards": [
++            ("h", 34.5, "34½″ base cabinet"),
++            ("d", 24.0, "24″-deep base cabinet"),
++        ],
++    },
++}
++
++
++def kind_of(words: str | None) -> str | None:
++    """The PRIORS kind a phrase or label names ("old stove" -> "range"), else None. Longest
++    synonym first, so "sink cabinet" is a base cabinet and "fridge freezer" a fridge."""
++    t = _norm(words)
++    if not t:
++        return None
++    pairs = sorted(
++        ((syn, k) for k, syns in KINDS.items() for syn in syns), key=lambda p: -len(p[0])
++    )
++    for syn, k in pairs:
++        if re.search(rf"\b{re.escape(syn)}s?\b", t):
++            return k
++    return None
++
++
++def component_kind(c: dict[str, Any]) -> str | None:
++    return kind_of(c.get("label")) or kind_of(c.get("class"))
++
++
++def _out_of_range(size_in: dict[str, float], plausible: dict[str, tuple[float, float]]) -> float:
++    """How far outside the plausible ranges a size is, summed over axes (relative)."""
++    total = 0.0
++    for axis, (lo, hi) in plausible.items():
++        v = size_in[axis]
++        if v < lo:
++            total += (lo - v) / lo
++        elif v > hi:
++            total += (v - hi) / hi
++    return total
++
++
++def implausible(kind: str | None, gap_m: tuple[float, float, float]) -> bool:
++    """The gap can't be an opening of this kind at this scale (e.g. a dishwasher < 20 in wide)."""
++    prior = PRIORS.get(kind or "")
++    if prior is None:
++        return False
++    size_in = dict(zip("whd", (v / IN for v in gap_m), strict=True))
++    return _out_of_range(size_in, prior["plausible_in"]) > 0
++
++
++@dataclass
++class ScalePrior:
++    factor: float  # multiply the scene's scale by this
++    axis: str  # w | h | d: the gap's axis set to `real_m`
++    real_m: float
++    said: str  # "34½″ dishwasher opening"
++
++
++def scale_prior(kind: str | None, gap_m: tuple[float, float, float]) -> ScalePrior | None:
++    """The standard opening to scale the scene from, when the gap is implausible for its kind;
++    None when it's plausible, or the kind has no standard sizes on file."""
++    prior = PRIORS.get(kind or "")
++    if prior is None or not implausible(kind, gap_m):
++        return None
++    gap = dict(zip("whd", gap_m, strict=True))
++    best, best_score = None, None
++    for rank, (axis, inches, said) in enumerate(prior["standards"]):
++        if gap[axis] <= 0:
++            continue
++        factor = inches * IN / gap[axis]
++        size_in = {a: v * factor / IN for a, v in gap.items()}
++        score = (_out_of_range(size_in, prior["plausible_in"]), rank)
++        if best_score is None or score < best_score:
++            best, best_score = ScalePrior(factor, axis, round(inches * IN, 4), said), score
++    return best
++
++
++def _say_size(axis: str, inches: float) -> str:
++    """ "the opening is 34 and a half inches tall" (what LocalIntents / _SCALE_RE take)."""
++    whole = int(inches)
++    frac = _FRACTION_WORDS.get(round(inches - whole, 3), "")
++    word = {"w": "wide", "h": "tall", "d": "deep"}[axis]
++    return f"the opening is {whole}{frac} inches {word}"
++
++
++def scale_hint(cavity: Cavity | None, fits: list[str], scale: float = 1.0) -> str | None:
++    """When nothing fits a gap that is implausible for its kind at an uncalibrated scale, the
++    line that says how to fix it; None otherwise (something fits, the scale is set, or the
++    kind has no standard sizes)."""
++    if (
++        cavity is None
++        or abs((scale or 1.0) - 1.0) > 0.005
++        or any(f in ("fits", "tight") for f in fits)
++    ):
++        return None
++    kind = kind_of(cavity.label)
++    prior = PRIORS.get(kind or "")
++    if prior is None or not implausible(kind, cavity.size_m()):
++        return None
++    axis, inches, _ = prior["standards"][0]
++    return f"The scan may read small; say “{_say_size(axis, inches)}” to set the scale."
++
++
+ # --- the phrases (mirrors the app's Runtime/Agent/LocalIntents.cs; both are tested) --------------
+ # Whole utterances only (fillers allowed: "okay", "please", "grok"...), or a few joined by "and" /
+ # "then" / commas ("take out the dishwasher and measure the gap").
+@@ -277,6 +432,12 @@ _MEASURE_RE = re.compile(
+     + _TAIL,
+     _I,
+ )
++_UNDO_RE = re.compile(
++    _LEAD
++    + r"(?:undo|undo\s+(?:that|it|the\s+last\s+(?:one|step|change))|take\s+that\s+back)"
++    + _TAIL,
++    _I,
++)
+ _OPTION_RE = re.compile(
+     _LEAD
+     + r"(?:(?:show\s+me|try|go\s+to|switch\s+to|give\s+me|put\s+in|use|pick|let'?s\s+see|let\s+me\s+see"
+@@ -335,7 +496,8 @@ _FIND_RE = re.compile(
+     _I,
+ )
+ _AMOUNT = (
+-    r"(?P<n>\d+(?:\.\d+)?)(?P<half>\s*(?:and\s+a\s+half|½|1/2))?\s*"
++    r"(?P<n>\d+(?:\.\d+)?)(?P<half>\s*(?:and\s+(?:a\s+)?(?:half|quarter)|and\s+three\s+quarters"
++    r"|[½¼¾⅛⅜⅝⅞]|\d{1,2}/\d{1,2}))?\s*"
+     r"(?P<u>inches|inch|in\b|\"|″|centimet(?:re|er)s?|cm|millimet(?:re|er)s?|mm)"
+ )
+ _SCALE_RE = re.compile(
+@@ -352,6 +514,86 @@ _SCALE_RE = re.compile(
+ )
+ 
+ 
++_VULGAR = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875}
++_FRACTION_WORDS = {0.5: " and a half", 0.25: " and a quarter", 0.75: " and three quarters"}
++
++
++def fraction(text: str | None) -> float:
++    """ " and a half" / "½" / " 3/4" -> 0.5 / 0.5 / 0.75; 0 for none."""
++    t = (text or "").strip().lower()
++    if not t:
++        return 0.0
++    if t in _VULGAR:
++        return _VULGAR[t]
++    if "/" in t:
++        a, b = t.split("/", 1)
++        return float(a) / float(b)
++    if "three quarters" in t:
++        return 0.75
++    return 0.25 if "quarter" in t else 0.5
++
++
++_UNITS_WORDS = {
++    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
++    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
++    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
++    "nineteen": 19,
++}  # fmt: skip
++_TENS_WORDS = {
++    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
++    "eighty": 80, "ninety": 90,
++}  # fmt: skip
++_NUM_WORD = "|".join([*_TENS_WORDS, *_UNITS_WORDS])
++_SIZE_UNIT = (
++    r"(?:inch(?:es)?|centimet(?:re|er)s?|millimet(?:re|er)s?|cm|mm|feet|foot|dollars?|bucks)"
++)
++# "thirty-four and a half inches", "twelve hundred dollars": number words before a unit (only
++# there: "next one" / "option two" keep their words).
++_NUMBER_WORDS_RE = re.compile(
++    rf"\b(?P<num>(?:{_NUM_WORD})(?:[\s-]+(?:{_NUM_WORD}))?(?:\s+hundred(?:\s+(?:and\s+)?"
++    rf"(?:{_NUM_WORD})(?:[\s-]+(?:{_NUM_WORD}))?)?)?)"
++    rf"(?P<rest>(?:\s+and\s+(?:a\s+)?(?:half|quarter)|\s+and\s+three\s+quarters)?\s+{_SIZE_UNIT}\b)",
++    re.IGNORECASE,
++)
++
++
++def _words_value(words: str) -> int | None:
++    total, current = 0, 0
++    for w in re.split(r"[\s-]+", words.lower()):
++        if w == "and" or not w:
++            continue
++        if w == "hundred":
++            current = max(current, 1) * 100
++        elif w in _TENS_WORDS:
++            current += _TENS_WORDS[w]
++        elif w in _UNITS_WORDS:
++            current += _UNITS_WORDS[w]
++        else:
++            return None
++    return total + current
++
++
++def normalize(text: str | None) -> str:
++    """A transcript as the phrases expect it: Whisper's "34 1⁄2" (U+2044 fraction slash) and
++    "34½" are "34 1/2"; number words before a unit are digits ("thirty-four and a half inches"
++    -> "34 and a half inches", "twelve hundred dollars" -> "1200 dollars"); curly quotes
++    straight."""
++    t = (text or "").replace("\u2044", "/").replace("\u2215", "/")
++    t = (
++        t.replace("\u2019", "'")
++        .replace("\u2018", "'")
++        .replace("\u201c", '"')
++        .replace("\u201d", '"')
++    )
++    t = re.sub(r"(\d)\s*([½¼¾⅛⅜⅝⅞])", r"\1 \2", t)
++
++    def digits(m: re.Match) -> str:
++        v = _words_value(m.group("num"))
++        return m.group(0) if v is None else f"{v}{m.group('rest')}"
++
++    return _NUMBER_WORDS_RE.sub(digits, t)
++
++
+ def _scale_of(m: re.Match) -> dict[str, Any] | None:
+     """ "the opening is 34 and a half inches tall" -> {axis: "h", metres: 0.8763, said: "34 and a half inches"}."""
+     g = m.groupdict()
+@@ -360,8 +602,9 @@ def _scale_of(m: re.Match) -> dict[str, Any] | None:
+     n, half = g.get("n") or g.get("n2"), g.get("half") or g.get("half2")
+     unit = (g.get("u") or g.get("u2") or "").lower()
+     try:
+-        value = float(n) + (0.5 if half else 0.0)
+-    except (TypeError, ValueError):
++        frac = fraction(half)
++        value = float(n) + frac
++    except (TypeError, ValueError, ZeroDivisionError):
+         return None
+     per = (
+         0.01 if unit.startswith("c") else 0.001 if unit == "mm" or unit.startswith("mi") else 0.0254
+@@ -370,12 +613,14 @@ def _scale_of(m: re.Match) -> dict[str, Any] | None:
+     if not 0.01 < metres < 5.0:
+         return None
+     word = {0.0254: "inches", 0.01: "centimetres", 0.001: "millimetres"}[per]
+-    said = f"{n}{' and a half' if half else ''} {word}"
++    said = f"{n}{_FRACTION_WORDS.get(round(frac, 3), f' {frac:g}' if frac else '')} {word}"
+     return {"kind": "scale", "axis": axis, "metres": round(metres, 4), "said": said}
+ 
+ 
+ _SPLIT_RE = re.compile(  # "34 and a half inches" is one amount, not two phrases
+-    r"\s*(?:,\s*(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+|\s+and\s+(?!a\s+half\b)|\s+then\s+)\s*", _I
++    r"\s*(?:,\s*(?:and\s+)?(?:then\s+)?|[.;!?]\s+(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+"
++    r"|\s+and\s+(?!(?:a\s+)?(?:half|quarter)\b|three\s+quarters\b)|\s+then\s+)\s*",
++    _I,
+ )
+ _PRONOUNS = {
+     "it",
+@@ -424,8 +669,8 @@ def _thing_of(m: re.Match) -> str | None:
+ 
+ def match(text: str) -> dict[str, Any] | None:
+     """One phrase: {kind, thing, index, fits} or None. kind: remove | put_back | measure | scale |
+-    option | previous | next | place | find."""
+-    t = re.sub(r"\s+", " ", (text or "").strip())
++    undo | option | previous | next | place | find."""
++    t = re.sub(r"\s+", " ", normalize(text).strip())
+     if not t:
+         return None
+     if (m := _SCALE_RE.match(t)) and (scale := _scale_of(m)):
+@@ -434,6 +679,8 @@ def match(text: str) -> dict[str, Any] | None:
+         return {"kind": "put_back", "thing": _thing_of(m)}
+     if _MEASURE_RE.match(t):
+         return {"kind": "measure"}
++    if _UNDO_RE.match(t):
++        return {"kind": "undo"}
+     if m := _REMOVE_RE.match(t):
+         thing = _thing_of(m)
+         return {"kind": "remove", "thing": thing} if thing else None
+@@ -460,7 +707,7 @@ def match(text: str) -> dict[str, Any] | None:
+         if thing and re.search(
+             r"^(?:next|previous|option|number|other|another|it|that|this|them|me|us)\b|^"
+             + _GAP
+-            + "$",
++            + r"$|\b(?:model|scan|scene|site)s?$",
+             thing,
+             _I,
+         ):
+@@ -472,12 +719,13 @@ def match(text: str) -> dict[str, Any] | None:
+ def match_all(text: str) -> list[dict[str, Any]]:
+     """The phrases of an utterance in order (one, or 2-4 joined by and / then / commas, each a
+     phrase); [] otherwise."""
++    text = normalize(text)
+     if not text or len(text) > 200:
+         return []
+     one = match(text)
+     if one:
+         return [one]
+-    pieces = _SPLIT_RE.split(text.strip())
++    pieces = [p for p in _SPLIT_RE.split(text.strip().rstrip(".!?;, ")) if p.strip()]
+     if not 2 <= len(pieces) <= 4:
+         return []
+     out = []
+diff --git a/server/replace_job.py b/server/replace_job.py
+new file mode 100644
+index 0000000..55db40c
+--- /dev/null
++++ b/server/replace_job.py
+@@ -0,0 +1,542 @@
++"""One sentence, the whole replace, autonomously (the app's e2e hand-off p4-e2e, patch 0004):
++
++  "replace the dishwasher with a new one that fits"
++    1. remove   remove_component {component_id}       (named, or the part the pointer is on)
++    2. measure  measure_cavity {component_id}         (the headset tapes the gap)
++    3. scale    scale_gap {component_id, axis, real_m} when the gap is implausible for its kind
++    4. search   search_started {job_id}               a search fitted to the gap's W x H x D
++    5. pick     the best fit (fits > tight > least over), within the purchase limit
++    6. model    the pick's GLB (and the next two's) resolved, a proxy box upgraded once
++    7. place    place_part {part_id, model_url, component_id, fits, clearance_mm, cycle}
++    job_done    {kind: "replace", spoken, summary, part_id, fits, total_usd, ...}
++
++Each step lands in the headset as it finishes, through the run table and poll of "do the whole
++job" (runjob.register; `GET /job/run/{run_id}?after=n`: job_started, job_step, the step's own
++actions, job_done); a long search adds `job_step {status: "running"}` progress lines. A fixed
++chain, not an LLM planner: the LLM (or the fast path, `parse`) only decides that this is a
++replace, which part, and what to search for (agent.py `replace_component`). The follow-ups
++("next one", "option 2", "put it back", "undo") are agent._replace_route's, on the session
++state this chain leaves behind (removed, candidate_ids, gap_index, scale).
++
++Scale sanity (step 3). The kitchen scan reads ~1.47x small indoors (its scale comes from the
++drone's altitude caption). When the headset's scale isn't calibrated yet (context `scale` 1.0)
++and the gap is implausible for its kind (PRIORS `plausible_in`, e.g. a dishwasher opening
++narrower than 20 in), the job scales the scene from the kind's standard opening: a 34.5 in
++dishwasher opening height, a 30 in range, a 30/33/36 in fridge opening, a 34.5 in base cabinet.
++Of a kind's standard sizes it takes the first that leaves every other axis plausible too (the
++kitchen fridge scaled to 36 in wide would stand 86 in tall; 30 in gives 72 in). On the headset
++scale_gap is ScaleCalibration from the gap's own tape: one undoable edit. The job says so.
++"""
++
++import asyncio
++import logging
++import re
++import time
++from dataclasses import dataclass, field
++from typing import Any
++
++from server import assets, jobs, mandate, replace, report, runjob
++from server.config import get_settings
++from server.models import Cavity, Fit, Part, SearchRequest
++
++logger = logging.getLogger(__name__)
++
++STEPS = ["remove", "measure", "scale", "search", "pick", "model", "place"]
++KIND = "replace"
++SEARCH_CAP_S = 150.0  # a fresh search (SerpApi limited -> web fallback) can take 60-90 s
++MODEL_CAP_S = 60.0  # the pick's GLB: one LLM call + template build, or a queued Groq call
++UPGRADE_CAP_S = 25.0  # one more try at a better model than the proxy box
++MORE_MODELS_CAP_S = 45.0  # the next two candidates' GLBs, after the pick is in the gap
++PROGRESS_EVERY_S = 4.0
++
++# --- the phrases (the fast path; free phrasing goes to the LLM's replace_component tool) ------
++
++_LEAD, _TAIL, _DET, _thing = replace._LEAD, replace._TAIL, replace._DET, replace._thing
++_I = re.IGNORECASE
++_SPACE = r"(?:gap|space|spot|opening|hole|slot)"
++_REPLACE_RE = re.compile(
++    _LEAD
++    + r"(?:replace|swap\s+out|swap|change\s+out|switch\s+out|upgrade|trade\s+out|trade\s+in)\s+"
++    + r"(?:(?:it|this|that)(?:\s+one)?|"
++    + _DET
++    + _thing("t1")
++    + r")(?:\s+out)?(?:\s+(?:with|for)\s+(?P<with>[^.?!]{1,80}?))?"
++    + _TAIL,
++    _I,
++)
++_BROKEN_RE = re.compile(
++    _LEAD
++    + r"(?:the|my|our|this|that)\s+"
++    + _thing("t1")
++    + r"\s+(?:is|'s|seems|looks)\s+(?:(?:totally|completely|really|so|pretty|kind\s+of)\s+)?"
++    + r"(?:broken|broke|dead|busted|shot|leaking|leaky|not\s+working|done\s+for|dying|failing|"
++    + r"toast|too\s+(?:old|small|big|loud|noisy))"
++    + r"\W+(?P<rest>.*\b(?:new|replace|replacement|another|swap)\b.*)$",
++    _I,
++)
++_NEW_ONE_RE = re.compile(
++    _LEAD
++    + r"(?:put|install|fit|get|find|give|order|stick|drop|pop)\s+(?:me\s+|us\s+)?(?:in\s+)?"
++    + r"(?:a|an|some)\s+(?P<new>(?:new|replacement|different|better|bigger|smaller)\s+)?"
++    + _thing("t1")
++    + r"(?P<where>\s+(?:in\s+here|in\s+there|in\s+its\s+place|in\s+place|here|there|"
++    + r"in\s+(?:the\s+)?"
++    + _SPACE
++    + r"))?"
++    + r"(?:\s+(?:that|which)\s+(?:will\s+|would\s+)?fits?(?:\s+(?:in\s+)?(?:there|here|the\s+"
++    + _SPACE
++    + r"))?)?(?:\s+and\s+put\s+it\s+in(?:\s+there)?)?"
++    + _TAIL,
++    _I,
++)
++_OUT_AND_NEW_RE = re.compile(
++    _LEAD
++    + r"(?:take\s+out|remove|pull\s+out|rip\s+out|yank\s+out|get\s+rid\s+of)\s+"
++    + _DET
++    + _thing("t1")
++    + r"(?:\s+out)?\s*(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?"
++    + r"(?:put|install|fit|get|find|stick|drop|pop|give)\s+(?:me\s+)?(?:in\s+)?"
++    + r"(?P<rest>(?:a|an|some)?\s*(?:new|replacement|different|another)\b.*)$",
++    _I,
++)
++# Words in "with a new stainless one that fits" that name no feature of the part.
++_FILLER = set(
++    re.findall(
++        r"\S+",
++        "a an the some one ones new replacement different another other better same kind type "
++        "similar that which will would can could fits fit to in into here there it its for of "
++        "gap space spot opening hole please me us and then put install get find",
++    )
++)
++
++
++def _clean_words(words: str | None) -> str:
++    """ "a 30-inch induction one that fits" -> "30 inch induction"."""
++    t = replace._norm(words)
++    t = re.sub(r"(\d+(?:\.\d+)?)\s*(?:-\s*)?(?:inch(?:es)?|in\b|\"|″)", r"\1 inch", t)
++    t = re.sub(r"[^a-z0-9 .\-]", " ", t)
++    return " ".join(w for w in t.split() if w not in _FILLER)
++
++
++def query_for(label: str, words: str | None) -> str:
++    """The search query: the features the user named, and the part's own noun when they didn't
++    name one ("30 inch induction" + range -> "30 inch induction range")."""
++    feats = _clean_words(words)
++    if not feats:
++        return replace._norm(label)
++    if replace.kind_of(feats) or re.search(rf"\b{re.escape(replace._norm(label))}s?\b", feats):
++        return feats
++    return f"{feats} {replace._norm(label)}"
++
++
++def parse(text: str) -> dict[str, Any] | None:
++    """{thing, words, strict} for a replace sentence, else None. `thing` is what to take out (None:
++    "it"/"this", the pointer's part), `words` the features to search for; `strict`: only when
++    the part is still in (a "find a new X that fits" with its gap open is the step flow's)."""
++    t = re.sub(r"\s+", " ", (text or "").strip())
++    if not t or len(t) > 200:
++        return None
++    if m := _REPLACE_RE.match(t):
++        return {"thing": replace._thing_of(m), "words": m.group("with"), "strict": False}
++    if m := _OUT_AND_NEW_RE.match(t):
++        return {"thing": replace._thing_of(m), "words": _features(m.group("rest")), "strict": False}
++    if m := _BROKEN_RE.match(t):
++        return {"thing": replace._thing_of(m), "words": None, "strict": False}
++    if (m := _NEW_ONE_RE.match(t)) and (m.group("new") or m.group("where")):
++        thing = replace._thing_of(m)
++        if thing is None or replace.kind_of(thing) is None:
++            return None
++        return {"thing": thing, "words": thing, "strict": True}
++    return None
++
++
++def _features(rest: str | None) -> str | None:
++    """ "a new stainless one that fits and put it in" -> "a new stainless one that fits"."""
++    if not rest:
++        return None
++    return re.split(r"\s+and\s+(?:then\s+)?|,", rest, maxsplit=1)[0]
++
++
++# --- which part --------------------------------------------------------------------------------
++
++
++def _box_distance(p: list[float], bbox: dict[str, Any]) -> float:
++    lo, hi = bbox.get("min"), bbox.get("max")
++    if not (isinstance(lo, list) and isinstance(hi, list) and len(lo) == len(hi) == 3):
++        return float("inf")
++    d2 = sum(max(lo[k] - p[k], 0.0, p[k] - hi[k]) ** 2 for k in range(3))
++    return d2**0.5
++
++
++def at_pointer(comps: list[dict[str, Any]], pointer: Any, margin_m: float = 0.15):
++    """The removable part the headset's pointer (context `pointer`, the structure file's frame,
++    the parts file's frame) is on or within `margin_m` of; the nearest when several."""
++    if not (isinstance(pointer, list | tuple) and len(pointer) == 3):
++        return None
++    try:
++        p = [float(v) for v in pointer]
++    except (TypeError, ValueError):
++        return None
++    near = [
++        (_box_distance(p, c.get("bbox") or {}), i, c)
++        for i, c in enumerate(comps)
++        if c.get("removable", True)
++    ]
++    near = [n for n in near if n[0] <= margin_m]
++    return min(near)[2] if near else None
++
++
++def resolve(comps: list[dict[str, Any]], thing: str | None, pointer: Any = None):
++    """The scene part `thing` names (id, label, class, or a synonym: "stove" -> the range), or
++    the pointer's part when it names none ("replace this")."""
++    if thing:
++        c = replace.find(comps, thing)
++        if c is None:
++            kind = replace.kind_of(thing)
++            c = (
++                next((x for x in comps if replace.component_kind(x) == kind), None)
++                if kind
++                else None
++            )
++        return c
++    return at_pointer(comps, pointer)
++
++
++# --- the chain -----------------------------------------------------------------------------
++
++
++@dataclass
++class Want:
++    component: dict[str, Any]
++    query: str
++    max_usd: float | None = None
++
++
++@dataclass
++class State:
++    want: Want
++    kind: str | None
++    label: str
++    cavity: Cavity | None = None
++    scale_note: str | None = None
++    job: Any = None  # the search Job used
++    search_note: str = ""
++    index: int = -1
++    part: Part | None = None
++    fit: Fit | None = None
++    others: list[asyncio.Task] = field(default_factory=list)
++
++
++def start(session: Any, site: str, want: Want, context: dict[str, Any]) -> runjob.Run:
++    """Register the run (runjob.Busy while one runs) and start the chain in the background."""
++    label = replace.label(want.component)
++    title = f"Replace the {label}"
++    run = runjob.register(session, site, want.query, context, list(STEPS), kind=KIND, title=title)
++    state = State(want=want, kind=replace.component_kind(want.component), label=label)
++    asyncio.create_task(_chain(run, session, state))
++    return run
++
++
++async def _chain(run: runjob.Run, session: Any, st: State) -> None:
++    by = {s["name"]: s for s in run.steps}
++    work = {
++        "remove": (lambda: _remove(session, st), 5.0),
++        "measure": (lambda: _measure(session, st, run.context), 5.0),
++        "scale": (lambda: _scale(session, st), 5.0),
++        "search": (lambda: _search(run, by["search"], session, st), SEARCH_CAP_S + 15),
++        "pick": (lambda: _pick(session, st), 5.0),
++        "model": (lambda: _model(st), MODEL_CAP_S + UPGRADE_CAP_S + 5),
++        "place": (lambda: _place(session, st), 5.0),
++    }
++    try:
++        for name in STEPS:
++            make, cap = work[name]
++            await runjob._step(run, by[name], make(), cap_s=cap)
++            if by[name]["status"] == "stopped" or (
++                name in ("search", "pick", "model") and by[name]["status"] != "done"
++            ):
++                run.status = "stopped"
++                break
++        if run.status != "stopped" and st.others:
++            await asyncio.wait(st.others, timeout=MORE_MODELS_CAP_S)
++    except Exception:
++        logger.exception("replace job %s crashed", run.id)
++        run.status = "stopped"
++    if run.status != "stopped":
++        run.status = "done"
++    run.actions.append({"name": "job_done", "args": _done_args(run, st, by)})
++    logger.info(
++        "replace job %s %s in %.1f s: %s",
++        run.id,
++        run.status,
++        time.monotonic() - run.started,
++        ", ".join(f"{s['name']}={s['status']}" for s in run.steps),
++    )
++
++
++def _progress(run: runjob.Run, step: dict[str, Any], spoken: str) -> None:
++    """A long step's progress line: job_step {status: "running"} (the rail's caption)."""
++    step.update(status="running", spoken=spoken)
++    run.actions.append({"name": "job_step", "args": dict(step)})
++
++
++def _plural(noun: str) -> str:
++    return noun if noun.endswith("s") else jobs._pluralize(noun)
++
++
++def _gap_words(cav: Cavity) -> str:
++    """ "65 × 88 × 66 cm" (W × H × D)."""
++    w, h, d = cav.size_m()
++    return f"{w * 100:.0f} × {h * 100:.0f} × {d * 100:.0f} cm"
++
++
++def _price(part: Part) -> float | None:
++    return runjob._part_total(part)
++
++
++def fit_phrase(f: Fit | None) -> str:
++    """ "3 mm to spare" / "an exact fit" / "tight on height" / "13 mm too tall"."""
++    if f is None or f.spare_mm is None:
++        return "fit unknown"
++    word = replace.fits_word(f)
++    if word == "fits":
++        return "an exact fit" if f.spare_mm < 2 else f"{f.spare_mm:.0f} mm to spare"
++    if word == "tight":
++        return f"tight on {({'w': 'width', 'h': 'height', 'd': 'depth'}).get(f.axis or '', 'size')}"
++    too = {"w": "wide", "h": "tall", "d": "deep"}.get(f.axis or "", "big")
++    return f"{abs(f.spare_mm):.0f} mm too {too}"
++
++
++async def _remove(session: Any, st: State):
++    c = st.want.component
++    cid = c["id"]
++    session.gap_index = None
++    session.cavity = None
++    if cid in session.removed:
++        return f"The {st.label}'s already out.", [], None
++    session.removed.append(cid)
++    return (
++        f"Took out the {st.label}.",
++        [{"name": "remove_component", "args": {"component_id": cid}}],
++        None,
++    )
++
++
++async def _measure(session: Any, st: State, context: dict[str, Any]):
++    c = st.want.component
++    ctx_cav = context.get("cavity") if isinstance(context.get("cavity"), dict) else None
++    st.cavity = replace.cavity_for(c, session.scale, ctx_cav)
++    if st.cavity is None:
++        raise runjob.Stop(f"The scan has no gap size for the {st.label}; can't fit a new one.")
++    spoken = f"Taped the gap: {_gap_words(st.cavity)} on the scan."
++    return spoken, [{"name": "measure_cavity", "args": {"component_id": c["id"]}}], None
++
++
++async def _scale(session: Any, st: State):
++    scale = session.scale or 1.0
++    if abs(scale - 1.0) > 0.005:
++        raise runjob.Skip(f"The scale's already set (×{scale:.2f}); kept it.")
++    gap = st.cavity.size_m()
++    prior = replace.scale_prior(st.kind, gap)
++    if prior is None:
++        if st.kind is None:
++            raise runjob.Skip(f"No standard size on file for a {st.label}; kept the scan's scale.")
++        raise runjob.Skip(f"The gap reads right for a {st.label}; kept the scan's scale.")
++    session.scale = scale * prior.factor
++    session.cavity = None
++    c = st.want.component
++    st.cavity = replace.cavity_for(c, session.scale)
++    reads = "small" if prior.factor > 1 else "large"
++    st.scale_note = (
++        f"The scan reads {reads}; scaled it from a standard {prior.said} (×{prior.factor:.2f})."
++    )
++    action = {
++        "name": "scale_gap",
++        "args": {"component_id": c["id"], "axis": prior.axis, "real_m": prior.real_m},
++    }
++    return st.scale_note, [action], None
++
++
++async def _search(run: runjob.Run, step: dict[str, Any], session: Any, st: State):
++    cav = st.cavity
++    plain = replace._norm(st.label)
++    query = st.want.query or plain
++    what = _plural(query)
++    searches = [jobs.start_search(SearchRequest(query=query, cavity=cav))]
++    if (
++        replace._norm(query) != plain
++    ):  # the plain kind as a fallback ("range" for "30 inch induction")
++        searches.append(jobs.start_search(SearchRequest(query=plain, cavity=cav)))
++    t0 = time.monotonic()
++    _progress(run, step, f"Searching for {what} that fit {_gap_words(cav)}.")
++    while True:
++        first = jobs.get(searches[0].id) or searches[0]
++        if first.status in ("done", "failed"):
++            break
++        elapsed = time.monotonic() - t0
++        if elapsed >= SEARCH_CAP_S:
++            break
++        await jobs.wait(first.id, PROGRESS_EVERY_S)
++        first = jobs.get(first.id) or first
++        if first.status == "running":
++            stage = first.stage or "searching"
++            _progress(run, step, f"Searching for {what} · {stage} · {time.monotonic() - t0:.0f} s")
++    job = jobs.get(searches[0].id) or searches[0]
++    if not (job.status == "done" and job.candidates) and len(searches) > 1:
++        fallback = await jobs.wait(searches[1].id, max(1.0, SEARCH_CAP_S - (time.monotonic() - t0)))
++        if fallback is not None and fallback.status == "done" and fallback.candidates:
++            st.search_note = f" No {what} came back in time; these are plain {_plural(plain)}."
++            job, what = fallback, _plural(plain)
++    if not (job.status == "done" and job.candidates):
++        if job.status == "running":
++            raise runjob.Stop(f"The search for {what} took too long; say find one that fits.")
++        raise runjob.Stop(f"Couldn't find {what} for that gap.")
++    st.job = job
++    session.job_id = job.id
++    session.candidate_ids = [p.id for p in job.candidates]
++    session.gap_index = None
++    fits = [replace.fits_word(replace.fit(p.dims_mm, cav)) for p in job.candidates]
++    n = len(fits)
++    counts = ", ".join(
++        f"{fits.count(w)} {w.replace('_', ' ')}"
++        for w in ("fits", "tight", "too_big")
++        if fits.count(w)
++    )
++    spoken = f"Found {n} {what} for the {_gap_words(cav)} gap: {counts}.{st.search_note}"
++    return spoken, [{"name": "search_started", "args": {"job_id": job.id}}], None
++
++
++async def _pick(session: Any, st: State):
++    """The best fit (the search's order: the first that fits, else the tightest), preferring ones
++    within the purchase limit. Only a part that fits or is tight goes in: when none does, the job
++    stops here and says how far off the closest is (and, at an uncalibrated scale, how to set
++    it)."""
++    parts: list[Part] = st.job.candidates
++    cav = st.cavity
++    limit = st.want.max_usd
++    if limit is None:
++        intent = mandate.current_intent(session.id)
++        limit = intent.max_total_usd if intent is not None else None
++    fits = [replace.fit(p.dims_mm, cav) for p in parts]
++    words = [replace.fits_word(f) for f in fits]
++    fitting = [i for i, w in enumerate(words) if w in ("fits", "tight")]
++    if not fitting:
++        closest = min(range(len(parts)), key=lambda i: -(fits[i].spare_mm or 0))
++        line = (
++            f"None of the {len(parts)} fits the {_gap_words(cav)} gap; the closest, the "
++            f"{replace.short_name(parts[closest])}, is {fit_phrase(fits[closest])}."
++        )
++        hint = replace.scale_hint(cav, words, session.scale)
++        raise runjob.Stop(f"{line} {hint}" if hint else line)
++    within = [
++        i for i in fitting if limit is None or _price(parts[i]) is None or _price(parts[i]) <= limit
++    ]
++    pool = set(within or fitting)
++    note = (
++        "" if within or limit is None else f" It's over your ${limit:,.0f}; nothing under it fits."
++    )
++    index = replace.best([p.dims_mm if i in pool else None for i, p in enumerate(parts)], cav)
++    part = parts[index]
++    st.index, st.part, st.fit = index, part, fits[index]
++    session.selected_part_id = part.id
++    price = _price(part)
++    cost = f", ${price:,.0f}" if price is not None else ""
++    spoken = f"Picked the {replace.short_name(part)}: {fit_phrase(st.fit)}{cost}.{note}"
++    return spoken, [], None
++
++
++_TIER_WORDS = {
++    "cad": "the maker's CAD model",
++    "llm": "built to size from the product photo",
++    "scad": "Grok's OpenSCAD model",
++    "ai_mesh": "an AI mesh from the photo",
++    "proxy": "a photo box at true size",
++}
++
++
++async def _model(st: State):
++    parts: list[Part] = st.job.candidates
++    t0 = time.monotonic()
++    try:
++        part = await asyncio.wait_for(assets.resolve_shared(st.part), MODEL_CAP_S)
++    except TimeoutError as exc:
++        raise runjob.Stop(
++            "Its 3D model didn't finish in time; say put it in to try again."
++        ) from exc
++    upgraded = ""
++    if part.asset.tier == "proxy" and not get_settings().OFFLINE:
++        try:
++            better = await asyncio.wait_for(assets.upgrade_proxy(part), UPGRADE_CAP_S)
++            if better.asset.tier != "proxy":
++                part, upgraded = better, " (rebuilt from the photo box)"
++        except TimeoutError:
++            pass
++    st.part = part
++    n = len(parts)
++    nxt = [parts[(st.index + k) % n] for k in (1, 2) if n > k]
++    st.others = [asyncio.create_task(assets.resolve_shared(p)) for p in nxt]
++    took = time.monotonic() - t0
++    spoken = f"3D model ready: {_TIER_WORDS.get(part.asset.tier, part.asset.tier)}{upgraded}."
++    if took >= 1:
++        spoken = spoken[:-1] + f", {took:.0f} s."
++    return spoken, [], None
++
++
++async def _place(session: Any, st: State):
++    c, cav, part = st.want.component, st.cavity, st.part
++    n = len(st.job.candidates)
++    f = st.fit
++    args = {
++        "part_id": part.id,
++        "model_url": f"/parts/{part.id}/model.glb",
++        "name": part.name,
++        "component_id": c["id"],
++        "fits": replace.fits_word(f),
++        "clearance_mm": replace.clearance_mm(part.dims_mm, cav),
++        "cycle": {"index": st.index, "count": n},
++    }
++    session.gap_index = st.index
++    entry = {"type": "placement", "part_id": part.id, "count": 1, "source": "replace_job"}
++    report.append_notebook(session.id, [entry | ({"site": session.site} if session.site else {})])
++    spoken = f"Put the {replace.short_name(part)} in. {replace.spoken_fit(f)}"
++    return spoken, [{"name": "place_part", "args": args}], None
++
++
++def _done_args(run: runjob.Run, st: State, by: dict[str, dict[str, Any]]) -> dict[str, Any]:
++    placed = by["place"]["status"] == "done" and st.part is not None
++    ready = sum(1 for t in st.others if t.done() and not t.cancelled() and t.exception() is None)
++    if placed:
++        short = replace.short_name(st.part)
++        phrase = fit_phrase(st.fit)
++        lines = [st.scale_note] if st.scale_note else []
++        lines.append(f"Put a {short} in the {st.label} gap, {phrase}.")
++        if ready:
++            lines.append(
++                f"Say next one to see the other {'two' if ready == 2 else 'one'}."
++                if ready in (1, 2)
++                else "Say next one to see the others."
++            )
++        spoken = " ".join(lines)
++        summary = f"{short} in the {st.label} gap · {phrase}"
++    else:
++        stopped = next((s for s in run.steps if s["status"] == "stopped"), None)
++        stopped = stopped or next((s for s in run.steps if s["status"] == "skipped"), None)
++        spoken = (stopped or {}).get("spoken") or f"Couldn't replace the {st.label}."
++        summary = f"Stopped: {spoken.rstrip('.')}"
++    cost = round(sum(s.get("cost_usd") or 0 for s in run.steps), 4)
++    return {
++        "run_id": run.id,
++        "status": run.status,
++        "kind": KIND,
++        "title": run.title,
++        "spoken": spoken,
++        "summary": summary,
++        "component_id": st.want.component["id"],
++        "part_id": st.part.id if placed else None,
++        "fits": replace.fits_word(st.fit) if placed and st.fit else None,
++        "models_ready": (1 if placed else 0) + ready,
++        "total_usd": _price(st.part) if placed else None,
++        "after_rebates_usd": None,
++        "packet_url": None,
++        "cost_usd": cost,
++    }
+diff --git a/server/runjob.py b/server/runjob.py
+index dfd2525..704d85d 100644
+--- a/server/runjob.py
++++ b/server/runjob.py
+@@ -44,6 +44,11 @@ class Skip(Exception):
+     """A step with nothing to do or that failed; the message is spoken."""
+ 
+ 
++class Stop(Exception):
++    """A step the rest of the chain can't go on without (replace: no such part, nothing found);
++    the step is `stopped`, the message spoken, and the chain ends there."""
++
++
+ @dataclass
+ class Run:
+     id: str
+@@ -52,6 +57,9 @@ class Run:
+     goal: str | None
+     context: dict[str, Any]
+     status: str = "running"  # running | done | stopped
++    # "job" (this chain) or "replace" (server/replace_job.py); title = the rail's heading
++    kind: str = "job"
++    title: str | None = None
+     started: float = field(default_factory=time.monotonic)
+     steps: list[dict[str, Any]] = field(default_factory=list)
+     actions: list[dict[str, Any]] = field(default_factory=list)
+@@ -94,22 +102,39 @@ def plan_steps(site: str | None, goal: str | None) -> list[str]:
+ def start(session: Any, site: str | None, goal: str | None, context: dict[str, Any]) -> Run:
+     """Start the chain in the background. `session` is the agent session (duck-typed): the
+     chosen part becomes its selection, so "is it recalled?" and checkout work after."""
+-    if any(r.session_id == session.id and r.status == "running" for r in _runs.values()):
+-        raise Busy("a job is already running for this session")
+     goal = (goal or "").strip()[:200] or None
+     if not goal and not site:
+         raise ValueError("name what to fix, or load a scanned scene")
+-    run = Run(uuid.uuid4().hex[:12], session.id, site, goal, dict(context))
+-    names = plan_steps(site, goal)
++    run = register(session, site, goal, context, plan_steps(site, goal))
++    asyncio.create_task(_chain(run, session))
++    return run
++
++
++def register(
++    session: Any,
++    site: str | None,
++    goal: str | None,
++    context: dict[str, Any],
++    names: list[str],
++    kind: str = "job",
++    title: str | None = None,
++) -> Run:
++    """A new run in the table with `job_started` as its action 0 (Busy while the session has one
++    running). The caller starts its own chain; `GET /job/run/{run_id}` serves every kind."""
++    if any(r.session_id == session.id and r.status == "running" for r in _runs.values()):
++        raise Busy("a job is already running for this session")
++    run = Run(uuid.uuid4().hex[:12], session.id, site, goal, dict(context), kind=kind, title=title)
+     run.steps = [{"i": i, "name": n, "status": "pending"} for i, n in enumerate(names)]
+-    run.actions.append({"name": "job_started", "args": {"run_id": run.id, "steps": names}})
++    started: dict[str, Any] = {"run_id": run.id, "steps": names}
++    if kind != "job":
++        started |= {"kind": kind, "title": title}
++    run.actions.append({"name": "job_started", "args": started})
+     _runs[run.id] = run
+     while len(_runs) > MAX_RUNS:
+         oldest = next(iter(_runs.values()))
+         if oldest.status == "running":
+             break
+         _runs.popitem(last=False)
+-    asyncio.create_task(_chain(run, session))
+     return run
+ 
+ 
+@@ -159,16 +184,21 @@ async def _chain(run: Run, session: Any) -> None:
+     )
+ 
+ 
+-async def _step(run: Run, step: dict[str, Any], work, part: bool = False) -> None:
++async def _step(
++    run: Run, step: dict[str, Any], work, part: bool = False, cap_s: float | None = None
++) -> None:
+     """Run one step under its cap; record `job_step`, then the step's own actions."""
+     t0 = time.monotonic()
+     actions: list[dict[str, Any]] = []
+     cost = None
++    cap = cap_s if cap_s is not None else PART_CAP_S if part else STEP_CAP_S
+     try:
+-        spoken, actions, cost = await asyncio.wait_for(work, PART_CAP_S if part else STEP_CAP_S)
++        spoken, actions, cost = await asyncio.wait_for(work, cap)
+         status = "stopped" if step["name"] == "checkout" and run.recalled else "done"
+     except Skip as exc:
+         status, spoken = "skipped", str(exc)
++    except Stop as exc:
++        status, spoken = "stopped", str(exc)
+     except cache.OfflineMiss:
+         status, spoken = "skipped", f"The {step['name']} step needs the uplink; skipped it."
+     except TimeoutError:
+diff --git a/server/sites.py b/server/sites.py
+new file mode 100644
+index 0000000..5fe014d
+--- /dev/null
++++ b/server/sites.py
+@@ -0,0 +1,87 @@
++"""Which scanned site a spoken name means, for Model view by voice ("show me the gym model" ->
++`show_model {site: "zabel-gymnasium"}`; the app's Runtime/Agent/ModelViewActions.cs and
++Runtime/Scene/ModelSites.Match take the same names). The sites are SCENE_DIR's packages (GET
++/scenes) plus the facade built into the app ("built-in")."""
++
++import json
++import re
++from pathlib import Path
++
++from server.config import get_settings
++
++BUILT_IN = "built-in"
++# Spoken names the site ids don't contain.
++ALIASES = {
++    "gym": "zabel-gymnasium",
++    "gymnasium": "zabel-gymnasium",
++    "zabel": "zabel-gymnasium",
++    "hospital": "hospital-bg",
++    "tower": "gt-lcc-tower",
++    "canopy": "gt-lcc-canopy",
++    "pavilion": "gt-lcc-pavilion",
++    "facade": BUILT_IN,
++    "house": BUILT_IN,
++    "test facade": BUILT_IN,
++}
++NAMES = {
++    "zabel-gymnasium": "Zabel gym",
++    "hospital-bg": "hospital",
++    "gt-lcc-tower": "GT tower",
++    "gt-lcc-canopy": "GT canopy",
++    "gt-lcc-pavilion": "GT pavilion",
++    BUILT_IN: "test facade",
++}
++_FILLER = {"the", "a", "an", "model", "scan", "scene", "site", "of", "our", "my", "that", "this"}
++
++
++def listed() -> list[str]:
++    """The site ids with a scene.json under SCENE_DIR, A-Z."""
++    base = Path(get_settings().SCENE_DIR)
++    try:
++        return sorted(d.name for d in base.iterdir() if (d / "scene.json").is_file())
++    except OSError:
++        return []
++
++
++def name(site: str) -> str:
++    """ "Zabel gym", "kitchen", "GT tower"."""
++    if site in NAMES:
++        return NAMES[site]
++    try:
++        title = json.loads((Path(get_settings().SCENE_DIR) / site / "scene.json").read_text())
++        title = title.get("title")
++    except (OSError, ValueError, AttributeError):
++        title = None
++    return title or site.replace("-", " ")
++
++
++def _words(s: str) -> list[str]:
++    return [w for w in re.findall(r"[a-z0-9]+", s.lower()) if w not in _FILLER]
++
++
++def match(said: str | None) -> str | None:
++    """The site a name means: the id itself, an alias ("the gym"), else the listed site sharing
++    the most words with it ("gt tower" -> gt-lcc-tower). Test packages (synthetic-*) only by id.
++    None when nothing matches."""
++    words = _words(said or "")
++    if not words:
++        return None
++    sites = listed()
++    joined = "-".join(words)
++    if joined in sites:
++        return joined
++    phrase = " ".join(words)
++    for alias in sorted(ALIASES, key=len, reverse=True):
++        if re.search(rf"\b{re.escape(alias)}\b", phrase):
++            site = ALIASES[alias]
++            if site == BUILT_IN or site in sites:
++                return site
++    best, best_score = None, 0
++    for site in sites:
++        if site.startswith("synthetic"):
++            continue
++        own = set(_words(site.replace("-", " ") + " " + name(site)))
++        score = sum(1 for w in words if w in own)
++        if score > best_score:
++            best, best_score = site, score
++    return best
+diff --git a/tests/test_replace.py b/tests/test_replace.py
+index 6487612..02963cf 100644
+--- a/tests/test_replace.py
++++ b/tests/test_replace.py
+@@ -360,27 +360,52 @@ def test_a_spoken_limit_with_thousands(text, usd, rest):
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_remove_find_and_put_it_in_in_one_breath(monkeypatch):
++async def test_remove_find_and_put_it_in_in_one_breath(monkeypatch, candidates):
+     """ "remove the dishwasher, find a 24-inch dishwasher under $1,200 that fits, put it in": the
+-    limit, the removal and the search run; "put it in" waits for the options."""
++    limit is set, then the whole replace runs as one job (server/replace_job.py): the dishwasher
++    comes out, the search fits its gap, the best fit goes in."""
++    import asyncio
++
++    from server import assets, runjob
++
+     monkeypatch.setattr(agent, "chat", _no_llm_chat)
+     started = {}
+ 
+     def fake_start_search(req):
+-        started["req"] = req
+-        return Job(id="job2", status="running", query=req.query)
++        started.setdefault("req", req)  # the named kind first; then "dishwasher", its fallback
++        job = Job(id=f"job-{len(jobs._jobs)}", status="done", query=req.query)
++        job.candidates = search.fit_to_cavity([CANDIDATES[k] for k in ("tall", "ok")], req.cavity)
++        jobs._jobs[job.id] = job
++        return job
++
++    async def fake_resolve(part, **kw):
++        return part
+ 
+     monkeypatch.setattr(jobs, "start_search", fake_start_search)
++    monkeypatch.setattr(assets, "resolve_shared", fake_resolve)
+     r = await _say(
+         "remove the dishwasher, find a 24-inch dishwasher under $1,200 that fits, put it in",
+         removed=[],
+     )
+     names = [a["name"] for a in r["actions"]]
+-    assert names == ["show_limits", "remove_component", "search_started"]
++    assert names == ["show_limits", "job_started"]
+     assert r["actions"][0]["args"]["max_total_usd"] == 1200.0
+-    assert started["req"].query == "24-inch dishwasher"
++    run = runjob.get(r["actions"][1]["args"]["run_id"])
++    for _ in range(300):
++        if run.status != "running":
++            break
++        await asyncio.sleep(0.01)
++    acts = [a["name"] for a in run.actions if a["name"] != "job_step"]
++    assert acts == [
++        "job_started",
++        "remove_component",
++        "measure_cavity",
++        "search_started",
++        "place_part",
++        "job_done",
++    ]  # the 60 x 82 x 58 cm gap is a plausible dishwasher opening: no scale_gap
++    assert started["req"].query == "24 inch dishwasher"
+     assert started["req"].cavity.size_mm() == pytest.approx((600.0, 820.0, 580.0))
+-    assert r["reply"].endswith("Say put it in when the options are up.")
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/test_replace_job.py b/tests/test_replace_job.py
+new file mode 100644
+index 0000000..c7710fc
+--- /dev/null
++++ b/tests/test_replace_job.py
+@@ -0,0 +1,684 @@
++"""One sentence, the whole replace (server/replace_job.py): routing (fast path, the LLM's
++replace_component tool), the chain's actions in order, the scale prior, the pick (fits or
++tight only, within the limit), the models, and the follow-ups on the state it leaves. The
++kitchen's real gap sizes (parts.r1.json at scale 1); search and assets are faked, no network."""
++
++import asyncio
++import json
++import uuid
++from collections import OrderedDict
++
++import pytest
++from openai.types.chat import ChatCompletion
++
++from server import agent, assets, jobs, mandate, replace, replace_job, runjob, search
++from server.config import get_settings
++from server.keys import KeysExhausted
++from server.models import Asset, Cavity, Dims, Job, Part, Seller
++
++SITE = "kitchen-test"
++IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
++
++
++def _comp(cid, label, cls, w, h, d, bbox):
++    return {
++        "id": cid,
++        "label": label,
++        "class": cls,
++        "removable": True,
++        "bbox": {"min": bbox[0], "max": bbox[1]},
++        "cavity": {
++            "node": f"cavity_{cid}",
++            "estimated": True,
++            "size_m": {"w": w, "h": h, "d": d},
++            "insert": {"p": [0.0, 0.0, 0.0], "axes": IDENTITY},
++        },
++    }
++
++
++# The kitchen scan's parts (scale 1: it reads ~1.47x small indoors).
++PARTS = {
++    "schema": "airtools.parts/1",
++    "frame": "scene",
++    "revision": 1,
++    "components": [
++        _comp("dw1", "dishwasher", "appliance", 0.4371, 0.5911, 0.4447,
++              ([-1.51, -1.16, -0.69], [-1.07, -0.59, -0.24])),
++        _comp("bc1", "base cabinet", "cabinet", 0.9492, 0.5826, 0.4512,
++              ([-1.48, -1.16, -0.24], [-1.11, -0.58, 0.71])),
++        _comp("fr1", "fridge", "appliance", 0.4921, 1.1777, 0.5428,
++              ([-1.57, -1.15, 0.69], [-1.04, 0.02, 1.20])),
++        _comp("rg1", "range", "appliance", 0.5166, 0.7932, 0.4401,
++              ([-1.50, -1.16, -1.21], [-1.01, -0.38, -0.68])),
++        {"id": "wall", "label": "wall", "class": "structure", "removable": False},
++    ],
++}  # fmt: skip
++
++
++def _part(pid, maker, model, w, h, d, usd):
++    return Part(
++        id=pid,
++        name=f"{maker} {model} 24 in. Built-In Dishwasher",
++        manufacturer=maker,
++        model_no=model,
++        dims_mm=Dims(w=w, h=h, d=d),
++        sellers=[Seller(name="Home Depot", price_usd=usd, shipping_usd=0.0)],
++        recommended_seller=0,
++    )
++
++
++# The live cache's "dishwasher" answer (docs: 34.5 in opening = 876.3 mm).
++DISHWASHERS = [
++    _part("frigidaire-fdpc4221as", "Frigidaire", "FDPC4221AS", 609.6, 889.0, 635.0, 329.0),
++    _part("whirlpool-wdp540hamw", "Whirlpool", "WDP540HAMW", 606.3, 876.3, 622.3, 459.0),
++    _part("bosch-shx3ar75uc", "Bosch", "SHX3AR75UC", 598.0, 865.0, 573.0, 699.0),
++]
++RANGES = [
++    _part("ge-jb645", "GE", "JB645RKSS", 759.0, 1181.0, 718.0, 749.0),  # too deep for 649
++    _part("frigidaire-gcri3060", "Frigidaire", "GCRI3060AF", 759.0, 1168.0, 640.0, 1099.0),
++    _part("ge-phs700", "GE", "PHS700AYFS", 759.0, 1166.0, 635.0, 1899.0),
++]
++
++
++@pytest.fixture(autouse=True)
++def _scene(tmp_path, monkeypatch):
++    base = tmp_path / "scene"
++    (base / SITE).mkdir(parents=True)
++    (base / SITE / "scene.json").write_text(
++        json.dumps({"name": SITE, "revision": 1, "parts": {"file": "parts.r1.json"}})
++    )
++    (base / SITE / "parts.r1.json").write_text(json.dumps(PARTS))
++    for other in ("zabel-gymnasium", "hospital-bg", "gt-lcc-tower", "synthetic-facade"):
++        (base / other).mkdir()
++        (base / other / "scene.json").write_text(json.dumps({"name": other, "revision": 1}))
++    monkeypatch.setenv("SCENE_DIR", str(base))
++    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
++    get_settings.cache_clear()
++    replace._cache.clear()
++    monkeypatch.setattr(agent.safety, "start", lambda part: None)
++    monkeypatch.setattr(jobs, "_jobs", OrderedDict())
++    monkeypatch.setattr(runjob, "_runs", OrderedDict())
++    monkeypatch.setattr(assets, "_inflight", {})
++    monkeypatch.setattr(assets, "_upgrade_tried", set())
++    monkeypatch.setattr(replace_job, "PROGRESS_EVERY_S", 0.01)
++    agent._sessions.clear()
++    yield
++    agent._sessions.clear()
++    replace._cache.clear()
++    get_settings.cache_clear()
++
++
++@pytest.fixture
++def shop(monkeypatch):
++    """jobs.start_search -> a finished job (fitted to the request's cavity like the real one);
++    resolve_asset -> a tiny GLB on disk. `calls` logs the searches and the models built."""
++    calls: dict[str, list] = {"search": [], "models": []}
++    answers = {
++        "dishwasher": DISHWASHERS,
++        "range": RANGES,
++        "30 inch induction range": RANGES,
++        "induction range": RANGES,
++    }
++
++    def fake_start_search(req):
++        calls["search"].append(req)
++        found = [p.model_copy(deep=True) for p in answers.get(req.query, DISHWASHERS)]
++        job = Job(id=uuid.uuid4().hex[:12], status="done", query=req.query)
++        job.candidates = search.fit_to_cavity(found, req.cavity)
++        jobs._jobs[job.id] = job
++        jobs._done_events[job.id] = asyncio.Event()
++        jobs._done_events[job.id].set()
++        return job
++
++    async def fake_resolve(part, *, allow_ai=True):
++        calls["models"].append(part.id)
++        await asyncio.sleep(0.01)
++        pdir = assets.part_dir(part.id)
++        pdir.mkdir(parents=True, exist_ok=True)
++        (pdir / "model.glb").write_bytes(b"glTF")
++        part = part.model_copy(update={"asset": Asset(tier="llm", status="ready")})
++        (pdir / "part.json").write_text(part.model_dump_json())
++        return part
++
++    monkeypatch.setattr(jobs, "start_search", fake_start_search)
++    monkeypatch.setattr(assets, "resolve_asset", fake_resolve)
++    return calls
++
++
++async def _no_llm_chat(role, messages, tools=None, **kw):
++    raise AssertionError("the fast path must not call the LLM")
++
++
++async def _say(text, session="auto", **ctx):
++    context = {"site": SITE, "scale": 1.0, "removed": [], **ctx}
++    return await agent.handle_command(session, text, context)
++
++
++async def _finish(run_id: str) -> runjob.Run:
++    for _ in range(500):
++        run = runjob.get(run_id)
++        if run.status != "running":
++            return run
++        await asyncio.sleep(0.01)
++    raise AssertionError(f"run {run_id} still running: {runjob.body(runjob.get(run_id))}")
++
++
++def _run_id(result) -> str:
++    started = [a for a in result["actions"] if a["name"] == "job_started"]
++    assert started, result
++    return started[0]["args"]["run_id"]
++
++
++def _named(actions, *names):
++    return [a for a in actions if a["name"] in names]
++
++
++# --- the scale prior ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "kind,gap,axis,inches,factor",
++    [
++        ("dishwasher", (0.4371, 0.5911, 0.4447), "h", 34.5, 1.482),
++        ("range", (0.5166, 0.7932, 0.4401), "w", 30.0, 1.475),
++        # 36 in wide would make it 86 in tall: the 30 in standard is the one that stays plausible
++        ("fridge", (0.4921, 1.1777, 0.5428), "w", 30.0, 1.549),
++        ("base cabinet", (0.9492, 0.5826, 0.4512), "h", 34.5, 1.504),
++    ],
++)
++def test_the_kitchen_gaps_scale_from_their_standard_openings(kind, gap, axis, inches, factor):
++    assert replace.implausible(kind, gap)
++    prior = replace.scale_prior(kind, gap)
++    assert (prior.axis, prior.real_m) == (axis, round(inches * replace.IN, 4))
++    assert prior.factor == pytest.approx(factor, abs=0.002)
++    scaled = tuple(v * prior.factor for v in gap)
++    assert not replace.implausible(kind, scaled)
++    assert replace.scale_prior(kind, scaled) is None  # plausible now: nothing to do
++
++
++def test_no_prior_for_a_plausible_gap_or_an_unknown_kind():
++    assert replace.scale_prior("dishwasher", (0.61, 0.876, 0.62)) is None
++    assert replace.scale_prior(None, (0.1, 0.1, 0.1)) is None
++    assert replace.kind_of("old stove") == "range"
++    assert replace.kind_of("sink cabinet") == "base cabinet"
++    assert replace.kind_of("counter-depth fridge") == "fridge"
++    assert replace.kind_of("microwave") is None
++
++
++# --- the phrases ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "text,component,query",
++    [
++        ("Replace the dishwasher with a new one that fits.", "dw1", "dishwasher"),
++        ("replace the dishwasher", "dw1", "dishwasher"),
++        ("okay grok, swap out the dishwasher for one that fits", "dw1", "dishwasher"),
++        ("the dishwasher is broken, find me a new one and put it in", "dw1", "dishwasher"),
++        ("take out the dishwasher and put in a new one", "dw1", "dishwasher"),
++        ("take out the dishwasher, find one that fits and put it in", "dw1", "dishwasher"),
++        ("get a counter-depth fridge in here", "fr1", "counter-depth fridge"),
++        ("get me a new fridge", "fr1", "fridge"),
++        ("replace the stove with a 30-inch induction one", "rg1", "30 inch induction range"),
++        ("upgrade the cabinet", "bc1", "base cabinet"),
++        # the voice test's p09: two sentences, the limit cut out first
++        ("Remove the range. Find a 30-inch induction range that fits.", "rg1",
++         "30 inch induction range"),
++        ("take out the fridge and find a counter depth fridge that fits", "fr1",
++         "counter depth fridge"),
++    ],
++)  # fmt: skip
++def test_replace_sentences_route_to_the_job(text, component, query):
++    session = agent.Session(id="p", site=SITE)
++    fast = agent._fast_route(session, replace.normalize(text), {"site": SITE})
++    assert fast is not None and fast[0] == "replace_component", fast
++    assert (fast[1]["component"], fast[1]["query"]) == (component, query)
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        "take out the dishwasher and measure the gap",  # the step flow's compound
++        "find a dishwasher that fits",  # no "new": not a replace on its own
++        "replace the batteries",  # not a part of this scene
++        "swap the finish for brushed nickel",
++        "remove the dishwasher",
++        "show me the next model",
++    ],
++)
++def test_not_a_replace(text):
++    session = agent.Session(id="p", site=SITE)
++    fast = agent._fast_route(session, text, {"site": SITE})
++    assert fast is None or fast[0] != "replace_component", fast
++
++
++def test_a_new_one_with_its_gap_open_is_the_step_flows_search():
++    session = agent.Session(id="p", site=SITE, removed=["dw1"])
++    fast = agent._fast_route(session, "find a new dishwasher that fits", {"site": SITE})
++    assert fast[0] == "find_in_gap"
++    fast = agent._fast_route(session, "replace the dishwasher", {"site": SITE})
++    assert fast[0] == "replace_component"  # "replace" still means the whole job
++
++
++def test_replace_this_takes_the_part_the_pointer_is_on():
++    session = agent.Session(id="p", site=SITE)
++    ctx = {"site": SITE, "pointer": [-1.2, -0.8, -0.9]}  # inside the range's box
++    fast = agent._fast_route(session, "replace this with a new one", ctx)
++    assert fast[1]["component"] == "rg1"
++    assert agent._fast_route(session, "replace it", {"site": SITE}) is None  # nothing aimed at
++    session.removed = ["fr1"]
++    assert agent._fast_route(session, "replace it", {"site": SITE})[1]["component"] == "fr1"
++
++
++# --- the whole job ---------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_one_sentence_replaces_the_dishwasher(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("Replace the dishwasher with a new one that fits.")
++    assert [a["name"] for a in r["actions"]] == ["job_started"]
++    started = r["actions"][0]["args"]
++    assert started["steps"] == replace_job.STEPS
++    assert (started["kind"], started["title"]) == ("replace", "Replace the dishwasher")
++    assert r["reply"].startswith("Replacing the dishwasher")
++
++    run = await _finish(started["run_id"])
++    assert run.status == "done"
++    acts = runjob.body(run, 0)["actions"]
++    order = [a["name"] for a in acts if a["name"] not in ("job_step",)]
++    assert order == [
++        "job_started",
++        "remove_component",
++        "measure_cavity",
++        "scale_gap",
++        "search_started",
++        "place_part",
++        "job_done",
++    ]
++    steps = {s["name"]: s for s in run.steps}
++    assert all(s["status"] == "done" for s in run.steps), steps
++    # each step's job_step comes right before its own actions
++    names = [a["name"] if a["name"] != "job_step" else f"step:{a['args']['name']}" for a in acts]
++    assert names.index("step:remove") < names.index("remove_component")
++    assert names.index("step:scale") < names.index("scale_gap") < names.index("step:search")
++
++    (scale,) = _named(acts, "scale_gap")
++    assert scale["args"] == {"component_id": "dw1", "axis": "h", "real_m": 0.8763}
++    assert "scaled it from a standard 34½″ dishwasher opening (×1.48)" in steps["scale"]["spoken"]
++
++    (req,) = shop["search"]
++    assert req.query == "dishwasher"
++    assert req.cavity.component_id == "dw1"
++    assert req.cavity.size_mm() == pytest.approx((648.0, 876.3, 659.3), abs=0.5)
++
++    (place,) = _named(acts, "place_part")
++    a = place["args"]
++    assert (a["part_id"], a["component_id"], a["fits"]) == ("whirlpool-wdp540hamw", "dw1", "fits")
++    assert a["model_url"] == "/parts/whirlpool-wdp540hamw/model.glb"
++    assert a["clearance_mm"] == {"w": 42, "h": 0, "d": 37}
++    assert a["cycle"] == {"index": 0, "count": 3}
++    assert steps["pick"]["spoken"] == "Picked the Whirlpool WDP540HAMW: an exact fit, $459."
++    # the pick and the next two have real GLBs before job_done
++    for pid in ("whirlpool-wdp540hamw", "bosch-shx3ar75uc", "frigidaire-fdpc4221as"):
++        assert (assets.part_dir(pid) / "model.glb").exists()
++    assert sorted(shop["models"]) == sorted(p.id for p in DISHWASHERS)
++
++    done = acts[-1]["args"]
++    assert (done["status"], done["kind"], done["part_id"], done["fits"]) == (
++        "done",
++        "replace",
++        "whirlpool-wdp540hamw",
++        "fits",
++    )
++    assert done["spoken"] == (
++        "The scan reads small; scaled it from a standard 34½″ dishwasher opening (×1.48). "
++        "Put a Whirlpool WDP540HAMW in the dishwasher gap, an exact fit. "
++        "Say next one to see the other two."
++    )
++    assert done["summary"] == "Whirlpool WDP540HAMW in the dishwasher gap · an exact fit"
++    assert (done["total_usd"], done["models_ready"]) == (459.0, 3)
++
++    session = agent._sessions["auto"]
++    assert session.removed == ["dw1"]
++    assert session.gap_index == 0
++    assert session.scale == pytest.approx(1.4825, abs=0.001)
++    ids = [p.id for p in jobs.get(session.job_id).candidates]
++    assert session.candidate_ids == ids
++
++    # --- the follow-ups, as the headset sends them (its calibration, its candidates)
++    ctx = {"scale": session.scale, "removed": ["dw1"], "candidate_ids": ids}
++    r = await _say("next one", selected_part_id="whirlpool-wdp540hamw", **ctx)
++    assert r["actions"][0]["name"] == "cycle_model"
++    assert r["actions"][0]["args"]["index"] == 1
++    assert r["reply"].startswith("Option 2 of 3, the Bosch SHX3AR75UC.")
++    r = await _say("show me option 3", selected_part_id="bosch-shx3ar75uc", **ctx)
++    assert (r["actions"][0]["name"], r["actions"][0]["args"]["index"]) == ("cycle_model", 2)
++    r = await _say("undo", **ctx)
++    assert r["actions"] == [{"name": "undo_edit", "args": {}}]
++    r = await _say("put it back", **ctx)
++    assert r["actions"] == [{"name": "restore_component", "args": {"component_id": "dw1"}}]
++
++
++@pytest.mark.asyncio
++async def test_a_calibrated_scene_keeps_its_scale(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("replace the dishwasher", scale=1.4826)
++    run = await _finish(_run_id(r))
++    steps = {s["name"]: s for s in run.steps}
++    assert steps["scale"]["status"] == "skipped"
++    assert steps["scale"]["spoken"] == "The scale's already set (×1.48); kept it."
++    acts = runjob.body(run, 0)["actions"]
++    assert not _named(acts, "scale_gap")
++    assert _named(acts, "place_part")[0]["args"]["part_id"] == "whirlpool-wdp540hamw"
++    assert not acts[-1]["args"]["spoken"].startswith("The scan reads")
++
++
++@pytest.mark.asyncio
++async def test_nothing_that_fits_stops_before_placing_and_says_why(monkeypatch, shop):
++    """The voice test's p05: a red "too tall by 285 mm" went in. The job only places a part that
++    fits or is tight; none does at this (wrong) calibration, so it stops at the pick."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("replace the dishwasher", scale=1.2)  # calibrated, but too small
++    run = await _finish(_run_id(r))
++    assert run.status == "stopped"
++    steps = {s["name"]: s for s in run.steps}
++    assert steps["pick"]["status"] == "stopped"
++    assert steps["pick"]["spoken"].startswith("None of the 3 fits the 52 × 71 × 53 cm gap")
++    assert (steps["model"]["status"], steps["place"]["status"]) == ("pending", "pending")
++    acts = runjob.body(run, 0)["actions"]
++    assert not _named(acts, "place_part")
++    done = acts[-1]["args"]
++    assert done["status"] == "stopped" and done["part_id"] is None
++    assert done["summary"].startswith("Stopped: None of the 3 fits")
++
++
++def test_the_scale_hint_only_at_an_uncalibrated_scale_on_an_implausible_gap():
++    small = Cavity(w_m=0.4371, h_m=0.5911, d_m=0.4447, label="dishwasher")
++    hint = replace.scale_hint(small, ["too_big", "too_big"])
++    assert hint == (
++        "The scan may read small; say “the opening is 34 and a half inches tall” to set the scale."
++    )
++    assert replace.match(hint.split("“")[1].split("”")[0])["kind"] == "scale"  # it's sayable
++    assert replace.scale_hint(small, ["too_big", "tight"]) is None
++    assert replace.scale_hint(small, ["too_big"], scale=1.48) is None
++    assert replace.scale_hint(Cavity(w_m=0.3, h_m=0.3, d_m=0.3, label="microwave"), []) is None
++
++
++@pytest.mark.asyncio
++async def test_the_price_limit_picks_the_fit_under_it(monkeypatch, shop):
++    """ "Remove the range. Find a 30-inch induction range under $1,200 that fits." (p09): the
++    range comes out (not the stale fridge gap), the search fits the range's gap, the limit holds."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    text = "Remove the range. Find a 30-inch induction range under $1,200 that fits."
++    r = await _say(text, removed=["fr1"], cavity={"component_id": "fr1", "w_m": 0.49,
++                                                   "h_m": 1.18, "d_m": 0.54})  # fmt: skip
++    assert [a["name"] for a in r["actions"]] == ["show_limits", "job_started"]
++    assert r["actions"][0]["args"]["max_total_usd"] == 1200.0
++    run = await _finish(_run_id(r))
++    acts = runjob.body(run, 0)["actions"]
++    assert _named(acts, "remove_component")[0]["args"] == {"component_id": "rg1"}
++    assert _named(acts, "scale_gap")[0]["args"]["axis"] == "w"  # a 30 in range
++    first = shop["search"][0]
++    assert (first.query, first.cavity.component_id) == ("30 inch induction range", "rg1")
++    # GE JB645 is too deep; Frigidaire GCRI3060 ($1,099) fits; GE PHS700 fits but is $1,899
++    assert _named(acts, "place_part")[0]["args"]["part_id"] == "frigidaire-gcri3060"
++    assert agent._sessions["auto"].removed == ["fr1", "rg1"]
++
++
++@pytest.mark.asyncio
++async def test_over_the_limit_when_only_that_fits(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    mandate.set_limits("auto", source="voice", text="under $500", max_total_usd=500.0)
++    r = await _say("replace the stove")
++    run = await _finish(_run_id(r))
++    steps = {s["name"]: s for s in run.steps}
++    assert steps["pick"]["spoken"] == (
++        "Picked the Frigidaire GCRI3060AF: 2 mm to spare, $1,099. It's over your $500; nothing "
++        "under it fits."
++    )
++
++
++@pytest.mark.asyncio
++async def test_a_slow_search_reports_progress_then_times_out(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    monkeypatch.setattr(replace_job, "SEARCH_CAP_S", 0.2)
++
++    def never(req):
++        job = Job(id=uuid.uuid4().hex[:12], status="running", stage="charting the candidates")
++        jobs._jobs[job.id] = job
++        jobs._done_events[job.id] = asyncio.Event()
++        return job
++
++    monkeypatch.setattr(jobs, "start_search", never)
++    r = await _say("replace the dishwasher")
++    run = await _finish(_run_id(r))
++    running = [
++        a for a in runjob.body(run, 0)["actions"]
++        if a["name"] == "job_step" and a["args"]["status"] == "running"
++    ]  # fmt: skip
++    assert running and "charting the candidates" in running[-1]["args"]["spoken"]
++    steps = {s["name"]: s for s in run.steps}
++    assert steps["search"]["status"] == "stopped"
++    assert "took too long" in steps["search"]["spoken"]
++
++
++@pytest.mark.asyncio
++async def test_a_fresh_query_falls_back_to_the_plain_kind(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    real = jobs.start_search
++
++    def empty_for_the_fancy_one(req):
++        job = real(req)
++        if req.query != "range":
++            job.candidates = []
++        return job
++
++    monkeypatch.setattr(jobs, "start_search", empty_for_the_fancy_one)
++    r = await _say("replace the range with a 30-inch induction one")
++    run = await _finish(_run_id(r))
++    steps = {s["name"]: s for s in run.steps}
++    assert "these are plain ranges" in steps["search"]["spoken"]
++    assert run.status == "done"
++
++
++@pytest.mark.asyncio
++async def test_a_second_job_while_one_runs_is_refused(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    gate = asyncio.Event()
++    real = assets.resolve_asset
++
++    async def slow(part, **kw):
++        await gate.wait()
++        return await real(part, **kw)
++
++    monkeypatch.setattr(assets, "resolve_asset", slow)
++    first = await _say("replace the dishwasher")
++    second = await _say("replace the fridge")
++    assert second["actions"] == []
++    assert second["reply"] == "Can't do that yet: a job is already running; give it a moment."
++    gate.set()
++    await _finish(_run_id(first))
++
++
++# --- the LLM's replace_component tool (free phrasing), with Grok's tool-call shape ------------
++
++
++def _tool_call(name: str, arguments: dict) -> ChatCompletion:
++    return ChatCompletion.model_validate(
++        {
++            "id": "chatcmpl-grok",
++            "object": "chat.completion",
++            "created": 1,
++            "model": "grok-4.7",
++            "choices": [
++                {
++                    "index": 0,
++                    "finish_reason": "tool_calls",
++                    "message": {
++                        "role": "assistant",
++                        "content": None,
++                        "tool_calls": [
++                            {
++                                "id": "call_0",
++                                "type": "function",
++                                "function": {"name": name, "arguments": json.dumps(arguments)},
++                            }
++                        ],
++                    },
++                }
++            ],
++        }
++    )
++
++
++@pytest.mark.asyncio
++async def test_the_llm_routes_free_phrasing_to_replace_component(monkeypatch, shop):
++    seen = {}
++
++    async def grok(role, messages, tools=None, **kw):
++        seen["system"] = messages[0]["content"]
++        seen["tools"] = [t["function"]["name"] for t in tools]
++        args = {"component": "stove", "query": "induction range", "max_price_usd": 1200}
++        return _tool_call("replace_component", args)
++
++    monkeypatch.setattr(agent, "chat", grok)
++    r = await _say("my old stove died, can you sort me out with an induction one")
++    assert "replace_component" in seen["tools"]
++    assert "Scene parts that come out: dishwasher, base cabinet, fridge, range" in seen["system"]
++    assert [a["name"] for a in r["actions"]] == ["show_limits", "job_started"]
++    assert r["reply"].startswith("Replacing the range")
++    run = await _finish(_run_id(r))
++    assert shop["search"][0].query == "induction range"
++    assert _named(runjob.body(run, 0)["actions"], "place_part")[0]["args"]["component_id"] == "rg1"
++
++
++@pytest.mark.asyncio
++async def test_the_tool_is_hidden_without_scene_parts_and_refuses_unknown_parts(monkeypatch):
++    seen = {}
++
++    async def grok(role, messages, tools=None, **kw):
++        seen.setdefault("tools", [t["function"]["name"] for t in tools])
++        return _tool_call("replace_component", {"component": "microwave", "query": None,
++                                                "max_price_usd": None})  # fmt: skip
++
++    monkeypatch.setattr(agent, "chat", grok)
++    await agent.handle_command("nosite", "hello there", {})
++    assert "replace_component" not in seen["tools"]
++    r = await _say("the microwave is dead, swap it for a new one", session="mw")
++    assert r["reply"] == "Can't do that yet: there's no microwave in this scan to replace."
++    assert r["actions"] == []
++
++
++# --- the voice test's other findings -----------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_a_provider_failure_is_a_busy_reply_not_a_500(monkeypatch):
++    async def exhausted(role, messages, tools=None, **kw):
++        raise KeysExhausted("GROQ_API_KEY: all 3 keys rate limited")
++
++    monkeypatch.setattr(agent, "chat", exhausted)
++    r = await agent.handle_command("busy", "what's the weather like", {})
++    assert r == {"reply": agent.BUSY_REPLY, "actions": [], "job_id": None}
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "text,site",
++    [
++        ("Show me the gym model.", "zabel-gymnasium"),
++        ("open the hospital scan", "hospital-bg"),
++        ("show me the GT tower model", "gt-lcc-tower"),
++        ("show me the model of the kitchen", SITE),
++    ],
++)
++async def test_show_me_the_gym_model_is_model_view(monkeypatch, text, site):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    assert agent._show_model_intent("show me the bathroom model") is None  # not a site
++    # p14: with the fridge gap open it searched "gym models that fit the gap"
++    r = await _say(text, removed=["fr1"])
++    assert r["actions"] == [{"name": "show_model", "args": {"site": site}}]
++
++
++@pytest.mark.asyncio
++async def test_whispers_fraction_slash_sets_the_scale(monkeypatch):
++    """p03: Whisper wrote "34 1⁄2" (U+2044); the scale phrase has to match it."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    said = (
++        "The opening is 34 1⁄2 inches tall",
++        "the opening is thirty-four and a half inches tall",
++        "The opening is 34½ inches tall.",
++    )
++    for text in said:
++        r = await _say(text, removed=["dw1"], session=f"s-{text[:12]}")
++        assert r["actions"][0]["name"] == "scale_gap", (text, r)
++        assert r["actions"][0]["args"]["real_m"] == pytest.approx(0.8763)
++
++
++@pytest.mark.asyncio
++async def test_the_step_flow_says_how_to_fix_the_scale(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    monkeypatch.setattr(
++        jobs, "start_search", lambda req: Job(id="j1", status="running", query=req.query)
++    )
++    r = await _say("find a dishwasher that fits", removed=["dw1"])
++    assert r["reply"].endswith("say “the opening is 34 and a half inches tall” to set the scale.")
++    r = await _say("find a dishwasher that fits", removed=["dw1"], scale=1.48, session="cal")
++    assert "set the scale" not in r["reply"]
++    # the search's own summary (GET /parts/jobs/{id}) says it too when nothing fits
++    cav = Cavity(w_m=0.4371, h_m=0.5911, d_m=0.4447, label="dishwasher", component_id="dw1")
++    job = Job(id="j2", status="done", query="dishwasher")
++    job.candidates = search.fit_to_cavity([p.model_copy() for p in DISHWASHERS], cav)
++    jobs._cavities["j2"] = cav
++    assert jobs.summary(job).endswith("to set the scale.")
++
++
++# --- models: shared resolution, proxy upgrade ---------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_two_callers_share_one_model_build(monkeypatch):
++    built = []
++
++    async def fake(part, *, allow_ai=True):
++        built.append(part.id)
++        await asyncio.sleep(0.02)
++        pdir = assets.part_dir(part.id)
++        pdir.mkdir(parents=True, exist_ok=True)
++        (pdir / "model.glb").write_bytes(b"glTF")
++        done = part.model_copy(update={"asset": Asset(tier="llm", status="ready")})
++        (pdir / "part.json").write_text(done.model_dump_json())
++        return done
++
++    monkeypatch.setattr(assets, "resolve_asset", fake)
++    part = DISHWASHERS[1]
++    a, b = await asyncio.gather(assets.resolve_shared(part), assets.resolve_shared(part))
++    assert built == [part.id]
++    assert a.asset.tier == b.asset.tier == "llm"
++    await assets.resolve_shared(part)  # ready on disk: no third build
++    assert built == [part.id]
++
++
++@pytest.mark.asyncio
++async def test_a_proxy_box_gets_one_more_try_at_a_real_model(monkeypatch):
++    import trimesh
++
++    part = DISHWASHERS[0].model_copy(update={"asset": Asset(tier="proxy", status="ready")})
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True, exist_ok=True)
++    (pdir / "model.glb").write_bytes(b"box")
++    (pdir / "part.json").write_text(part.model_dump_json())
++    tries = []
++
++    async def generated(p, photo, d):
++        tries.append(p.id)
++        return trimesh.Scene(trimesh.creation.box((0.6, 0.9, 0.6))), "llm", 0.0
++
++    monkeypatch.setattr(assets, "_generated", generated)
++    better = await assets.upgrade_proxy(part)
++    assert better.asset.tier == "llm"
++    assert (pdir / "model.glb").read_bytes()[:4] == b"glTF"
++    assert json.loads((pdir / "part.json").read_text())["asset"]["tier"] == "llm"
++    await assets.upgrade_proxy(part)  # once per part per run
++    assert tries == [part.id]
+-- 
+2.50.1 (Apple Git-155)
+

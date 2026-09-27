@@ -1,0 +1,173 @@
+From 1f29cfeb393add87692c02f1c70e3608ec0625e5 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 19:44:24 -0400
+Subject: [PATCH 05/12] feat(llm): a Groq call that can't be answered falls
+ back to xAI (LLM_FALLBACK)
+
+Every Groq key rate limited (KeysExhausted), Groq unreachable or 5xx: chat() sends the same
+call to LLM_FALLBACK (default xai:grok-4.20-0309-non-reasoning; vision, strict json_schema and
+function tools all work there; reasoning_effort dropped for it). Bad requests still raise;
+Groq's built-in browser_search never falls back; off without GROK_API_KEY or with
+LLM_FALLBACK="". The voice test's asset call ('meshgen: extract call ... Connection error')
+and ask_scene's KeysExhausted 500 were this.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/config.py  |  3 +++
+ server/llm.py     | 49 ++++++++++++++++++++++++++++++++++++++++++++++-
+ tests/conftest.py |  1 +
+ tests/test_llm.py | 41 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 93 insertions(+), 1 deletion(-)
+
+diff --git a/server/config.py b/server/config.py
+index 08fa7af..e83e2e9 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -63,6 +63,9 @@ class Settings(BaseSettings):
+     X_CLIENT_SECRET: str | None = None
+     X_REFRESH_TOKEN: str | None = None
+     LLM_QUOTE: str | None = None  # paper-quote reader (server/quote.py), vision + json_schema
++    # When a Groq call can't be answered (every key rate limited, unreachable, 5xx), the same
++    # call goes here instead (server/llm.py chat()); needs GROK_API_KEY. "" turns it off.
++    LLM_FALLBACK: str = "xai:grok-4.20-0309-non-reasoning"
+ 
+     # Groq speech models (docs/research/llm-providers.md §3), overridable per deployment.
+     STT_MODEL: str = "whisper-large-v3-turbo"
+diff --git a/server/llm.py b/server/llm.py
+index cd2ed96..d04ff39 100644
+--- a/server/llm.py
++++ b/server/llm.py
+@@ -28,7 +28,7 @@ from openai.types.chat import ChatCompletion
+ 
+ from server import cache, web
+ from server.config import get_settings
+-from server.keys import KeyPool
++from server.keys import KeyPool, KeysExhausted
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -103,6 +103,35 @@ def takes_reasoning_effort(provider: str, model: str) -> bool:
+     return True
+ 
+ 
++def fallback_for(provider: str, tools: list[dict[str, Any]] | None) -> tuple[str, str] | None:
++    """Where a Groq call goes when Groq can't answer it (LLM_FALLBACK, default xAI grok-4.20
++    non-reasoning: vision, strict json_schema and tools all work there). None for other
++    providers, without GROK_API_KEY, or for Groq-only built-in tools (browser_search)."""
++    settings = get_settings()
++    spec = (settings.LLM_FALLBACK or "").strip()
++    if provider != "groq" or not spec:
++        return None
++    if any(t.get("type") != "function" for t in tools or []):
++        return None
++    fb_provider, _, fb_model = spec.partition(":")
++    if fb_provider not in PROVIDERS or not fb_model or fb_provider == provider:
++        return None
++    if not getattr(settings, PROVIDERS[fb_provider]["api_key_field"], None):
++        return None
++    return fb_provider, fb_model
++
++
++def _unavailable(exc: Exception) -> bool:
++    """Groq couldn't answer at all (not a bad request): every key limited, down, or 5xx."""
++    return isinstance(
++        exc,
++        KeysExhausted
++        | openai.RateLimitError
++        | openai.APIConnectionError
++        | openai.InternalServerError,
++    )
++
++
+ def _rejects_reasoning(exc: Exception) -> bool:
+     """A 400 about the reasoning parameter ("does not support parameter reasoningEffort")."""
+     text = str(exc).lower()
+@@ -228,6 +257,24 @@ async def chat(
+         for key in _REASONING_PARAMS:
+             kwargs.pop(key, None)
+         resp = await call()
++    except Exception as exc:
++        fallback = fallback_for(provider, tools) if _unavailable(exc) else None
++        if fallback is None:
++            raise
++        logger.warning(
++            "llm role=%s %s:%s unavailable (%s); falling back to %s:%s",
++            role,
++            provider,
++            model,
++            type(exc).__name__,
++            *fallback,
++        )
++        provider, model = fallback
++        kwargs["model"] = model
++        if not takes_reasoning_effort(provider, model):
++            for key in _REASONING_PARAMS:
++                kwargs.pop(key, None)
++        resp = await _client(provider, None, retries).chat.completions.create(**kwargs)
+     latency_ms = (time.monotonic() - start) * 1000
+     usage = resp.usage
+     cost = cost_usd(usage)
+diff --git a/tests/conftest.py b/tests/conftest.py
+index a9e9724..440f522 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -27,6 +27,7 @@ _UNSET_KEYS = [
+     "X_CLIENT_ID",
+     "X_CLIENT_SECRET",
+     "X_REFRESH_TOKEN",
++    "LLM_FALLBACK",  # a Groq failure a test simulates stays a failure (tests opt in)
+ ]
+ 
+ 
+diff --git a/tests/test_llm.py b/tests/test_llm.py
+index 1778e73..5c25bc4 100644
+--- a/tests/test_llm.py
++++ b/tests/test_llm.py
+@@ -367,3 +367,44 @@ async def test_other_bad_requests_still_raise(monkeypatch):
+         router.post(XAI_URL).mock(return_value=httpx.Response(400, json={"error": "bad tools"}))
+         with pytest.raises(openai.BadRequestError):
+             await chat("agent", [{"role": "user", "content": "hi"}], reasoning_effort="low")
++
++
++# --- Groq can't answer -> the same call on xAI (LLM_FALLBACK) ----------------------------------
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("status", [429, 503])
++async def test_groq_unavailable_falls_back_to_xai(monkeypatch, status):
++    monkeypatch.setenv("LLM_FALLBACK", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    body = _load("groq_json_schema_alone.json")
++    with respx.mock(assert_all_called=True) as router:
++        router.post(GROQ_URL).mock(return_value=httpx.Response(status, json={"error": "busy"}))
++        xai = router.post(XAI_URL).mock(return_value=httpx.Response(200, json=body))
++        await chat(
++            "vision", [{"role": "user", "content": "hi"}], reasoning_effort="low", max_retries=0
++        )
++    sent = json.loads(xai.calls.last.request.content)
++    assert sent["model"] == "grok-4.20-0309-non-reasoning"
++    assert "reasoning_effort" not in sent  # grok-4.20 400s on it
++    assert sent["max_tokens"] == 400  # the role's own settings ride along
++
++
++@pytest.mark.asyncio
++async def test_no_fallback_for_bad_requests_groq_only_tools_or_when_off(monkeypatch):
++    import openai
++
++    from server import llm
++
++    monkeypatch.setenv("LLM_FALLBACK", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    assert llm.fallback_for("groq", [{"type": "browser_search"}]) is None
++    assert llm.fallback_for("xai", None) is None
++    assert llm.fallback_for("groq", None) == ("xai", "grok-4.20-0309-non-reasoning")
++    with respx.mock(assert_all_called=True) as router:
++        router.post(GROQ_URL).mock(return_value=httpx.Response(400, json={"error": "bad"}))
++        with pytest.raises(openai.BadRequestError):
++            await chat("agent", [{"role": "user", "content": "hi"}])
++    monkeypatch.setenv("LLM_FALLBACK", "")
++    get_settings.cache_clear()
++    assert llm.fallback_for("groq", None) is None
+-- 
+2.50.1 (Apple Git-155)
+

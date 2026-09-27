@@ -1,0 +1,136 @@
+From afb6100ec12f17c29bf37bc65a9469220a652464 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:11:11 -0400
+Subject: [PATCH 08/12] fix(replace job): the next two candidates' proxy boxes
+ get upgraded too; a calibrated scale (any context scale != 1, or
+ scale_source) skips the standard-opening prior
+
+The kitchen now starts at its site default x1.63 on the headset: dw1's gap is 712 x 963 x 725 mm,
+every 24 in dishwasher fits, no scale_gap. The prior stays for an uncalibrated scale 1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/replace_job.py     | 36 ++++++++++++++++++++++++++++++------
+ tests/test_replace_job.py | 22 ++++++++++++++++++----
+ 2 files changed, 48 insertions(+), 10 deletions(-)
+
+diff --git a/server/replace_job.py b/server/replace_job.py
+index 55db40c..0c705c5 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -242,7 +242,7 @@ async def _chain(run: runjob.Run, session: Any, st: State) -> None:
+     work = {
+         "remove": (lambda: _remove(session, st), 5.0),
+         "measure": (lambda: _measure(session, st, run.context), 5.0),
+-        "scale": (lambda: _scale(session, st), 5.0),
++        "scale": (lambda: _scale(session, st, run.context), 5.0),
+         "search": (lambda: _search(run, by["search"], session, st), SEARCH_CAP_S + 15),
+         "pick": (lambda: _pick(session, st), 5.0),
+         "model": (lambda: _model(st), MODEL_CAP_S + UPGRADE_CAP_S + 5),
+@@ -332,9 +332,20 @@ async def _measure(session: Any, st: State, context: dict[str, Any]):
+     return spoken, [{"name": "measure_cavity", "args": {"component_id": c["id"]}}], None
+ 
+ 
+-async def _scale(session: Any, st: State):
++# Context `scale_source` values that mean the headset's scale is deliberate even at 1.0.
++CALIBRATED_SOURCES = {"user", "site_default", "calibrated", "tape", "gap"}
++
++
++def calibrated(scale: float | None, context: dict[str, Any] | None = None) -> bool:
++    """The headset's scale is set: not 1.0 (the kitchen starts at its site default, x1.63), or
++    its context says where a 1.0 came from (`scale_source`)."""
++    source = str((context or {}).get("scale_source") or "").lower()
++    return abs((scale or 1.0) - 1.0) > 0.005 or source in CALIBRATED_SOURCES
++
++
++async def _scale(session: Any, st: State, context: dict[str, Any]):
+     scale = session.scale or 1.0
+-    if abs(scale - 1.0) > 0.005:
++    if calibrated(scale, context):
+         raise runjob.Skip(f"The scale's already set (×{scale:.2f}); kept it.")
+     gap = st.cavity.size_m()
+     prior = replace.scale_prior(st.kind, gap)
+@@ -454,7 +465,19 @@ _TIER_WORDS = {
+ }
+ 
+ 
++async def _ensure(part: Part) -> Part:
++    """The part's GLB, built (or awaited) once: resolve_shared; a proxy box then gets one more
++    try at a generated model (assets.upgrade_proxy, once per part per run)."""
++    part = await assets.resolve_shared(part)
++    if part.asset.tier == "proxy" and not get_settings().OFFLINE:
++        part = await assets.upgrade_proxy(part)
++    return part
++
++
+ async def _model(st: State):
++    """The pick's GLB before it goes in (a new candidate's is generated here: its LLM template
++    call + build, or awaited when the search's background worker is already on it); the next
++    two's start now and finish before job_done, so "next one" is instant."""
+     parts: list[Part] = st.job.candidates
+     t0 = time.monotonic()
+     try:
+@@ -465,8 +488,9 @@ async def _model(st: State):
+         ) from exc
+     upgraded = ""
+     if part.asset.tier == "proxy" and not get_settings().OFFLINE:
+-        try:
+-            better = await asyncio.wait_for(assets.upgrade_proxy(part), UPGRADE_CAP_S)
++        upgrade = asyncio.ensure_future(assets.upgrade_proxy(part))
++        try:  # shielded: a late upgrade still lands on disk for the next time
++            better = await asyncio.wait_for(asyncio.shield(upgrade), UPGRADE_CAP_S)
+             if better.asset.tier != "proxy":
+                 part, upgraded = better, " (rebuilt from the photo box)"
+         except TimeoutError:
+@@ -474,7 +498,7 @@ async def _model(st: State):
+     st.part = part
+     n = len(parts)
+     nxt = [parts[(st.index + k) % n] for k in (1, 2) if n > k]
+-    st.others = [asyncio.create_task(assets.resolve_shared(p)) for p in nxt]
++    st.others = [asyncio.create_task(_ensure(p)) for p in nxt]
+     took = time.monotonic() - t0
+     spoken = f"3D model ready: {_TIER_WORDS.get(part.asset.tier, part.asset.tier)}{upgraded}."
+     if took >= 1:
+diff --git a/tests/test_replace_job.py b/tests/test_replace_job.py
+index c7710fc..f3543aa 100644
+--- a/tests/test_replace_job.py
++++ b/tests/test_replace_job.py
+@@ -361,17 +361,31 @@ async def test_one_sentence_replaces_the_dishwasher(monkeypatch, shop):
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_a_calibrated_scene_keeps_its_scale(monkeypatch, shop):
++@pytest.mark.parametrize(
++    "ctx,said,pick",
++    [
++        # the kitchen's site default (the app starts it at x1.63): the gap is 712 x 963 x 725 mm,
++        # every 24 in dishwasher fits; the search's order (the cheapest that fits) decides
++        ({"scale": 1.63}, "×1.63", "frigidaire-fdpc4221as"),
++        ({"scale": 1.4826}, "×1.48", "whirlpool-wdp540hamw"),
++        ({"scale": 1.0, "scale_source": "user"}, "×1.00", None),  # deliberate: nothing fits
++    ],
++)
++async def test_a_calibrated_scene_keeps_its_scale(monkeypatch, shop, ctx, said, pick):
+     monkeypatch.setattr(agent, "chat", _no_llm_chat)
+-    r = await _say("replace the dishwasher", scale=1.4826)
++    r = await _say("replace the dishwasher", **ctx)
+     run = await _finish(_run_id(r))
+     steps = {s["name"]: s for s in run.steps}
+     assert steps["scale"]["status"] == "skipped"
+-    assert steps["scale"]["spoken"] == "The scale's already set (×1.48); kept it."
++    assert steps["scale"]["spoken"] == f"The scale's already set ({said}); kept it."
+     acts = runjob.body(run, 0)["actions"]
+     assert not _named(acts, "scale_gap")
+-    assert _named(acts, "place_part")[0]["args"]["part_id"] == "whirlpool-wdp540hamw"
++    placed = _named(acts, "place_part")
++    assert (placed[0]["args"]["part_id"] if placed else None) == pick
+     assert not acts[-1]["args"]["spoken"].startswith("The scan reads")
++    if ctx["scale"] == 1.63:
++        assert shop["search"][0].cavity.size_mm() == pytest.approx((712.5, 963.5, 724.9), abs=0.5)
++        assert placed[0]["args"]["fits"] == "fits"
+ 
+ 
+ @pytest.mark.asyncio
+-- 
+2.50.1 (Apple Git-155)
+

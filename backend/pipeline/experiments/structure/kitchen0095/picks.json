@@ -1,0 +1,607 @@
+{
+ "_note": "coarse picks (OpenCV px, 1920x1080 frames/%04d.jpg) chosen by eye; refined + tracked by gt.py",
+ "points": {
+  "ua_bl": {
+   "desc": "upper cab A (left, over fridge side) bottom-left front corner",
+   "anchors": [
+    [
+     526,
+     193,
+     415
+    ],
+    [
+     451,
+     597,
+     333
+    ]
+   ],
+   "kind": "corner",
+   "grade": "C",
+   "grade_reason": "suspect: two junctions (door corner vs carcass behind it). The frame-451 track sits 4.4 px from the anchor refinement; the point lies 17 mm deeper than ua_seam/ua_br (S4: 16 mm behind the door plane; S2: nearest LIMAP edge 20 mm; raw mesh 10.6 mm). Excluded from headline stats."
+  },
+  "ua_seam": {
+   "desc": "upper cab A door seam at bottom edge",
+   "anchors": [
+    [
+     526,
+     367,
+     417
+    ],
+    [
+     451,
+     762,
+     336
+    ]
+   ],
+   "kind": "seam"
+  },
+  "ua_br": {
+   "desc": "upper cab A bottom-right front corner",
+   "anchors": [
+    [
+     451,
+     933,
+     340
+    ]
+   ],
+   "kind": "corner"
+  },
+  "ub_seam": {
+   "desc": "upper cab B door seam at bottom edge",
+   "anchors": [
+    [
+     526,
+     757,
+     213
+    ],
+    [
+     451,
+     1166,
+     130
+    ],
+    [
+     576,
+     608,
+     419
+    ]
+   ],
+   "kind": "seam"
+  },
+  "ub_br": {
+   "desc": "upper cab B bottom-right front corner",
+   "anchors": [
+    [
+     526,
+     983,
+     215
+    ],
+    [
+     451,
+     1400,
+     133
+    ],
+    [
+     576,
+     845,
+     421
+    ]
+   ],
+   "kind": "corner"
+  },
+  "uc_bl": {
+   "desc": "upper cab C (right of sink) bottom-left front corner",
+   "anchors": [
+    [
+     526,
+     980,
+     420
+    ],
+    [
+     576,
+     849,
+     618
+    ]
+   ],
+   "kind": "corner"
+  },
+  "uc_seam": {
+   "desc": "upper cab C door seam at bottom edge",
+   "anchors": [
+    [
+     526,
+     1155,
+     423
+    ],
+    [
+     576,
+     1022,
+     619
+    ]
+   ],
+   "kind": "seam"
+  },
+  "ud_bl": {
+   "desc": "upper cab D (over microwave) bottom-left front corner",
+   "anchors": [
+    [
+     526,
+     1343,
+     218
+    ],
+    [
+     576,
+     1205,
+     425
+    ]
+   ],
+   "kind": "corner"
+  },
+  "ud_seam": {
+   "desc": "upper cab D door seam at bottom edge",
+   "anchors": [
+    [
+     526,
+     1565,
+     220
+    ]
+   ],
+   "kind": "seam"
+  },
+  "mw_bl": {
+   "desc": "microwave bottom-left front corner",
+   "anchors": [
+    [
+     526,
+     1318,
+     468
+    ],
+    [
+     576,
+     1197,
+     669
+    ]
+   ],
+   "kind": "corner"
+  },
+  "mw_br": {
+   "desc": "microwave bottom-right front corner",
+   "anchors": [
+    [
+     526,
+     1790,
+     468
+    ]
+   ],
+   "kind": "corner"
+  },
+  "ctr_fl": {
+   "desc": "counter top front-left corner (left end)",
+   "anchors": [
+    [
+     451,
+     544,
+     661
+    ]
+   ],
+   "kind": "corner"
+  },
+  "ctr_fr": {
+   "desc": "counter top front-right corner (top of the front edge, by the stove)",
+   "anchors": [
+    [
+     526,
+     1370,
+     741
+    ]
+   ],
+   "kind": "corner"
+  },
+  "drw_tl": {
+   "desc": "lower cab left drawer top-left corner",
+   "anchors": [
+    [
+     526,
+     143,
+     778
+    ],
+    [
+     451,
+     554,
+     681
+    ]
+   ],
+   "kind": "corner"
+  },
+  "drw_tr": {
+   "desc": "lower cab left drawer top-right corner",
+   "anchors": [
+    [
+     526,
+     517,
+     778
+    ]
+   ],
+   "kind": "corner"
+  },
+  "dw_tl": {
+   "desc": "dishwasher front top-left corner",
+   "anchors": [
+    [
+     526,
+     988,
+     780
+    ],
+    [
+     451,
+     1405,
+     713
+    ],
+    [
+     576,
+     843,
+     987
+    ]
+   ],
+   "kind": "corner"
+  },
+  "dw_tr": {
+   "desc": "dishwasher front top-right corner",
+   "anchors": [
+    [
+     526,
+     1360,
+     780
+    ],
+    [
+     451,
+     1809,
+     719
+    ],
+    [
+     576,
+     1210,
+     993
+    ]
+   ],
+   "kind": "corner",
+   "grade": "C",
+   "grade_reason": "suspect: textureless dishwasher top under the shadowed overhang gap; 38 of 63 views rejected, split-half 1.39 mm, and it implies a 2.9 deg face yaw that dw_tl, the drawer face, the mesh (14.9 mm off) and S4 don't show. Excluded from headline stats."
+  },
+  "ov_tl": {
+   "desc": "oven window top-left corner",
+   "anchors": [
+    [
+     526,
+     1460,
+     855
+    ]
+   ],
+   "kind": "window"
+  },
+  "ov_tr": {
+   "desc": "oven window top-right corner",
+   "anchors": [
+    [
+     526,
+     1738,
+     855
+    ]
+   ],
+   "kind": "window"
+  },
+  "ub_bl": {
+   "desc": "upper cab B (over sink) bottom-left front corner",
+   "anchors": [
+    [
+     451,
+     937,
+     128
+    ]
+   ],
+   "kind": "corner"
+  },
+  "lip_l": {
+   "desc": "top-left corner of the backsplash lip on the counter (left end, at the wall)",
+   "anchors": [
+    [
+     526,
+     288,
+     578
+    ],
+    [
+     451,
+     647,
+     502
+    ],
+    [
+     576,
+     174,
+     749
+    ]
+   ],
+   "kind": "corner"
+  },
+  "ctr_fr_bot": {
+   "anchors": [
+    [
+     576,
+     1222,
+     980
+    ]
+   ],
+   "desc": "counter front edge bottom-right corner (by the stove)",
+   "kind": "corner"
+  }
+ },
+ "_kinds": "corner: convex box corner, view-independent; seam: T-junction of a door gap with an edge, depth is view-dependent by a few mm (score it but trust it less); window: line-intersection corner of the oven window glass (recessed, rounded)",
+ "pairs": [
+  {
+   "a": "ua_bl",
+   "b": "ua_br",
+   "name": "upper cab A width"
+  },
+  {
+   "a": "ub_bl",
+   "b": "ub_br",
+   "name": "upper cab B width"
+  },
+  {
+   "a": "dw_tl",
+   "b": "dw_tr",
+   "name": "dishwasher width"
+  },
+  {
+   "a": "mw_bl",
+   "b": "mw_br",
+   "name": "microwave width"
+  },
+  {
+   "a": "drw_tl",
+   "b": "drw_tr",
+   "name": "left drawer width"
+  },
+  {
+   "a": "drw_tr",
+   "b": "dw_tl",
+   "name": "sink base cabinet width"
+  },
+  {
+   "a": "ctr_fl",
+   "b": "lip_l",
+   "name": "counter front-left to lip top-left"
+  },
+  {
+   "a": "ctr_fl",
+   "b": "ctr_fr",
+   "name": "counter front length"
+  },
+  {
+   "a": "ov_tl",
+   "b": "ov_tr",
+   "name": "oven window width"
+  },
+  {
+   "a": "ua_bl",
+   "b": "ua_seam",
+   "name": "upper cab A left door"
+  },
+  {
+   "a": "ua_seam",
+   "b": "ua_br",
+   "name": "upper cab A right door"
+  },
+  {
+   "a": "ub_bl",
+   "b": "ub_seam",
+   "name": "upper cab B left door"
+  },
+  {
+   "a": "ub_seam",
+   "b": "ub_br",
+   "name": "upper cab B right door"
+  },
+  {
+   "a": "ud_bl",
+   "b": "ud_seam",
+   "name": "upper cab D left door"
+  },
+  {
+   "a": "uc_bl",
+   "b": "uc_seam",
+   "name": "upper cab C left door"
+  },
+  {
+   "a": "ub_br",
+   "b": "uc_bl",
+   "name": "cab B right to cab C left (vertical step)"
+  }
+ ],
+ "ratio_reference": "upper cab B width",
+ "same_length_groups": [
+  {
+   "name": "cab A doors",
+   "pairs": [
+    "upper cab A left door",
+    "upper cab A right door"
+   ]
+  },
+  {
+   "name": "cab B doors",
+   "pairs": [
+    "upper cab B left door",
+    "upper cab B right door"
+   ]
+  }
+ ],
+ "planes": [
+  {
+   "name": "counter_top",
+   "points": [
+    "ctr_fl",
+    "ctr_fr"
+   ],
+   "extrude": "back",
+   "height": 0.3,
+   "label": "TABLE"
+  },
+  {
+   "name": "ua_front",
+   "points": [
+    "ua_bl",
+    "ua_br"
+   ],
+   "extrude": [
+    0,
+    1,
+    0
+   ],
+   "height": 0.15,
+   "label": "STORAGE"
+  },
+  {
+   "name": "ub_front",
+   "points": [
+    "ub_bl",
+    "ub_br"
+   ],
+   "extrude": [
+    0,
+    1,
+    0
+   ],
+   "height": 0.15,
+   "label": "STORAGE"
+  },
+  {
+   "name": "dw_front",
+   "points": [
+    "dw_tl",
+    "dw_tr"
+   ],
+   "extrude": [
+    0,
+    -1,
+    0
+   ],
+   "height": 0.2,
+   "label": "OTHER"
+  },
+  {
+   "name": "mw_front",
+   "points": [
+    "mw_bl",
+    "mw_br"
+   ],
+   "extrude": [
+    0,
+    1,
+    0
+   ],
+   "height": 0.1,
+   "label": "OTHER"
+  },
+  {
+   "name": "ud_front",
+   "points": [
+    "ud_bl",
+    "ud_seam"
+   ],
+   "extrude": [
+    0,
+    1,
+    0
+   ],
+   "height": 0.15,
+   "label": "STORAGE"
+  }
+ ],
+ "angle_pairs": [
+  {
+   "a": "counter_top",
+   "b": "dw_front",
+   "expect_deg": 90
+  },
+  {
+   "a": "counter_top",
+   "b": "ub_front",
+   "expect_deg": 90
+  },
+  {
+   "a": "ub_front",
+   "b": "ud_front",
+   "expect_deg": 0
+  },
+  {
+   "a": "counter_top",
+   "b": "mw_front",
+   "expect_deg": 90
+  },
+  {
+   "a": "dw_front",
+   "b": "ub_front",
+   "expect_deg": 0
+  }
+ ],
+ "edges": [
+  {
+   "name": "cab A bottom-front",
+   "a": "ua_bl",
+   "b": "ua_br",
+   "normals": [
+    "ua_front",
+    "-y"
+   ]
+  },
+  {
+   "name": "cab B bottom-front",
+   "a": "ub_bl",
+   "b": "ub_br",
+   "normals": [
+    "ub_front",
+    "-y"
+   ]
+  },
+  {
+   "name": "cab D bottom-front",
+   "a": "ud_bl",
+   "b": "ud_seam",
+   "normals": [
+    "ud_front",
+    "-y"
+   ]
+  },
+  {
+   "name": "cab C bottom-front",
+   "a": "uc_bl",
+   "b": "uc_seam",
+   "normals": [
+    "front",
+    "-y"
+   ]
+  },
+  {
+   "name": "counter front edge",
+   "a": "ctr_fl",
+   "b": "ctr_fr",
+   "normals": [
+    "counter_top",
+    "front"
+   ]
+  },
+  {
+   "name": "microwave bottom-front",
+   "a": "mw_bl",
+   "b": "mw_br",
+   "normals": [
+    "mw_front",
+    "-y"
+   ]
+  }
+ ],
+ "_dropped_by_hand": {
+  "ud_br": "two anchors hit different junctions (cabinet end vs wall corner); doors 263 vs 290 mm",
+  "uc_br": "hidden by a sticker",
+  "ub_bl@526": "occlusion T-junction",
+  "ov_bl/ov_br": "rounded, no line pair"
+ }
+}

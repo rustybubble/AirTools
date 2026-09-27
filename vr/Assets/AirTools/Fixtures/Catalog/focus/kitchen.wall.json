@@ -1,0 +1,366 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "kitchen",
+ "title": "Kitchen",
+ "focus": "wall",
+ "foci": [
+  "wall",
+  "ground",
+  "ceiling",
+  "counter",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "range-hoods",
+   "title": "Range hoods",
+   "icon": "wind",
+   "query": "30 in. under cabinet range hood",
+   "items": [
+    {
+     "part_id": "broan-nutone-rl6230bl-e2c642",
+     "name": "RL6200 Series 30 in. Ductless Under Cabinet Range Hood with Light in Black",
+     "price_usd": 94.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 152.4,
+      "d": 444.5
+     },
+     "image_url": "/parts/broan-nutone-rl6230bl-e2c642/image.jpg",
+     "model_url": "/parts/broan-nutone-rl6230bl-e2c642/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "broan-nutone-rl6230sf-680219",
+     "name": "RL6200 Series 30-Inch Ductless Under-Cabinet Range Hood, Stainless Steel Finish",
+     "price_usd": 109.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 152.4,
+      "d": 444.5
+     },
+     "image_url": "/parts/broan-nutone-rl6230sf-680219/image.jpg",
+     "model_url": "/parts/broan-nutone-rl6230sf-680219/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-30-under-the-cabinet-hood-f67a4c",
+     "name": "GE 30\" Under The Cabinet Hood",
+     "price_usd": 189.0,
+     "dims_mm": {
+      "w": 758.83,
+      "h": 139.7,
+      "d": 508.0
+     },
+     "image_url": "/parts/ge-30-under-the-cabinet-hood-f67a4c/image.jpg",
+     "model_url": "/parts/ge-30-under-the-cabinet-hood-f67a4c/model.glb",
+     "model_ready": true,
+     "seller": "Lowe's"
+    }
+   ]
+  },
+  {
+   "id": "microwaves",
+   "title": "Microwaves",
+   "icon": "app-window",
+   "query": "over-the-range microwave",
+   "items": [
+    {
+     "part_id": "insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616",
+     "name": "Insignia 1.7 Cu. Ft. Over-the-Range Microwave with 1,000W Cooking Power",
+     "price_usd": 209.99,
+     "dims_mm": {
+      "w": 406.4,
+      "h": 381.0,
+      "d": 736.6
+     },
+     "image_url": "/parts/insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616/image.jpg",
+     "model_url": "/parts/insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616/model.glb",
+     "model_ready": true,
+     "seller": "Best Buy"
+    },
+    {
+     "part_id": "lg-mvem1621y-2bc95d",
+     "name": "1.6 cu. ft. 30 in. W. Over-the-Range Microwave Oven with EasyClean in Stainless Steel",
+     "price_usd": 239.0,
+     "dims_mm": {
+      "w": 758.95,
+      "h": 417.58,
+      "d": 403.35
+     },
+     "image_url": "/parts/lg-mvem1621y-2bc95d/image.jpg",
+     "model_url": "/parts/lg-mvem1621y-2bc95d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-jvm3160rfss-35dc0e",
+     "name": "1.6 cu. ft. Over-the-Range Microwave in Stainless Steel",
+     "price_usd": 242.0,
+     "dims_mm": {
+      "w": 758.82,
+      "h": 409.57,
+      "d": 395.29
+     },
+     "image_url": "/parts/ge-jvm3160rfss-35dc0e/image.jpg",
+     "model_url": "/parts/ge-jvm3160rfss-35dc0e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "cabinet-hardware",
+   "title": "Cabinet hardware",
+   "icon": "hand-grabbing",
+   "query": "cabinet pull",
+   "items": [
+    {
+     "part_id": "everbilt-h32636e-np-cp-c7a101",
+     "name": "1 Pair Frameless 35 mm 110-Degree Full Overlay Soft Close Nickel Cabinet Hinge (2 Pieces)",
+     "price_usd": 14.32,
+     "dims_mm": {
+      "w": 14.99,
+      "h": 13.97,
+      "d": 99.82
+     },
+     "image_url": "/parts/everbilt-h32636e-np-cp-c7a101/image.jpg",
+     "model_url": "/parts/everbilt-h32636e-np-cp-c7a101/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "emtek-86013-07030d",
+     "name": "Emtek 86013 Providence Knob",
+     "price_usd": 10.41,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 15.88,
+      "d": 25.4
+     },
+     "image_url": "/parts/emtek-86013-07030d/image.jpg",
+     "model_url": "/parts/emtek-86013-07030d/model.glb",
+     "model_ready": true,
+     "seller": "Trademark Hardware"
+    },
+    {
+     "part_id": "pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608",
+     "name": "Pivot Door Hinges - Rear Pivoting - High Quality Steel - Statuary Bronze Finish",
+     "price_usd": 7.59,
+     "dims_mm": {
+      "w": 9.53,
+      "h": 53.98,
+      "d": 2.38
+     },
+     "image_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/image.jpg",
+     "model_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/model.glb",
+     "model_ready": true,
+     "seller": "Hinge Outlet"
+    }
+   ]
+  },
+  {
+   "id": "lighting",
+   "title": "Lighting",
+   "icon": "lightbulb",
+   "query": "under cabinet light",
+   "items": [
+    {
+     "part_id": "commercial-electric-57301-sv-1f3a6d",
+     "name": "9 in. USB Rechargeable Silver Integrated LED Under Cabinet Light (2-Pack)",
+     "price_usd": 19.98,
+     "dims_mm": {
+      "w": 116.84,
+      "h": 228.6,
+      "d": 39.62
+     },
+     "image_url": "/parts/commercial-electric-57301-sv-1f3a6d/image.jpg",
+     "model_url": "/parts/commercial-electric-57301-sv-1f3a6d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "commercial-electric-57104-wh-332c6f",
+     "name": "24 in. Hardwired White Integrated LED 5 CCT Linkable Under Cabinet Light",
+     "price_usd": 49.97,
+     "dims_mm": {
+      "w": 83.82,
+      "h": 609.6,
+      "d": 30.48
+     },
+     "image_url": "/parts/commercial-electric-57104-wh-332c6f/image.jpg",
+     "model_url": "/parts/commercial-electric-57104-wh-332c6f/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "armacost-lighting-132250-c61083",
+     "name": "RibbonFlex Pro 32.8 ft. 12-Volt White Tape Strip Light 60 LEDs/m Soft White (2700K)",
+     "price_usd": 59.27,
+     "dims_mm": {
+      "w": 8.0,
+      "h": 1.0,
+      "d": 1.0
+     },
+     "image_url": "/parts/armacost-lighting-132250-c61083/image.jpg",
+     "model_url": "/parts/armacost-lighting-132250-c61083/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "outlets-switches",
+   "title": "Outlets & switches",
+   "icon": "plug",
+   "query": "gfci outlet",
+   "items": [
+    {
+     "part_id": "leviton-r12-gfnt1-0kw-f09a0c",
+     "name": "15 Amp Self-Test SmartlockPro Slim Duplex GFCI Outlet, White GFNT1-KW",
+     "price_usd": 18.98,
+     "dims_mm": {
+      "w": 42.67,
+      "h": 96.77,
+      "d": 25.91
+     },
+     "image_url": "/parts/leviton-r12-gfnt1-0kw-f09a0c/image.jpg",
+     "model_url": "/parts/leviton-r12-gfnt1-0kw-f09a0c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "leviton-r92-gftr1-0kw-db4cd1",
+     "name": "15 Amp 125-Volt Duplex SmarTest Self-Test SmartlockPro Tamper Resistant GFCI Outlet, White GFTR1-KW",
+     "price_usd": 19.98,
+     "dims_mm": {
+      "w": 42.67,
+      "h": 96.77,
+      "d": 25.91
+     },
+     "image_url": "/parts/leviton-r92-gftr1-0kw-db4cd1/image.jpg",
+     "model_url": "/parts/leviton-r92-gftr1-0kw-db4cd1/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "leviton-r12-gfnt2-0rw-67fd29",
+     "name": "20 Amp Self-Test SmartlockPro Slim Duplex GFCI Outlet, White",
+     "price_usd": 23.48,
+     "dims_mm": {
+      "w": 42.67,
+      "h": 96.77,
+      "d": 25.91
+     },
+     "image_url": "/parts/leviton-r12-gfnt2-0rw-67fd29/image.jpg",
+     "model_url": "/parts/leviton-r12-gfnt2-0rw-67fd29/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "backsplash",
+   "title": "Backsplash tile",
+   "icon": "squares-four",
+   "query": "kitchen backsplash tile",
+   "items": [
+    {
+     "part_id": "villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b",
+     "name": "Villa Zellige Pearl Opal Polished Ceramic Tile",
+     "price_usd": 1.49,
+     "dims_mm": {
+      "w": 63.5,
+      "h": 203.2,
+      "d": 9.0
+     },
+     "image_url": "/parts/villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b/image.jpg",
+     "model_url": "/parts/villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b/model.glb",
+     "model_ready": false,
+     "seller": "Floor and Decor"
+    },
+    {
+     "part_id": "daltile-re1536modhd1p4-a4a4e0",
+     "name": "Restore Bright White 3 in. x 6 in. Glossy Ceramic Subway Wall Tile (12.5 sq. ft. /case)",
+     "price_usd": 14.98,
+     "dims_mm": {
+      "w": 76.2,
+      "h": 7.94,
+      "d": 152.4
+     },
+     "image_url": "/parts/daltile-re1536modhd1p4-a4a4e0/image.jpg",
+     "model_url": "/parts/daltile-re1536modhd1p4-a4a4e0/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ivy-hill-tile-ext3rd105189-f9b1ae",
+     "name": "Kingston White 3 in. x 8 in. Glazed Ceramic Wall Tile (5.38 sq. ft./case)",
+     "price_usd": 53.74,
+     "dims_mm": {
+      "w": 76.2,
+      "h": 9.0,
+      "d": 203.2
+     },
+     "image_url": "/parts/ivy-hill-tile-ext3rd105189-f9b1ae/image.jpg",
+     "model_url": "/parts/ivy-hill-tile-ext3rd105189-f9b1ae/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "shelving",
+   "title": "Shelving",
+   "icon": "archive",
+   "query": "wall mounted shelving",
+   "items": [
+    {
+     "part_id": "closetmaid-7034-1050cd",
+     "name": "Selectives 48 in. L x 14 in. D White Laminate Wall Mounted Shelf",
+     "price_usd": 18.98,
+     "dims_mm": {
+      "w": 1211.58,
+      "h": 15.24,
+      "d": 350.52
+     },
+     "image_url": "/parts/closetmaid-7034-1050cd/image.jpg",
+     "model_url": "/parts/closetmaid-7034-1050cd/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "delta-hdrs1000hd-72ef6d",
+     "name": "16 in. x 21 in. Heavy Duty Wall Rack Adjustable 3 Tier Lumber Rack Holds 480 lbs. Steel Garage Wall Shelf with Brackets",
+     "price_usd": 39.99,
+     "dims_mm": {
+      "w": 38.1,
+      "h": 533.4,
+      "d": 406.4
+     },
+     "image_url": "/parts/delta-hdrs1000hd-72ef6d/image.jpg",
+     "model_url": "/parts/delta-hdrs1000hd-72ef6d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "delta-hdrs3000-52048f",
+     "name": "16 in. x 41 in. Heavy Duty Wall Rack, Adjustable 5 Tier Lumber Rack Holds 800 lbs. Steel Garage Wall Shelf with Brackets",
+     "price_usd": 59.99,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 1041.4,
+      "d": 406.4
+     },
+     "image_url": "/parts/delta-hdrs3000-52048f/image.jpg",
+     "model_url": "/parts/delta-hdrs3000-52048f/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  }
+ ]
+}

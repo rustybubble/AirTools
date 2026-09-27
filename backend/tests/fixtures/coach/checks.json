@@ -1,0 +1,189 @@
+{
+ "9c32416b|Is a faucet standing on the sink deck?": {
+  "key": {
+   "checks": [
+    "Is a faucet standing on the sink deck?"
+   ],
+   "drill": false,
+   "frame": "9c32416be0d9ce337d4102c2f6227844ea80b218"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "yes",
+     "evidence": "chrome faucet with handle on sink deck",
+     "box": [
+      39.0,
+      46.0,
+      50.0,
+      59.0
+     ]
+    }
+   ],
+   "electrical": [],
+   "cost_usd": 0.00075,
+   "latency_s": 1.01
+  }
+ },
+ "9c32416b|Are the shut-off valves under the sink v": {
+  "key": {
+   "checks": [
+    "Are the shut-off valves under the sink visible, with their handles turned fully closed?"
+   ],
+   "drill": false,
+   "frame": "9c32416be0d9ce337d4102c2f6227844ea80b218"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "cant_see",
+     "evidence": "under sink not visible",
+     "box": null
+    }
+   ],
+   "electrical": [],
+   "cost_usd": 0.00027,
+   "latency_s": 0.7
+  }
+ },
+ "9c32416b|Are any objects standing within a hand's": {
+  "key": {
+   "checks": [
+    "Are any objects standing within a hand's width of the sink rim?"
+   ],
+   "drill": false,
+   "frame": "9c32416be0d9ce337d4102c2f6227844ea80b218"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "yes",
+     "evidence": "black shaker bottle and soap bottles near sink",
+     "box": [
+      5.0,
+      52.0,
+      15.0,
+      70.0
+     ]
+    }
+   ],
+   "electrical": [],
+   "cost_usd": 0.00078,
+   "latency_s": 1.34
+  }
+ },
+ "88a90f5f|Are the cotter pins installed in the mai": {
+  "key": {
+   "checks": [
+    "Are the cotter pins installed in the main support pins?"
+   ],
+   "drill": true,
+   "frame": "88a90f5fa6b301af0be33754f61d9f82a52ea609"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "cant_see",
+     "evidence": "no cotter pins or support pins visible in kitchen scene",
+     "box": null
+    }
+   ],
+   "electrical": [
+    {
+     "kind": "outlet",
+     "box": [
+      29.5,
+      29.5,
+      34.2,
+      38.0
+     ]
+    }
+   ],
+   "cost_usd": 0.00093,
+   "latency_s": 1.05
+  }
+ },
+ "ece45a09|Are the cotter pins installed in the mai": {
+  "key": {
+   "checks": [
+    "Are the cotter pins installed in the main support pins?"
+   ],
+   "drill": true,
+   "frame": "ece45a09983e5aafdb1639338a402bf21136d9bc"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "cant_see",
+     "evidence": "no cotter pins or main support pins visible in kitchen scene",
+     "box": null
+    }
+   ],
+   "electrical": [
+    {
+     "kind": "outlet",
+     "box": [
+      4.5,
+      29.0,
+      9.2,
+      37.4
+     ]
+    },
+    {
+     "kind": "outlet",
+     "box": [
+      12.2,
+      28.5,
+      16.8,
+      37.0
+     ]
+    },
+    {
+     "kind": "outlet",
+     "box": [
+      66.4,
+      27.4,
+      71.4,
+      35.6
+     ]
+    }
+   ],
+   "cost_usd": 0.00105,
+   "latency_s": 1.44
+  }
+ },
+ "9c32416b|Is the bracket width set to match the me": {
+  "key": {
+   "checks": [
+    "Is the bracket width set to match the measured window sill opening?",
+    "Are the left and right extension arms attached to the center bracket?"
+   ],
+   "drill": false,
+   "frame": "9c32416be0d9ce337d4102c2f6227844ea80b218"
+  },
+  "reply": {
+   "answers": [
+    {
+     "id": "c1",
+     "answer": "cant_see",
+     "evidence": "no window, bracket or sill visible",
+     "box": null
+    },
+    {
+     "id": "c2",
+     "answer": "cant_see",
+     "evidence": "no bracket, arms or window visible",
+     "box": null
+    }
+   ],
+   "electrical": [],
+   "cost_usd": 0.00083,
+   "latency_s": 1.18
+  }
+ }
+}

@@ -1,0 +1,128 @@
+{
+  "created_at": 1790413698,
+  "completed_at": 1790413712,
+  "id": "13b284d0-349a-937b-b8ed-45fd40f319a7",
+  "model": "grok-4.20-0309-non-reasoning",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {
+      "id": "ws_13b284d0-349a-937b-b8ed-45fd40f319a7_call-1cf16f31-3c83-4f37-a17b-57080152838b-0",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "Midea MAW08U1QWT recall",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.cpsc.gov/Recalls/2025/Midea-Recalls-About-1-7-Million-U-and-U-Window-Air-Conditioners-Due-to-Risk-of-Mold-Exposure"
+          },
+          {
+            "type": "url",
+            "url": "https://www.nytimes.com/wirecutter/reviews/where-are-midea-u-air-conditioners/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.amazon.com/Midea-Shaped-Inverter-Window-Conditioner/dp/B0FDQGPCG7"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "xs_call-1cf16f31-3c83-4f37-a17b-57080152838b-5",
+      "input": "{\"query\":\"Midea MAW08U1QWT OR \\\"MAW08U1QWT\\\" (problem OR issue OR defect OR broke OR leak OR fire OR recall)\",\"limit\":\"5\",\"mode\":\"Latest\"}",
+      "name": "x_keyword_search",
+      "type": "custom_tool_call",
+      "id": "ctc_13b284d0-349a-937b-b8ed-45fd40f319a7_call-1cf16f31-3c83-4f37-a17b-57080152838b-5",
+      "status": "completed"
+    },
+    {
+      "id": "ws_13b284d0-349a-937b-b8ed-45fd40f319a7_call-1cf16f31-3c83-4f37-a17b-57080152838b-6",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.cpsc.gov/Recalls/2025/Midea-Recalls-About-1-7-Million-U-and-U-Window-Air-Conditioners-Due-to-Risk-of-Mold-Exposure"
+      }
+    },
+    {
+      "id": "ws_13b284d0-349a-937b-b8ed-45fd40f319a7_call-1cf16f31-3c83-4f37-a17b-57080152838b-8",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "MAW08U1QWT mold OR recall OR defect OR complaint -site:cpsc.gov",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.bbb.org/us/nj/parsippany/profile/wholesale-major-appliances/midea-america-corp-0221-90160638/complaints"
+          },
+          {
+            "type": "url",
+            "url": "https://airconditionerlab.com/midea-air-conditioner-recall/"
+          }
+        ]
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"recalls\":[{\"title\":\"Midea Recalls About 1.7 Million U and U+ Window Air Conditioners Due to Risk of Mold Exposure\",\"date\":\"2025-06-05\",\"url\":\"https://www.cpsc.gov/Recalls/2025/Midea-Recalls-About-1-7-Million-U-and-U-Window-Air-Conditioners-Due-to-Risk-of-Mold-Exposure\",\"applies_to_model\":\"yes\"}],\"complaints\":[{\"theme\":\"Mold growth\",\"source\":\"web\",\"url\":\"https://www.nytimes.com/wirecutter/reviews/where-are-midea-u-air-conditioners/\",\"quote\":\"mold issues affecting its U-shaped air conditioner, the Midea U MAW08V1QWT (as well as the newer Midea U Plus MAW08U1QWT)\"},{\"theme\":\"Mold growth\",\"source\":\"web\",\"url\":\"https://www.amazon.com/Midea-Shaped-Inverter-Window-Conditioner/dp/B0FDQGPCG7\",\"quote\":\"The model we had before this was recalled because the condensation sat inside with no drain hole. Mold grew like crazy.\"},{\"theme\":\"Mold exposure symptoms\",\"source\":\"web\",\"url\":\"https://www.cpsc.gov/Recalls/2025/Midea-Recalls-About-1-7-Million-U-and-U-Window-Air-Conditioners-Due-to-Risk-of-Mold-Exposure\",\"quote\":\"152 reports of mold in the air conditioners, including 17 reports of consumers experiencing symptoms such as respiratory infections\"},{\"theme\":\"Mold in unit\",\"source\":\"web\",\"url\":\"https://www.bbb.org/us/nj/parsippany/profile/wholesale-major-appliances/midea-america-corp-0221-90160638/complaints\",\"quote\":\"After couple months of use, it developed bad molds.\"},{\"theme\":\"Poor drainage leading to mold\",\"source\":\"web\",\"url\":\"https://airconditionerlab.com/midea-air-conditioner-recall/\",\"quote\":\"pooled water in the air conditioners can fail to drain quickly enough, which can lead to mold growth\"}]}",
+          "logprobs": [],
+          "annotations": [
+            {
+              "type": "url_citation",
+              "url": "https://www.bbb.org/us/nj/parsippany/profile/wholesale-major-appliances/midea-america-corp-0221-90160638/complaints",
+              "start_index": 0,
+              "end_index": 0,
+              "title": "https://www.bbb.org/us/nj/parsippany/profile/wholesale-major-appliances/midea-america-corp-0221-90160638/complaints"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.nytimes.com/wirecutter/reviews/where-are-midea-u-air-conditioners/",
+              "start_index": 0,
+              "end_index": 0,
+              "title": "https://www.nytimes.com/wirecutter/reviews/where-are-midea-u-air-conditioners/"
+            }
+          ]
+        }
+      ],
+      "id": "msg_13b284d0-349a-937b-b8ed-45fd40f319a7",
+      "role": "assistant",
+      "type": "message",
+      "status": "completed"
+    }
+  ],
+  "citations": [],
+  "usage": {
+    "input_tokens": 59045,
+    "input_tokens_details": {
+      "cached_tokens": 28736
+    },
+    "output_tokens": 944,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 59989,
+    "num_sources_used": 0,
+    "num_server_side_tools_used": 9,
+    "cost_in_usd_ticks": 909934500,
+    "server_side_tool_usage_details": {
+      "web_search_calls": 8,
+      "x_search_calls": 1,
+      "x_posts_fetched": 1,
+      "x_users_fetched": 0,
+      "code_interpreter_calls": 0,
+      "file_search_calls": 0,
+      "mcp_calls": 0,
+      "document_search_calls": 0,
+      "image_generation_calls": 0
+    },
+    "context_details": {
+      "input_tokens": 30247,
+      "output_tokens": 441
+    }
+  }
+}

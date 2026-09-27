@@ -1,0 +1,118 @@
+From 2b8d6e0253aa2287c2d9030ef0f9eaa8604926b8 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:25:46 -0400
+Subject: [PATCH 12/12] docs: the replace job (kind replace on GET /job/run),
+ undo_edit, show_model, spoken-number normalisation, LLM_FALLBACK and the
+ agent model measurements
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md   | 17 ++++++++++++++++-
+ docs/api.md | 48 ++++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 62 insertions(+), 3 deletions(-)
+
+diff --git a/README.md b/README.md
+index ce484f4..8789e07 100644
+--- a/README.md
++++ b/README.md
+@@ -108,7 +108,22 @@ optional X post needs `X_CLIENT_ID`, `X_CLIENT_SECRET` and `X_REFRESH_TOKEN`. Ev
+ needs `GROK_API_KEY`; `docs/integration-grok-features.md` lists which feature uses what.
+ 
+ Format: `provider:model`. Providers: `groq`, `deepseek`, `xai`. Exact model names and quirk
+-handling live in `server/llm.py` (`ROLE_DEFAULTS`, `PROVIDERS`).
++handling live in `server/llm.py` (`ROLE_DEFAULTS`, `PROVIDERS`). `reasoning_effort` is sent only
++to models that take it (both grok-4.20 models answer 400 on it; grok-4.3/4.5/4.6/4.7 take it), so
++any role can run on any Grok model.
++
++`LLM_FALLBACK` (default `xai:grok-4.20-0309-non-reasoning`, needs `GROK_API_KEY`; `""` turns it
++off): when a Groq call can't be answered -- every key rate limited, Groq unreachable, a 5xx -- the
++same call goes there instead (vision, strict json_schema and function tools included; Groq's
++built-in `browser_search` never falls back). Speech-to-text does the same: Groq Whisper, one retry,
++then xAI `grok-transcribe` over a short realtime session (xAI has no REST transcription endpoint).
++
++Agent model (measured 2026-09-26, 12 prompts x 2 on the kitchen, the LLM path only):
++`xai:grok-4.20-0309-non-reasoning` picked the right tool 24/24 with a 0.82 s median first call
++(p90 1.1 s, max 1.2 s); `xai:grok-4.7` 22/24, 1.5 s median, p90 5.7 s, max 11 s (twice it answered
++in words instead of calling the tool); `xai:grok-4.5` 22/24, 1.2 s, one 57 s outlier;
++`groq:openai/gpt-oss-120b` 15/24 (the free tier ran out mid-run). For the headset:
++`LLM_AGENT=xai:grok-4.20-0309-non-reasoning`.
+ 
+ To move everything to Grok:
+ 
+diff --git a/docs/api.md b/docs/api.md
+index 8170317..1d7ffcc 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1746,6 +1746,43 @@ this session.
+ Poll every second or so with `after=next` until `status` is `done` or `stopped`. `404` unknown
+ run. Runs live in memory. `cost_usd` per step is what the step's module reports (a cached
+ answer can still report the cost it had when fetched).
++
++#### The same poll, kind `replace`: one sentence, the whole replace (`server/replace_job.py`)
++
++"Replace the dishwasher with a new one that fits" (the `replace_component` agent tool, or the
++fast-path phrasings below) runs on the same run table: its `job_started` carries
++`{run_id, steps, kind: "replace", title: "Replace the dishwasher"}` and the steps are `remove`,
++`measure`, `scale`, `search`, `pick`, `model`, `place`, each followed by its own actions:
++
++1. `remove`: `remove_component {component_id}` (the part named, a synonym -- "stove" is the range --
++   or, for "replace this", the part `context.pointer` is on or within 15 cm of);
++2. `measure`: `measure_cavity {component_id}`;
++3. `scale`: `scale_gap {component_id, axis, real_m}` only when the scale isn't calibrated
++   (`context.scale` 1.0 and no `context.scale_source`) and the gap is implausible for its kind; it
++   scales from the kind's standard opening (34.5 in dishwasher opening height, 30 in range, 30/33/36
++   in fridge, 34.5 in base cabinet; the standard that leaves the other axes plausible) and says so.
++   Otherwise `skipped` ("The scale's already set (×1.63); kept it.");
++4. `search`: `search_started {job_id}` once the gap-fitted search is done (150 s cap; `job_step`
++   lines with `status: "running"` report progress meanwhile; the plain kind is searched too when a
++   named search is slow or empty, and once more for the gap's size -- "30 inch fridge" -- when
++   nothing that came back fits);
++5. `pick`: the first that fits (the search's order), else the tightest (`tight`: at most 5 mm
++   over); within the purchase limit when one fits under it. Nothing fits or is tight: `stopped`,
++   with how far off the closest is (and how to set the scale when it isn't set);
++6. `model`: the pick's GLB is built or awaited (a proxy box gets one more try at a generated
++   model); the next two candidates' GLBs are built before `job_done`;
++7. `place`: `place_part {part_id, model_url, name, component_id, fits, clearance_mm, cycle}`.
++
++`job_done` adds `{kind: "replace", spoken, summary, part_id, component_id, fits, models_ready}`;
++`spoken` is the line to say ("Put a Whirlpool WDP540HAMW in the dishwasher gap, an exact fit. Say
++next one to see the other two."), `summary` the chip ("Whirlpool WDP540HAMW in the dishwasher gap
++· an exact fit", or "Stopped: ..."). `total_usd` is the pick's price. The follow-ups ("next one",
++"option 2", "undo", "put it back") work on the state the run leaves. Fast-path phrasings (the
++part must be a removable part of `context.site`): "replace / swap out / change out / upgrade the
++X (with / for ...)", "the X is broken, ... new / replace ...", "take out the X and put in a new
++one", "remove the X. find a Y that fits" (sentences split like "and"), "get / put a new X in
++here", "get a counter-depth fridge in here". A "find a new X that fits" with X's gap already open
++stays the step flow's search.
+ ### `POST /coach/start` — install coach
+ 
+ "Teach me to install this": step-by-step coaching for a part or a template job, each step
+@@ -1852,9 +1889,11 @@ running coach there too.
+ | `show_rules` | the `GET /rules/check/{id}` body | Two tabs on the spec card. Permit pill: `yes` amber, `no` green, else grey; item rows `name · office` with an "unverified quote" tag when `quote_status != "verified"`. Money rows `name · amount_usd or "see page" · status` (`active` green, `ended`/`closed`/`not_eligible` grey; show `eligibility_reason` under a `not_eligible` or `unverified` row). `energy_star.missing` → warning row "Rebate needs the outdoor unit KUSAH121B" with a button that sends "find KUSAH121B". Always show `label` (it carries "Not legal advice; confirm with the permitting office"). Arrives in the same reply when the check lands within 20 s, else leading the next command's actions |
+ | `show_packet` | `{url, qr_png_url, expires_at, public, packet_id, label}` | Draw a QR of `url` on a panel with `expires_at` and `label`. `qr_png_url` is `null` (no server-side QR). `public: false` means `url` is the LAN path (`/packet/<id>.pdf`, prefix the server base URL) |
+ | `packet_revoked` | `{packet_id}` | Remove the QR panel; the link is dead |
+-| `job_started` | `{run_id, steps}` | "Do the whole job" (`run_job` tool, or "do the whole job" / "handle it" / "take care of it"): a progress rail with one dot per step name; poll `GET /job/run/{run_id}?after=n` |
++| `job_started` | `{run_id, steps, kind?, title?}` | "Do the whole job" (`run_job` tool, or "do the whole job" / "handle it" / "take care of it"): a progress rail with one dot per step name; poll `GET /job/run/{run_id}?after=n`. `kind: "replace"` (the `replace_component` tool, "replace the dishwasher ..."): head the rail with `title` |
+ | `job_step` | `{i, name, status, spoken, seconds, cost_usd}` | That dot turns green (`done`), grey (`skipped`) or red (`stopped`); speak or caption `spoken`. The step's own actions (`show_survey`, `select_candidate`, `show_safety`, `show_rules`, `show_postcard`, `show_packet`, `start_checkout`) follow it and are handled as usual |
+-| `job_done` | `{run_id, status, total_usd, after_rebates_usd, packet_url, cost_usd}` | A summary chip; the rail fades |
++| `job_done` | `{run_id, status, total_usd, after_rebates_usd, packet_url, cost_usd}` (+ `kind, spoken, summary, part_id, component_id, fits, models_ready` for a replace) | A summary chip (`summary` when sent); the rail fades. Say `spoken` aloud when sent |
++| `undo_edit` | `{}` | "Undo" while a replace flow is live (a gap open): the headset's own Undo (the last edit off: the model put in the gap, a swap, the scale, the tapes) |
++| `show_model` | `{site}` | "Show me the gym model" / "open the hospital scan": Model view with that site on the table (`site` is a `GET /scenes` id, or `built-in` for the app's facade) |
+ | `show_labels` | `{frame_id, labels}` | From `label_view` ("what am I looking at?", "label this"). `labels[]` as in `POST /scene/labels`; render them from the pose of the frame `frame_id` names (its box centres are 0–1 of that frame). A tap on one sends `POST /parts/search {"query": label.query}`. Speak `reply`; it lists the names verbatim |
+ | `coach_started` | `{coach_id, job, label, source, steps: [{i, say, page}], label_note}` | A progress rail with one dot per step; show `label_note`. From `start_coach` ("teach me to install this", "walk me through it") or `POST /coach/start` |
+ | `coach_step` | `{coach_id, i, of, say, page, quote, pdf_url, tool, checks}` | A caption card with `say`; when `page` is set, "Manual p. `page`", `quote` in quotation marks and an "Open manual" button for `pdf_url`. `checks` (questions) as grey chips. `tool: "drill"`: send a fresh frame and the crosshair as `drill_px` with "check it" |
+@@ -1875,6 +1914,11 @@ running coach there too.
+ | `cycle_model` | `{index, part_id, component_id, cycle}` | "Next one" / "previous one" / "option 2" once a model stands in the gap: the placement editor puts candidate `index` (into `candidate_ids`) where the current model stands (its adjusted pose), one undo step |
+ | `scale_gap` | `{component_id, axis, real_m}` | "The opening is 34 and a half inches tall": set the scene's scale so the headset's tape of the gap on `axis` (`w`/`h`/`d`) reads `real_m`; the next context's `scale` and `cavity` carry it. Say the assumption on screen |
+ 
++Spoken numbers are normalised first: Whisper's "34 1⁄2" (U+2044 FRACTION SLASH), "34½", ¼ ¾ and
++number words before a unit ("thirty-four and a half inches", "twelve hundred dollars") read as
++digits. A provider failure (every Groq key limited and no fallback, xAI down) answers `{reply:
++"The assistant's busy; try again in a moment.", actions: []}`, not a 500.
++
+ Measure and replace runs on the fast path (no LLM) when the scene state makes the phrase unambiguous: a removable component by that name in the site's parts file ("remove the dishwasher"); a gap open (`context.removed` non-empty, else the server's memory of its own `remove_component`) for "measure it", "the opening is 34 and a half inches tall" (`scale_gap`; a later phrase in the same reply uses the corrected size), "find a dishwasher that fits" (`find_part` with `SearchRequest.cavity`) and "put it back"; and candidates (`candidate_ids`, else the last search's) for "put it in there" (the first candidate that fits, else the one that overruns least), "next / previous one" (from `selected_part_id`'s position) and "option N". Up to four such phrases joined by "and" / "then" / commas run in order in one reply ("take out the dishwasher and measure the gap"). A running install coach keeps "next" / "back", and a reimagine on screen keeps "remove ..." / "swap ...".
+ 
+ "Place them" after a plan (fast path, no LLM): a plan with points returns `place_array`
+-- 
+2.50.1 (Apple Git-155)
+

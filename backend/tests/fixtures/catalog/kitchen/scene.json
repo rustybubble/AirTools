@@ -1,0 +1,78 @@
+{
+  "name": "kitchen",
+  "units": "meters",
+  "up": [
+    0,
+    1,
+    0
+  ],
+  "north": null,
+  "scale_method": "altitude",
+  "scale_residual_m": 0.04999050220249584,
+  "scale_notes": "camera-up-axis fit to caption H: range=0.90m, R2=0.964 over 165 frames (H is 0.1m quantised, 1Hz -- don't overclaim accuracy)",
+  "scale_candidates": [
+    {
+      "method": "altitude",
+      "scale": 0.18467711424307495,
+      "residual_m": 0.04999050220249584
+    },
+    {
+      "method": "odometry",
+      "scale": 0.15379830192407334,
+      "residual_m": null
+    },
+    {
+      "method": "none",
+      "scale": 1.0,
+      "residual_m": null
+    }
+  ],
+  "gravity_residual_deg": 0.08203891775933209,
+  "origin_gps": null,
+  "recommended_spawn": {
+    "pos": [
+      3.2996135742613637,
+      0.417710419293136,
+      0.22318931329992325
+    ],
+    "look": [
+      -1.1666110045162048,
+      -0.2625455766916692,
+      -0.12122010465562749
+    ]
+  },
+  "mesh": {
+    "file": "mesh.r1.glb",
+    "triangles": 199997,
+    "texture_px": 4096
+  },
+  "collision": {
+    "file": "collision.r1.glb",
+    "triangles": 50000
+  },
+  "cameras": "cameras.r1.json",
+  "quality": "full",
+  "revision": 1,
+  "frame": {
+    "id": "dji0095-a363",
+    "aligned_to_preview": false,
+    "alignment_residual_m": null
+  },
+  "pipeline_version": "0.3.0",
+  "structure": {
+    "file": "structure.r1.json",
+    "schema": "airtools.structure/1",
+    "edges": 671,
+    "corners": 594,
+    "planes": 61,
+    "objects": 40
+  },
+  "parts": {
+    "file": "parts.r1.json",
+    "schema": "airtools.parts/1",
+    "components": 4,
+    "mesh": "mesh.parts.r1.glb",
+    "cavities": "cavity.r1.glb",
+    "collision": "collision.parts.r1.glb"
+  }
+}

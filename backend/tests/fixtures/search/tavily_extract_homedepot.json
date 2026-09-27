@@ -1,0 +1,11 @@
+{
+  "results": [],
+  "failed_results": [
+    {
+      "url": "https://www.homedepot.com/p/Amerimax-Home-Products-5-in-Aluminum-Hidden-Gutter-Hanger-with-Screw-21812/100085356",
+      "error": "Failed to fetch url"
+    }
+  ],
+  "response_time": 4.54,
+  "request_id": "a16b0c39-afb4-4501-b609-9df0d9ac6291"
+}

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirTools presenter</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #171b22; --panel2: #1e232c; --line: #2a303b; --text: #eef1f5; --dim: #9aa3b2;
+    --accent: #ffd23f; --ok: #3ecf8e; --bad: #ff6b6b; --warn: #ffb547; --btn: #f4f6f9; --btnText: #0e1116;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
+  .dot.on { background: var(--ok); }
+  .dot.stale { background: var(--warn); }
+  .never { margin-left: auto; color: var(--dim); font-size: 13px; }
+  .never b { color: var(--text); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+  .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  button { font: inherit; border: 0; border-radius: 12px; cursor: pointer; }
+  .big { min-height: 72px; font-size: 18px; font-weight: 650; background: var(--btn); color: var(--btnText); padding: 10px; }
+  .big small { display: block; font-size: 12px; font-weight: 500; opacity: .7; }
+  .big:active { transform: translateY(1px); }
+  .big.reset { background: #ff8a3d; }
+  .big.reset.armed { background: var(--bad); color: #fff; animation: pulse .8s infinite alternate; }
+  @keyframes pulse { from { filter: brightness(1); } to { filter: brightness(1.25); } }
+  .beats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .beat { background: var(--panel2); color: var(--text); border: 1px solid var(--line); padding: 10px; text-align: left; min-height: 74px; }
+  .beat:hover { border-color: var(--accent); }
+  .beat .t { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 650; }
+  .beat .l { display: block; font-weight: 600; }
+  .beat .d { display: block; color: var(--dim); font-size: 12px; }
+  .beat.judge { border-style: dashed; cursor: not-allowed; opacity: .75; }
+  .beat.judge .t { color: var(--dim); }
+  .beat.current { outline: 2px solid var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 16px; }
+  .kv { min-width: 0; }
+  .kv .k { color: var(--dim); font-size: 12px; }
+  .kv .v { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .statusline { font-size: 22px; font-weight: 650; margin: 2px 0 6px; min-height: 30px; }
+  .coach { color: var(--dim); min-height: 20px; }
+  .err { color: var(--bad); }
+  .log { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  .log li { display: grid; grid-template-columns: 54px 150px 90px 1fr; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .log li:first-child { border-top: 0; }
+  .st-ok { color: var(--ok); } .st-failed, .st-expired { color: var(--bad); } .st-queued, .st-delivered { color: var(--warn); }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; }
+  .toggle button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); padding: 5px 12px; border-radius: 999px; }
+  .toggle button.sel { background: var(--accent); color: #111; border-color: var(--accent); }
+  #flash { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px); }
+  #flash.show { opacity: 1; }
+  kbd { font: 11px ui-monospace, Menlo, monospace; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--dim); }
+  @media (max-width: 720px) { .row { grid-template-columns: repeat(2, minmax(0, 1fr)); } .log li { grid-template-columns: 44px 1fr 70px; } .log li .d { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>AirTools presenter</h1>
+    <span class="pill"><span id="dot" class="dot"></span><span id="online">Headset offline</span></span>
+    <span class="toggle">DemoMode <button id="demoOn">On</button><button id="demoOff">Off</button></span>
+    <span class="never"><b>Never pays.</b> Paying is the judge's own 1-second hold on Pay.</span>
+  </header>
+
+  <section>
+    <h2>Now</h2>
+    <div class="statusline" id="status">—</div>
+    <div class="coach" id="coach"></div>
+  </section>
+
+  <section>
+    <h2>Controls</h2>
+    <div class="row">
+      <button class="big reset" id="reset">Reset demo<small>tap twice · <kbd>R</kbd> <kbd>R</kbd></small></button>
+      <button class="big" id="hint">Hint<small>show the coach now · <kbd>H</kbd></small></button>
+      <button class="big" id="enter">Enter world<small><kbd>E</kbd></small></button>
+      <button class="big" id="exit">Exit world<small><kbd>X</kbd></small></button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Skip to beat (the judge's three minutes)</h2>
+    <div class="beats" id="beats"></div>
+  </section>
+
+  <section>
+    <h2>Headset</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section>
+    <h2>Commands</h2>
+    <ul class="log" id="log"><li><span></span><span class="d">No commands yet</span></li></ul>
+  </section>
+</main>
+<div id="flash"></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let catalogue = null, lastState = null, armedUntil = 0;
+
+function flash(text, bad) {
+  const f = $("flash");
+  f.textContent = text;
+  f.style.borderColor = bad ? "var(--bad)" : "var(--line)";
+  f.classList.add("show");
+  clearTimeout(flash.t);
+  flash.t = setTimeout(() => f.classList.remove("show"), 2600);
+}
+
+async function send(cmd, arg) {
+  try {
+    const r = await fetch("/presenter/cmd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cmd, arg: arg ?? null }) });
+    const j = await r.json();
+    if (!r.ok) { flash(j.detail || j.error || ("HTTP " + r.status), true); return; }
+    flash((j.reused ? "Already queued: " : "Sent: ") + cmd + (arg ? " " + arg : ""));
+    poll();
+  } catch (e) { flash("Relay unreachable: " + e.message, true); }
+}
+
+function armReset() {
+  const b = $("reset"), now = Date.now();
+  if (now < armedUntil) { armedUntil = 0; b.classList.remove("armed"); b.firstChild.textContent = "Reset demo"; send("reset"); return; }
+  armedUntil = now + 3000;
+  b.classList.add("armed");
+  b.firstChild.textContent = "Tap again to reset";
+  setTimeout(() => { if (Date.now() >= armedUntil) { b.classList.remove("armed"); b.firstChild.textContent = "Reset demo"; } }, 3100);
+}
+
+function buildBeats() {
+  const el = $("beats");
+  el.innerHTML = "";
+  const items = catalogue.beats.map((b, i) => ({ ...b, key: String(i + 1) })).concat(catalogue.judge_only.map(j => ({ ...j, judge: true })));
+  items.sort((a, b) => a.t.localeCompare(b.t));
+  for (const b of items) {
+    const btn = document.createElement("button");
+    btn.className = "beat" + (b.judge ? " judge" : "");
+    btn.dataset.beat = b.id || "";
+    btn.innerHTML = `<span class="t"></span> <span class="k"></span><span class="l"></span><span class="d"></span>`;
+    btn.querySelector(".t").textContent = b.t;
+    btn.querySelector(".k").innerHTML = b.key ? `<kbd>${b.key}</kbd>` : "";
+    btn.querySelector(".l").textContent = b.label;
+    btn.querySelector(".d").textContent = b.judge ? "Judge only · " + b.why : b.does;
+    if (b.judge) { btn.disabled = true; btn.title = "The presenter never pays"; }
+    else btn.onclick = () => send("beat", b.id);
+    el.appendChild(btn);
+  }
+}
+
+function kv(k, v, cls) {
+  return `<div class="kv"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div></div>`;
+}
+const esc = s => String(s ?? "—").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function render(s) {
+  lastState = s;
+  const h = s.headset, online = s.online;
+  $("dot").className = "dot" + (online ? " on" : (h ? " stale" : ""));
+  $("online").textContent = online ? `Headset online · ${s.headset_age_s}s` : (h ? `Headset quiet ${s.headset_age_s}s` : "Headset offline (waiting for PresenterLink)");
+  $("demoOn").classList.toggle("sel", !!(h && h.demo));
+  $("demoOff").classList.toggle("sel", !!(h && !h.demo));
+  $("status").textContent = h ? (h.status || (h.mode === "Passthrough" ? "In the room" : "—")) : "—";
+  $("coach").textContent = h && h.coach ? "Coach: " + h.coach : "";
+  for (const btn of document.querySelectorAll(".beat")) btn.classList.toggle("current", !!(h && h.beat && btn.dataset.beat && h.beat.split(" ")[1] === btn.dataset.beat));
+  if (h) {
+    const j = h.judge || {}, lc = h.last_command;
+    $("grid").innerHTML =
+      kv("Beat", esc(h.beat)) + kv("Rule", esc(h.rule) + (h.primary ? " · " + esc(h.primary) : "")) +
+      kv("Mode", esc(h.mode) + (h.transitioning ? " (moving)" : "")) + kv("Tool", esc(h.tool)) +
+      kv("Scene", esc(h.site) + (h.scale_ok === false ? " · scale not set" : "")) +
+      kv("Judge actions", esc(j.actions) + " · ring opens " + esc(j.ring_opens)) + kv("Idle", esc(j.idle_s) + " s") +
+      kv("Readings", `tapes ${esc(j.tapes)} · levels ${esc(j.levels)} · notebook ${esc(j.notebook)}`) +
+      kv("Parts", `placed ${esc(j.parts)} · bought ${esc(j.purchases)}`) + kv("Checkout", esc(h.checkout)) +
+      kv("Last command", lc ? `${esc(lc.cmd)} ${esc(lc.arg || "")} · ${lc.ok ? "ok" : "failed"}${lc.detail ? " · " + esc(lc.detail) : ""}` : "—", lc && !lc.ok ? "err" : "") +
+      kv("Last error", h.last_error ? esc(h.last_error) + (h.last_error_age_s != null ? ` (${esc(h.last_error_age_s)} s ago)` : "") : "none", h.last_error ? "err" : "") +
+      kv("Resets", esc(h.resets)) + kv("DemoMode · rail", `${h.demo ? "on" : "off"} · ${h.rail ? "on" : "off"}`) + kv("Session", esc(h.sid)) + kv("FPS", esc(h.fps));
+  } else {
+    $("grid").innerHTML = kv("Headset", "no status yet: start the app in DemoMode, and on USB run adb reverse tcp:8766 tcp:8766");
+  }
+  const log = $("log");
+  if (s.commands && s.commands.length) {
+    log.innerHTML = s.commands.slice(0, 12).map(c =>
+      `<li><span>${esc(c.id)}</span><span>${esc(c.cmd)} ${esc(c.arg || "")}</span><span class="st-${esc(c.status)}">${esc(c.status)}</span><span class="d">${esc(c.detail || "")} · ${esc(c.age_s)} s ago</span></li>`).join("");
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/state", { cache: "no-store" });
+    render(await r.json());
+  } catch (e) {
+    $("dot").className = "dot";
+    $("online").textContent = "Relay unreachable";
+  }
+}
+
+async function start() {
+  try { catalogue = await (await fetch("/presenter/commands")).json(); } catch (e) { flash("Relay unreachable", true); return; }
+  buildBeats();
+  $("reset").onclick = armReset;
+  $("hint").onclick = () => send("hint");
+  $("enter").onclick = () => send("enter");
+  $("exit").onclick = () => send("exit");
+  $("demoOn").onclick = () => send("demo", "on");
+  $("demoOff").onclick = () => send("demo", "off");
+  document.addEventListener("keydown", e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "r") armReset();
+    else if (k === "h") send("hint");
+    else if (k === "e") send("enter");
+    else if (k === "x") send("exit");
+    else if (/^[1-9]$/.test(k) && catalogue.beats[+k - 1]) send("beat", catalogue.beats[+k - 1].id);
+  });
+  poll();
+  setInterval(poll, 1000);
+}
+start();
+</script>
+</body>
+</html>

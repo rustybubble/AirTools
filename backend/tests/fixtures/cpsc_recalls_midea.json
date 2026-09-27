@@ -1,0 +1,71 @@
+[
+  {
+    "RecallID": 10300,
+    "RecallNumber": "25320",
+    "RecallDate": "2025-06-05T00:00:00",
+    "Description": "This recall involves U and U+ Window Air Conditioners made by Midea and sold in brand names including Midea, Comfort Aire, Danby, Frigidaire, Insignia, Keystone, LBG Products, Mr. Cool, Perfect Aire and Sea Breeze. The air conditioners are designed to fit in windows. They were sold in three sizes of cooling power: 8,000, 10,000 and 12,000 BTU. The air conditioners are white and measure about 22 inches wide and 14 inches high. The brand name is printed on the units. The model number can be found on a label on the front right side of the unit when facing the air conditioner. They were sold with remote controls and can be controlled by a mobile app. The following brands and model numbers are included in this recall: Midea Model Numbers MAW08AV1QWT MAW08AV1QWT-C MAW08U1QWT MAW08V1QWT MAW08V1QWT-S MAW08V1QWT-T MAW08W1QWT MAW10U1QWT MAW10V1QWT MAW10W1QWT MAW12AV1QWT MAW12AV1QWT-C MAW12U1QWT MAW12V1QWT MAW12V1QWT-M MAW12V1QWT-S MAW12W1QWT Comfort Aire Model Numbers RXTS-101A RXTS-121A RXTS-81A Danby Model Numbers DAC080B6IWDB-6 DAC080B7IWDB-6 DAC100B6IWDB-6 Frigidaire Model Numbers GHWQ085WD1 GHWQ105WD1 GHWQ125WD1 Insignia Model Numbers NS-AC8WU3 NS-AC8WU3-C Keystone Model Numbers KSTAW08UA KSTAW10UA KSTAW12UA LBG Products Model Number QB-8K CO Mr. Cool Model Numbers MWUC08T115 MWUC10T115 MWUC12T115 Perfect Aire Model Numbers 1PACU10000 1PACU12000 1PACU8000 Sea Breeze Model Numbers MWAUQB-12CRFN8-BCN10 WAU310YREX WAU312YREX WAU38YREX",
+    "URL": "https://www.cpsc.gov/Recalls/2025/Midea-Recalls-About-1-7-Million-U-and-U-Window-Air-Conditioners-Due-to-Risk-of-Mold-Exposure",
+    "Title": "Midea Recalls About 1.7 Million U and U+ Window Air Conditioners Due to Risk of Mold Exposure",
+    "Products": [
+      {
+        "Name": "U and U+ Window Air Conditioners",
+        "Description": "",
+        "Model": "",
+        "Type": "",
+        "CategoryID": "",
+        "NumberOfUnits": "About 1.7 million (In addition, about 45,900 were sold in Canada)"
+      }
+    ],
+    "Manufacturers": [
+      {
+        "Name": "GD Midea Air-Conditioning Equipment Co. Ltd., of China",
+        "CompanyID": ""
+      }
+    ],
+    "Importers": [
+      {
+        "Name": "Midea America Corp., of Parsippany, New Jersey",
+        "CompanyID": ""
+      }
+    ],
+    "Hazards": [
+      {
+        "Name": "Pooled water in the air conditioners can fail to drain quickly enough, which can lead to mold growth. Mold exposure poses risks of respiratory issues or other infections to some consumers.",
+        "HazardType": "",
+        "HazardTypeID": ""
+      }
+    ]
+  },
+  {
+    "RecallID": 7896,
+    "RecallNumber": "17024",
+    "RecallDate": "2016-11-02T00:00:00",
+    "Description": "This recall involves 25-, 30-, 40-, 50-, 60-, 65-, 70-, and 75-pint dehumidifiers with the following brand names: Airworks, Alen, Arcticaire, Arctic King, Beaumark, Coolworks, ComfortAire, Comfort Star, Continental Electic, Crosley, Daewoo, Danby, Danby & Designer, Dayton, Degree, Diplomat, Edgestar, Excell, Fellini, Forest Air, Frigidaire, GE, Grunaire, Hanover, Honeywell, Homestyles, Hyundai, Ideal Air, Kenmore (Canada), Keystone, Kul, Midea, Nantucket, Ocean Breeze, Pelonis, Perfect Aire, Perfect Home, Polar Wind, Premiere, Professional Series, Royal Sovereign, Simplicity, Sunbeam, SPT, Sylvania, TGM, Touch Point, Trutemp, Uberhaus, Westpointe, Winix, and Winixl. The brand name, model number, pint capacity and manufacture date are printed on the nameplate sticker on the back of the dehumidifier. To determine if your dehumidifier has been recalled, enter the model number at https://www.recallrtr.com/dehumidifier",
+    "URL": "https://www.cpsc.gov/Recalls/2017/Dehumidifiers-Made-by-Midea-Recalled",
+    "Title": "Dehumidifiers Made by Midea Recalled Due to Serious Fire and Burn Hazards; $4.8 Million in Property Damage Reported",
+    "Products": [
+      {
+        "Name": "Dehumidifiers",
+        "Description": "",
+        "Model": "",
+        "Type": "",
+        "CategoryID": "",
+        "NumberOfUnits": "About 3.4 million (in addition 850,000 were sold in Canada)"
+      }
+    ],
+    "Manufacturers": [
+      {
+        "Name": "GD Midea Air Conditioning Equipment Ltd., of China",
+        "CompanyID": ""
+      }
+    ],
+    "Importers": [],
+    "Hazards": [
+      {
+        "Name": "The dehumidifiers can overheat, smoke and catch fire, posing serious fire and burn hazards.",
+        "HazardType": "",
+        "HazardTypeID": ""
+      }
+    ]
+  }
+]

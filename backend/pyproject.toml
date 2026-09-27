@@ -1,0 +1,67 @@
+[project]
+name = "airtools"
+version = "0.1.0"
+description = "AirTool parts server backend"
+authors = [
+    { name = "Subham Dash", email = "subhamdash14@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "edge-tts>=7.2.8",
+    "fast-simplification>=0.2.0",
+    "fastapi>=0.141.1",
+    "gradio-client>=2.7.1",
+    "httpx>=0.28.1",
+    "manifold3d>=3.5.4",
+    "numpy>=2.5.3",
+    "onnxruntime>=1.20",
+    "openai>=3.19.2",
+    "pillow>=12.3.0",
+    "pydantic>=2",
+    "pydantic-settings>=2.15.0",
+    "pypdf>=6.19.0",
+    "python-multipart>=0.0.32",
+    "rtree>=1.4.1",
+    "scipy>=1.18.1",
+    "trimesh>=5.1.0",
+    "uvicorn[standard]>=0.53.0",
+    "websockets>=17.1",
+]
+
+[project.optional-dependencies]
+# Reconstruction pipeline only (pipeline/) -- the parts server (server/) never needs these, kept
+# optional so `uv sync` for server-only work stays light (no SfM/mesh-decimation deps).
+pipeline = [
+    "opencv-python-headless>=4.7.0",
+    "pycolmap>=4.2.0",
+    "pymeshlab>=2025.7.post1",
+    "scipy>=1.18.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.11,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "server"
+module-root = ""
+
+[tool.pytest.ini_options]
+markers = [
+    "live: hits real external APIs, costs money, skipped by default",
+    "slow: end-to-end reconstruction run on real footage, skipped by default",
+]
+addopts = "-m 'not live and not slow'"
+
+[tool.ruff]
+line-length = 100
+# one-off ROCm build and smoke scripts run inside the hfbox container
+extend-exclude = ["pipeline/tools/rocm"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+    "ruff>=0.16.8",
+]

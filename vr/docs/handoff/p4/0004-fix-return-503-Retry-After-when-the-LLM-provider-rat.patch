@@ -1,0 +1,154 @@
+From f133f6c7ebcb05c3ac3311d2ba7af071e69b9baa Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:45:56 -0400
+Subject: [PATCH 4/8] fix: return 503 + Retry-After when the LLM provider
+ rate-limits, not a 500
+
+Integration finding #12: a second /scene/ask within the minute failed on Groq's 429 ("output
+tokens per minute limit 1000") and reached the headset as HTTP 500. A 429 means "try again
+shortly": one app-level handler for openai.RateLimitError now answers 503 with Retry-After (the
+provider's value rounded up to whole seconds, else 60) on every route that reaches an LLM
+(/scene/ask, /agent/command, /voice/command). The app already shows 503 as "needs the live
+model". api.md documents it and the vision output cap.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md       |  3 ++-
+ server/app.py     | 30 +++++++++++++++++++++++++++++-
+ tests/test_app.py | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 75 insertions(+), 2 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 687886d..8a1a58f 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -434,7 +434,7 @@ Max 3 frames (Groq vision model hard cap). Sort nearest-first; extras are silent
+ 
+ `box` — `[x0,y0,x1,y1]` normalized 0–1, top-left origin. Project centre onto mesh to drop a pin.  
+ `part_query` — pass to `find_part` to search for the identified part.  
+-Errors: `400` empty frames, invalid base64, frame too large. `413` request body over ~16 MB. `503` offline mode (vision needs the live model).
++Errors: `400` empty frames, invalid base64, frame too large. `413` request body over ~16 MB. `503` offline mode (vision needs the live model), or the model provider rate-limited us (Groq 429): the `Retry-After` header says how many seconds to wait. Same 503 + `Retry-After` from `/agent/command` and `/voice/command` when their LLM call is rate-limited.
+ 
+ ---
+ 
+@@ -506,6 +506,7 @@ Offline mode activates automatically when Cybersource keys are absent or the san
+ | Groq token budget | ~8K tokens/min (free tier); agent keeps last 8 messages |
+ | SerpApi quota | Cache everything; demo parts are pre-cached |
+ | Vision frames | Max 3 per `/scene/ask` (Groq vision hard cap) |
++| Vision output | 400 tokens per call (Groq free tier: 1000 output tokens/min for the vision model, so ~2 asks/min); over the limit → `503` + `Retry-After` |
+ | Audio upload | Max 25 MB (Groq free tier) |
+ | Search latency | ~5–30 s live, instant on cache hit |
+ | AI mesh | ~15–20 s per part, sequential (anonymous HF ZeroGPU semaphore); GLB may be pending when candidates first arrive |
+diff --git a/server/app.py b/server/app.py
+index f02a498..b3b88f0 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -4,6 +4,7 @@ import base64
+ import hashlib
+ import json
+ import logging
++import math
+ import re
+ from collections.abc import AsyncIterator
+ from datetime import UTC, datetime
+@@ -12,7 +13,8 @@ from typing import Literal
+ 
+ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+ from fastapi.middleware.cors import CORSMiddleware
+-from fastapi.responses import FileResponse, Response
++from fastapi.responses import FileResponse, JSONResponse, Response
++from openai import RateLimitError
+ from pydantic import BaseModel, ValidationError
+ 
+ from server import __version__, agent, assets, bom, cache, checkout, jobs, search, vision, voice
+@@ -55,6 +57,32 @@ async def _iter_upload(upload: UploadFile, chunk_size: int = 1024 * 1024) -> Asy
+         yield chunk
+ 
+ 
++def _retry_after_s(exc: RateLimitError) -> int:
++    """The provider's Retry-After in whole seconds (rounded up), else a minute -- Groq's limits
++    are per minute."""
++    try:
++        return max(1, math.ceil(float(exc.response.headers.get("retry-after", ""))))
++    except (TypeError, ValueError):
++        return 60
++
++
++@app.exception_handler(RateLimitError)
++async def llm_rate_limited(request: Request, exc: RateLimitError) -> JSONResponse:
++    """A provider 429 (Groq free tier: ~8K tokens/min for the agent, 1K output tokens/min for
++    vision) means "try again shortly", not a server bug: 503 + Retry-After (the app already shows
++    503 as "needs the live model") instead of an unhandled 500. Covers every route that reaches
++    an LLM: /scene/ask, /agent/command, /voice/command."""
++    retry_after = _retry_after_s(exc)
++    logger.warning(
++        "llm rate-limited on %s, retry after %d s: %s", request.url.path, retry_after, exc
++    )
++    return JSONResponse(
++        {"detail": f"the live model is rate-limited, retry in {retry_after} s"},
++        status_code=503,
++        headers={"Retry-After": str(retry_after)},
++    )
++
++
+ @app.get("/health")
+ def health() -> dict:
+     return {"ok": True, "version": __version__}
+diff --git a/tests/test_app.py b/tests/test_app.py
+index 271adf6..14fdfdc 100644
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -527,6 +527,50 @@ def test_httpx_request_urls_not_logged():
+ # --- scene vision ----------------------------------------------------------
+ 
+ 
++def _groq_429(retry_after: str | None):
++    import httpx
++    import openai
++
++    headers = {"retry-after": retry_after} if retry_after is not None else {}
++    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
++    return openai.RateLimitError(
++        "Rate limit reached for model `qwen/qwen3.8-27b`: output tokens per minute (OTPM): "
++        "Limit 1000, Used 0, Requested 1707.",
++        response=httpx.Response(429, headers=headers, request=request),
++        body=None,
++    )
++
++
++def test_scene_ask_rate_limited_is_503_with_retry_after(monkeypatch):
++    """Integration finding #12: a Groq 429 reached the headset as HTTP 500."""
++
++    async def rate_limited(question, frames):
++        raise _groq_429("7.2")
++
++    monkeypatch.setattr(app_module.vision, "ask_scene", rate_limited)
++
++    with TestClient(app) as client:
++        resp = client.post(
++            "/scene/ask",
++            json={"question": "What is this?", "frames": [{"id": "f0", "jpg_b64": "ZmFrZQ=="}]},
++        )
++    assert resp.status_code == 503
++    assert resp.headers["retry-after"] == "8"  # rounded up to whole seconds
++    assert "rate-limited" in resp.json()["detail"]
++
++
++def test_agent_command_rate_limited_is_503_default_retry_after(monkeypatch):
++    async def rate_limited(session_id, text, context):
++        raise _groq_429(None)
++
++    monkeypatch.setattr(agent, "handle_command", rate_limited)
++
++    with TestClient(app) as client:
++        resp = client.post("/agent/command", json={"session_id": "s1", "text": "what is this?"})
++    assert resp.status_code == 503
++    assert resp.headers["retry-after"] == "60"
++
++
+ def test_scene_ask_route_ok(monkeypatch):
+     from server.vision import Frame, SceneAnswer
+ 
+-- 
+2.50.1 (Apple Git-155)
+

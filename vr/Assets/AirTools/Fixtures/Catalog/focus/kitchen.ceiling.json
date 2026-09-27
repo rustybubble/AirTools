@@ -1,0 +1,202 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "kitchen",
+ "title": "Kitchen",
+ "focus": "ceiling",
+ "foci": [
+  "wall",
+  "ground",
+  "ceiling",
+  "counter",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "ceiling-lights",
+   "title": "Ceiling lights",
+   "icon": "lightbulb",
+   "query": "flush mount ceiling light",
+   "items": [
+    {
+     "part_id": "hampton-bay-hb1023c5cct-35-b51ea0",
+     "name": "Flaxmere 12 in. Modern Brushed Nickel 5 CCT Integrated LED Flush Mount for Kitchens or Bedrooms",
+     "price_usd": 24.97,
+     "dims_mm": {
+      "w": 304.8,
+      "h": 304.8,
+      "d": 78.74
+     },
+     "image_url": "/parts/hampton-bay-hb1023c5cct-35-b51ea0/image.jpg",
+     "model_url": "/parts/hampton-bay-hb1023c5cct-35-b51ea0/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "commercial-electric-efg8012a-bn-2c765d",
+     "name": "13 in. 2-Light Brushed Nickel Flush Mount with Frosted Glass Shade (2-Pack)",
+     "price_usd": 29.97,
+     "dims_mm": {
+      "w": 323.82,
+      "h": 323.85,
+      "d": 139.7
+     },
+     "image_url": "/parts/commercial-electric-efg8012a-bn-2c765d/image.jpg",
+     "model_url": "/parts/commercial-electric-efg8012a-bn-2c765d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "home-decorators-collection-jxm3011ll-mb-ff8c24",
+     "name": "Calloway 15 in. Matte Black Selectable LED Flush Mount",
+     "price_usd": 59.97,
+     "dims_mm": {
+      "w": 381.0,
+      "h": 381.0,
+      "d": 40.64
+     },
+     "image_url": "/parts/home-decorators-collection-jxm3011ll-mb-ff8c24/image.jpg",
+     "model_url": "/parts/home-decorators-collection-jxm3011ll-mb-ff8c24/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "smoke-detectors",
+   "title": "Smoke detectors",
+   "icon": "siren",
+   "query": "smoke detector",
+   "items": [
+    {
+     "part_id": "first-alert-battery-operated-smoke-alarm-c62f48",
+     "name": "First Alert Battery-Operated Smoke Alarm",
+     "price_usd": 19.99,
+     "dims_mm": {
+      "w": 127.0,
+      "h": 25.0,
+      "d": 127.0
+     },
+     "image_url": "/parts/first-alert-battery-operated-smoke-alarm-c62f48/image.jpg",
+     "model_url": "/parts/first-alert-battery-operated-smoke-alarm-c62f48/model.glb",
+     "model_ready": true,
+     "seller": "Ace Hardware"
+    },
+    {
+     "part_id": "kidde-21031482-ab68c2",
+     "name": "Hardwired Smoke Detector with AA Battery Backup and Interconnect Capability, 20SAR",
+     "price_usd": 28.47,
+     "dims_mm": {
+      "w": 127.0,
+      "h": 25.0,
+      "d": 127.0
+     },
+     "image_url": "/parts/kidde-21031482-ab68c2/image.jpg",
+     "model_url": "/parts/kidde-21031482-ab68c2/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "kidde-21031466-6e490e",
+     "name": "10-Year Battery-Powered Smoke Detector, 20SD10",
+     "price_usd": 32.47,
+     "dims_mm": {
+      "w": 127.0,
+      "h": 25.0,
+      "d": 127.0
+     },
+     "image_url": "/parts/kidde-21031466-6e490e/image.jpg",
+     "model_url": "/parts/kidde-21031466-6e490e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "range-hoods",
+   "title": "Range hoods",
+   "icon": "wind",
+   "query": "30 in. under cabinet range hood",
+   "items": [
+    {
+     "part_id": "broan-nutone-rl6230bl-e2c642",
+     "name": "RL6200 Series 30 in. Ductless Under Cabinet Range Hood with Light in Black",
+     "price_usd": 94.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 152.4,
+      "d": 444.5
+     },
+     "image_url": "/parts/broan-nutone-rl6230bl-e2c642/image.jpg",
+     "model_url": "/parts/broan-nutone-rl6230bl-e2c642/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "broan-nutone-rl6230sf-680219",
+     "name": "RL6200 Series 30-Inch Ductless Under-Cabinet Range Hood, Stainless Steel Finish",
+     "price_usd": 109.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 152.4,
+      "d": 444.5
+     },
+     "image_url": "/parts/broan-nutone-rl6230sf-680219/image.jpg",
+     "model_url": "/parts/broan-nutone-rl6230sf-680219/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-30-under-the-cabinet-hood-f67a4c",
+     "name": "GE 30\" Under The Cabinet Hood",
+     "price_usd": 189.0,
+     "dims_mm": {
+      "w": 758.83,
+      "h": 139.7,
+      "d": 508.0
+     },
+     "image_url": "/parts/ge-30-under-the-cabinet-hood-f67a4c/image.jpg",
+     "model_url": "/parts/ge-30-under-the-cabinet-hood-f67a4c/model.glb",
+     "model_ready": true,
+     "seller": "Lowe's"
+    }
+   ]
+  },
+  {
+   "id": "ceiling-fans",
+   "title": "Ceiling fans",
+   "icon": "fan",
+   "query": "ceiling fan with light",
+   "items": [
+    {
+     "part_id": "mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee",
+     "name": "Mainstays 52 Hugger Indoor Ceiling Fan with Light Kit",
+     "price_usd": 39.97,
+     "dims_mm": {
+      "w": 1322.8,
+      "h": 381.0,
+      "d": 1322.8
+     },
+     "image_url": "/parts/mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee/image.jpg",
+     "model_url": "/parts/mainstays-52-hugger-indoor-ceiling-fan-with-light-kit-7f6eee/model.glb",
+     "model_ready": false,
+     "seller": "Walmart"
+    },
+    {
+     "part_id": "westinghouse-7305100-9b425d",
+     "name": "Alloy 42 in. LED Indoor Brushed Nickel Ceiling Fan with Light Fixture",
+     "price_usd": 117.5,
+     "dims_mm": {
+      "w": 304.0,
+      "h": 238.0,
+      "d": 579.9
+     },
+     "image_url": "/parts/westinghouse-7305100-9b425d/image.jpg",
+     "model_url": "/parts/westinghouse-7305100-9b425d/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  }
+ ]
+}

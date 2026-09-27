@@ -1,0 +1,593 @@
+From 6d4557d19c95539f2c09cb1eb875a0155de760bd Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:05:32 -0400
+Subject: [PATCH 2/6] texture: tests (masking, front-only UVs, side colours,
+ flags, orientation, retexture); resize textured like model.glb
+
+- tests/test_texture.py (22): the white-background flood and its cache, a showroom with neighbours
+  (the central product of the part's aspect), the frame-filling crop, a keystoned box face, no
+  background in the texture; body/trim sampling and the finish words; recolor keeps Grok's paint;
+  front-only UVs on a box, a sphere (60 deg, the footprint not the bbox) and an upright tub; the
+  three flags; a backwards CAD model detected, turned and photo'd on its true front; the relief
+  pass; retexture without calls (and what it keeps); warm --retexture rows and totals.
+- front_relief is now the share of the front view off its main plane (a small proud handle counts).
+- a plain-background cut-out is reused whatever the aspect (only picking among objects needs it).
+- resize: a resized template is textured like model.glb; _box returns (box, info).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/meshgen.py     |   9 +-
+ server/photo_cut.py   |  10 +-
+ server/resize.py      |  12 +-
+ tests/test_texture.py | 468 ++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 482 insertions(+), 17 deletions(-)
+ create mode 100644 tests/test_texture.py
+
+diff --git a/server/meshgen.py b/server/meshgen.py
+index d5963f5..b41a6eb 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -847,7 +847,7 @@ def turn_around(scene: trimesh.Scene) -> trimesh.Scene:
+     return out
+ 
+ 
+-RELIEF_MIN = 0.01  # front-view depth spread (share of D) under this: a flat slab of a front
++RELIEF_MIN = 0.02  # under this share of the front view off its main plane: a flat slab
+ RELIEF_NOTE = (
+     "The front (Z=D) is flat: the handles, controls and door features are painted flush on one "
+     "slab, so the model reads as its back. Stop the body short of the front (box(z1=D-t), t about "
+@@ -868,14 +868,15 @@ def wants_relief(part: Part) -> bool:
+ 
+ 
+ def front_relief(scene) -> float:
+-    """The depth spread of what a viewer sees from the front (0 = one flat slab)."""
++    """The share of the front view that stands off the front's main plane (by more than 1 % of
++    the depth): handles, a control panel, knobs, a recessed door. 0 = one flat slab."""
+     scene = scene if isinstance(scene, trimesh.Scene) else trimesh.Scene(scene)
+     meshes = [(n, m) for n, m in _world_meshes(scene) if len(m.faces)]
+     if not meshes:
+         return 0.0
+     ids, depth = side_view(meshes, "front")
+-    cov = ids >= 0
+-    return float(depth[cov].std()) if cov.any() else 0.0
++    d = depth[ids >= 0]
++    return float((np.abs(d - np.median(d)) > 0.01).mean()) if d.size else 0.0
+ 
+ 
+ # ---------------------------------------------------------------- Grok OpenSCAD (E4), offline
+diff --git a/server/photo_cut.py b/server/photo_cut.py
+index b393e0e..f7e11eb 100644
+--- a/server/photo_cut.py
++++ b/server/photo_cut.py
+@@ -162,11 +162,10 @@ def cached(photo: Path, aspect: float | None = None) -> Cut | None:
+     png, meta_path = cut_paths(photo)
+     try:
+         meta = json.loads(meta_path.read_text())
+-        if (
+-            meta.get("version") != VERSION
+-            or meta.get("photo_sha1") != _sha1(photo)
+-            or not _same_aspect(meta.get("aspect"), aspect)
+-        ):
++        if meta.get("version") != VERSION or meta.get("photo_sha1") != _sha1(photo):
++            return None
++        # a plain-background flood doesn't depend on the aspect; picking among objects does
++        if meta.get("aspect_used", True) and not _same_aspect(meta.get("aspect"), aspect):
+             return None
+         if (
+             meta.get("background") == "cluttered"
+@@ -251,6 +250,7 @@ def _save(photo: Path, c: Cut) -> None:
+             "version": VERSION,
+             "photo_sha1": _sha1(photo),
+             "aspect": c.aspect,
++            "aspect_used": not (c.method == "flood" and c.background == "plain"),
+             "method": c.method,
+             "background": c.background,
+             "box": list(c.box),
+diff --git a/server/resize.py b/server/resize.py
+index 5baef7b..3109153 100644
+--- a/server/resize.py
++++ b/server/resize.py
+@@ -78,14 +78,10 @@ async def _template(part: Part, dims: Dims, photo: Path | None) -> trimesh.Scene
+     if plan is None:
+         return None
+     geometry = await asyncio.to_thread(meshgen.build, plan, dims)
+-    if photo is not None and plan.single:
++    if photo is not None:  # texture: textured like model.glb (cut-out, front only, sides)
+         face = plan.face or await asyncio.to_thread(meshgen.aspect_guess, dims, photo)
+-        try:
+-            geometry = await asyncio.to_thread(
+-                meshgen.project, geometry, photo, face, plan.rotate_cw
+-            )
+-        except Exception as exc:  # noqa: BLE001 -- an untextured model is still the right size
+-            logger.info("resize %s: photo projection failed: %s", part.id, exc)
++        sized = part.model_copy(update={"dims_mm": dims})
++        geometry, _ = await assets._textured(sized, geometry, photo, plan, face, "llm")
+     return geometry
+ 
+ 
+@@ -134,7 +130,7 @@ async def resize(part: Part, dims: Dims, finish_name: str | None = None) -> dict
+             geometry = await _template(part, dims, photo)
+             out["source"] = "template" if geometry is not None else "scaled"
+         elif part.asset.tier == "proxy":
+-            geometry = await asyncio.to_thread(
++            geometry, _ = await asyncio.to_thread(  # texture: (box, its texture info)
+                 assets._box, part.model_copy(update={"dims_mm": dims}), photo
+             )
+             out["source"] = "box"
+diff --git a/tests/test_texture.py b/tests/test_texture.py
+new file mode 100644
+index 0000000..44bd86c
+--- /dev/null
++++ b/tests/test_texture.py
+@@ -0,0 +1,468 @@
++"""texture: the product cut out of its photo (server/photo_cut.py), the photo on the model's front
++footprint only, the sides painted from the product (meshgen.recolor), the CAD front check
++(meshgen.orientation / turn_around / the relief pass), `assets.retexture` and
++`python -m server.warm --retexture`, and the three flags. Synthetic photos; the saliency model is
++stubbed (no download in tests)."""
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++import trimesh
++from PIL import Image, ImageDraw
++
++from server import assets, jobs, meshgen, photo_cut, warm
++from server import part_templates as T
++from server.config import get_settings
++from server.models import Asset, Dims, Part
++
++DW_DIMS = Dims(w=609.6, h=889.0, d=635.0)  # a dishwasher
++
++
++@pytest.fixture(autouse=True)
++def _data_dir(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    get_settings.cache_clear()
++    monkeypatch.setattr(photo_cut, "_session", None)
++    monkeypatch.setattr(photo_cut, "_session_failed", False)
++    yield tmp_path
++    get_settings.cache_clear()
++
++
++@pytest.fixture
++def no_model(monkeypatch):
++    """No saliency model (tests never download it)."""
++    monkeypatch.setattr(photo_cut, "saliency", lambda rgb: None)
++
++
++def _studio(path: Path, size=(400, 500), box=(110, 60, 290, 440)) -> Path:
++    """A 'stainless' product on a white studio background: a vertical light-to-dark gradient body,
++    a black control strip at the top and a black kick plate at the bottom."""
++    img = Image.new("RGB", size, (255, 255, 255))
++    x0, y0, x1, y1 = box
++    arr = np.asarray(img).copy()
++    grad = np.linspace(210, 150, x1 - x0).astype(np.uint8)  # brushed steel, highlight to shade
++    arr[y0:y1, x0:x1] = np.stack([grad, grad + 3, grad + 6], axis=-1)[None]
++    arr[y0 : y0 + 40, x0:x1] = (30, 30, 30)
++    arr[y1 - 30 : y1, x0:x1] = (25, 25, 25)
++    Image.fromarray(arr).save(path)
++    return path
++
++
++def _showroom(path: Path) -> Path:
++    """The LG fridge case: a grey wall, carpet, the product in the middle and a neighbour cut off
++    at each edge."""
++    rng = np.random.default_rng(1)
++    arr = np.full((400, 300, 3), 170, np.uint8)
++    arr[300:] = (90, 88, 86)  # carpet
++    arr += rng.integers(0, 25, arr.shape, dtype=np.uint8)
++    arr[40:340, 0:45] = (120, 120, 125)  # neighbours, touching the border
++    arr[40:340, 255:300] = (60, 60, 64)
++    arr[40:340, 75:225] = (185, 188, 192)  # the product: 150 x 300 (aspect 0.5)
++    Image.fromarray(arr).save(path)
++    return path
++
++
++def _saliency_of(*boxes):
++    """A saliency stub marking `boxes` (x0, y0, x1, y1) as salient."""
++
++    def sal(rgb):
++        out = np.zeros(rgb.shape[:2], np.float32)
++        for x0, y0, x1, y1 in boxes:
++            out[y0:y1, x0:x1] = 1.0
++        return out
++
++    return sal
++
++
++def _part(**kw) -> Part:
++    base = {"id": "dw", "name": "Built-in dishwasher", "dims_mm": DW_DIMS, "finish": "Stainless"}
++    return Part(**{**base, **kw})
++
++
++# --- masking -----------------------------------------------------------------------------------
++
++
++def test_white_background_is_flooded_out(tmp_path, no_model):
++    photo = _studio(tmp_path / "image.jpg")
++    c = photo_cut.cut(photo, DW_DIMS.w / DW_DIMS.h)
++    assert (c.method, c.background) == ("flood", "plain")
++    assert c.box == pytest.approx((110, 60, 290, 440), abs=2)
++    assert c.mask.mean() > 0.97  # the crop is the product
++    assert c.quad is None  # square-on: no keystone
++    # cached next to the photo: a second cut reads it back, no segmentation
++    png, meta = photo_cut.cut_paths(photo)
++    assert png.name == "image.cut.png" and json.loads(meta.read_text())["method"] == "flood"
++    assert Image.open(png).mode == "RGBA"
++
++
++def test_the_cache_is_used_and_follows_the_photo(tmp_path, no_model, monkeypatch):
++    photo = _studio(tmp_path / "image.jpg")
++    photo_cut.cut(photo, 0.7)
++
++    def boom(*a, **k):
++        raise AssertionError("segmented again")
++
++    monkeypatch.setattr(photo_cut, "segment", boom)
++    assert photo_cut.cut(photo, 0.7).method == "flood"
++    assert photo_cut.cut(photo, 1.4).method == "flood"  # a plain flood doesn't depend on aspect
++    _studio(photo, box=(100, 50, 300, 450))  # a new photo: made again
++    with pytest.raises(AssertionError, match="segmented again"):
++        photo_cut.cut(photo, 0.7)
++
++
++def test_cluttered_photo_keeps_the_central_product_of_the_right_aspect(tmp_path, monkeypatch):
++    photo = _showroom(tmp_path / "image.jpg")
++    # the model finds all three fridges; the product is the central one of aspect ~0.5
++    monkeypatch.setattr(
++        photo_cut,
++        "saliency",
++        _saliency_of((0, 40, 45, 340), (75, 40, 225, 340), (255, 40, 300, 340)),
++    )
++    c = photo_cut.cut(photo, 908 / 1772)
++    assert (c.method, c.background) == ("u2netp", "cluttered")
++    assert c.box == pytest.approx((75, 40, 225, 340), abs=4)
++    body = photo_cut.hex_rgb(c.colors["body"])
++    assert np.abs(body - (192, 195, 199)).max() < 20  # the product's steel, not the wall
++
++
++def test_cluttered_photo_without_the_model_falls_back(tmp_path, no_model):
++    c = photo_cut.cut(_showroom(tmp_path / "image.jpg"), 0.5)
++    assert c.background == "cluttered" and c.method in ("flood", "whole")
++
++
++def test_a_photo_the_product_fills_is_kept_whole(tmp_path, monkeypatch):
++    rng = np.random.default_rng(2)
++    arr = rng.integers(60, 200, (200, 400, 3), dtype=np.uint8)  # busy edges: not a studio photo
++    Image.fromarray(arr).save(tmp_path / "image.jpg")
++    monkeypatch.setattr(photo_cut, "saliency", _saliency_of((0, 20, 150, 180)))  # a door only
++    c = photo_cut.cut(tmp_path / "image.jpg", 2.0)  # the photo has the product's aspect
++    assert c.method == "frame" and c.box == (0, 0, 400, 200)
++
++
++def test_a_keystoned_box_face_is_straightened(tmp_path, no_model):
++    img = Image.new("RGB", (400, 500), (255, 255, 255))
++    ImageDraw.Draw(img).polygon(
++        [(100, 60), (300, 60), (285, 440), (115, 440)], fill=(170, 172, 175)
++    )
++    img.save(tmp_path / "image.jpg")
++    c = photo_cut.cut(tmp_path / "image.jpg", 0.5)
++    assert c.quad is not None
++    flat = np.asarray(c.rectified().getchannel("A")) > 127
++    assert flat.mean() > 0.97  # a rectangle now
++    tapered = np.asarray(c.image.getchannel("A")) > 127
++    assert tapered.mean() < 0.97  # the unwarped crop is still the trapezoid
++
++
++def test_texture_never_shows_the_background(tmp_path, no_model):
++    img = Image.new("RGB", (300, 300), (255, 255, 255))
++    ImageDraw.Draw(img).ellipse((50, 50, 250, 250), fill=(150, 120, 80))
++    img.save(tmp_path / "image.jpg")
++    c = photo_cut.cut(tmp_path / "image.jpg", 1.0)
++    tex = np.asarray(c.texture()).astype(int)
++    assert tex[0, 0].tolist() == pytest.approx([150, 120, 80], abs=25)  # a corner: the body
++    assert (tex.sum(axis=2) < 650).mean() > 0.995  # no white background (a JPEG-rung edge px)
++
++
++# --- colours and finish ------------------------------------------------------------------------
++
++
++def test_side_colours_are_the_body_and_the_trim(tmp_path, no_model):
++    c = photo_cut.cut(_studio(tmp_path / "image.jpg"), 0.7)
++    body, trim = photo_cut.hex_rgb(c.colors["body"]), photo_cut.hex_rgb(c.colors["trim"])
++    assert 150 <= body.mean() <= 212 and np.ptp(body) < 12  # steel grey, not the highlight
++    assert trim.max() < 60  # the black strip
++
++
++def test_finish_words():
++    assert (
++        photo_cut.finish_for(["Stainless Steel", "Plastic Tub", "Dishwasher"], "#999999") == "metal"
++    )
++    assert photo_cut.finish_for(["Matte Black", "Steel", "Lantern"], "#222222") == "painted"
++    assert photo_cut.finish_for([None, "Resin", "Planter"], "#EEEEEE") == "plastic"
++    assert photo_cut.finish_for([None, None, "Navy bench"], "#2C4A6B") == "painted"
++    assert photo_cut.finish_for([None, None, "Fridge"], "#B9BCC0") == "metal"  # grey, by colour
++    assert photo_cut.finish_for(["absolute black"], "#101010") == "painted"  # "abs" is a word
++
++
++def test_recolor_keeps_meaningful_paint():
++    grey = trimesh.creation.box(extents=(1, 1, 1))
++    grey.visual = trimesh.visual.TextureVisuals(material=T.material("#B0B0B0", "body"))
++    handle = trimesh.creation.box(extents=(0.1, 0.1, 0.1))
++    handle.visual = trimesh.visual.TextureVisuals(material=T.material("#B0B0B0", "body"))
++    black = trimesh.creation.box(extents=(1, 0.2, 0.1))
++    black.visual = trimesh.visual.TextureVisuals(material=T.material("#1C1C1C", "body"))
++    steel = trimesh.creation.box(extents=(1, 0.2, 0.1))
++    steel.visual = trimesh.visual.TextureVisuals(material=T.material("#A8ACB0", "body"))
++    scene = trimesh.Scene()
++    for name, m in (("body", grey), ("handle", handle), ("strip", black), ("door", steel)):
++        scene.add_geometry(m, geom_name=name, node_name=name)
++    colors = {"body": "#B9BCC0", "trim": "#202020"}
++    out = meshgen.recolor(scene, colors, "metal", cue_near=True)
++    paint = {
++        n: photo_cut.hex_rgb(meshgen._hex_of(g.visual.material)) for n, g in out.geometry.items()
++    }
++
++    def near(name, hexc):  # uint8 linear factors lose a little on dark colours
++        return np.abs(paint[name] - photo_cut.hex_rgb(hexc)).max() <= 3
++
++    assert near("body", "#B9BCC0")  # the default grey: the sampled body
++    assert near("handle", "#202020")  # a small unpainted piece: the trim
++    assert near("strip", "#1C1C1C")  # Grok's black kept
++    assert near("door", "#A8ACB0")  # Grok's steel kept ...
++    door = out.geometry["door"].visual.material
++    assert (door.metallicFactor, door.roughnessFactor) == photo_cut.FINISH_PBR["metal"]  # ... + cue
++    strip = out.geometry["strip"].visual.material
++    assert strip.metallicFactor == pytest.approx(0.1)  # untouched
++    everything = meshgen.recolor(scene, colors, "plastic", replace_all=True)
++    assert {meshgen._hex_of(g.visual.material) for g in everything.geometry.values()} == {"#B9BCC0"}
++
++
++# --- front-only mapping ------------------------------------------------------------------------
++
++
++def _photo_normals(scene) -> np.ndarray:
++    return scene.geometry["photo"].face_normals
++
++
++def test_box_photo_on_the_front_face_only(tmp_path, no_model):
++    photo = _studio(tmp_path / "image.jpg")
++    box, _ = T.build("box", DW_DIMS.model_dump(), None, {"body": "#B0B0B0"})
++    scene = meshgen.project(box, photo, "front")
++    n = _photo_normals(scene)
++    assert (n @ [0, 0, 1] > 0.99).all() and len(n) == 2  # the two front triangles, nothing else
++    uv = scene.geometry["photo"].visual.uv
++    assert uv.min() == pytest.approx(0) and uv.max() == pytest.approx(1)
++    assert scene.metadata["texture"]["photo"] and scene.metadata["texture"]["cut"] == "flood"
++    lo, hi = scene.bounds  # the contract: exact size, mount face at z = 0
++    assert hi - lo == pytest.approx(np.array([DW_DIMS.w, DW_DIMS.h, DW_DIMS.d]) / 1000, abs=1e-5)
++
++
++def test_curved_front_gets_the_photo_within_60_degrees_fitted_to_its_footprint(tmp_path, no_model):
++    photo = _studio(tmp_path / "image.jpg")
++    ball = trimesh.creation.icosphere(subdivisions=3, radius=0.5)
++    scene = meshgen.project(ball, photo, "front")
++    n = _photo_normals(scene)
++    assert (n @ [0, 0, 1] >= meshgen.FACE_DOT_CUT - 1e-6).all()
++    v = scene.geometry["photo"].vertices
++    assert np.ptp(v[:, 0]) < 0.95  # the footprint (~0.87 of the width), not the bbox
++    uv = scene.geometry["photo"].visual.uv
++    assert uv[:, 0].min() == pytest.approx(0, abs=1e-6) and uv[:, 0].max() == pytest.approx(1)
++    rest = [g for name, g in scene.geometry.items() if name != "photo"]
++    assert all(getattr(g.visual, "uv", None) is None for g in rest)  # no photo on the rest
++
++
++def test_hunyuan_like_mesh_sides_get_no_photo(tmp_path, no_model):
++    photo = _studio(tmp_path / "image.jpg")
++    tub = trimesh.creation.cylinder(radius=0.3, height=0.9, sections=48)
++    tub.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
++    tub.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # upright
++    scene = meshgen.project(tub, photo, "front")
++    assert (_photo_normals(scene) @ [0, 0, 1] >= meshgen.FACE_DOT_CUT - 1e-6).all()
++
++
++def test_flag_off_is_the_old_projection(tmp_path, no_model, monkeypatch):
++    photo = _studio(tmp_path / "image.jpg")
++    ball = trimesh.creation.icosphere(subdivisions=3, radius=0.5)
++    monkeypatch.setenv("ASSET_PHOTO_CUT", "false")
++    get_settings.cache_clear()
++    old = meshgen.project(ball, photo, "front")
++    dots = _photo_normals(old) @ [0, 0, 1]
++    assert dots.min() < meshgen.FACE_DOT_CUT  # the old 70 degree cut
++    assert not photo_cut.cut_paths(photo)[0].exists()  # no cut-out made
++
++
++def test_decal_box_sides_in_the_body_colour_or_the_edge_colour(tmp_path, no_model, monkeypatch):
++    photo = _studio(tmp_path / "image.jpg")
++    scene = meshgen.decal_box(DW_DIMS, photo, "front", finish="metal")
++    body = scene.geometry["body"].visual.material
++    assert meshgen._hex_of(body) == photo_cut.cut(photo, 0.686).colors["body"]
++    assert body.metallicFactor == photo_cut.FINISH_PBR["metal"][0]
++    monkeypatch.setenv("ASSET_SIDE_COLOR", "false")
++    get_settings.cache_clear()
++    edge = meshgen.decal_box(DW_DIMS, photo, "front").geometry["body"].visual.material
++    assert meshgen._hex_of(edge) != meshgen._hex_of(body)
++
++
++# --- CAD orientation ---------------------------------------------------------------------------
++
++
++def _cad(front=True) -> trimesh.Scene:
++    """A CAD dishwasher (contract frame, metres): a steel body, a black control strip and kick
++    plate and a handle on the front (+Z) -- or on the back when `front` is False."""
++    w, h, d = 0.61, 0.89, 0.635
++    z0, z1 = (d - 0.02, d) if front else (0, 0.02)
++
++    def piece(bounds, hexc):
++        m = trimesh.creation.box(bounds=bounds)
++        m.visual = trimesh.visual.TextureVisuals(material=T.material(hexc, "body"))
++        return m
++
++    body_z = (0, d - 0.02) if front else (0.02, d)
++    scene = trimesh.Scene()
++    scene.add_geometry(piece([[-w / 2, -h / 2, body_z[0]], [w / 2, h / 2, body_z[1]]], "#B9BCC0"))
++    scene.add_geometry(piece([[-w / 2, h / 2 - 0.1, z0], [w / 2, h / 2, z1]], "#1C1C1C"))
++    scene.add_geometry(piece([[-w / 2, -h / 2, z0], [w / 2, -h / 2 + 0.08, z1]], "#202020"))
++    scene.add_geometry(piece([[-0.25, 0.25, z0], [0.25, 0.3, z1]], "#8A8A8A"))
++    return scene
++
++
++def test_orientation_front_detail_is_right_way_round():
++    ori = meshgen.orientation(_cad(front=True))
++    assert not ori["reversed"] and ori["front"]["pieces"] > ori["back"]["pieces"]
++
++
++def test_a_backwards_model_is_detected_and_turned(tmp_path, no_model):
++    backwards = _cad(front=False)
++    photo = _studio(tmp_path / "image.jpg")
++    ori = meshgen.orientation(backwards, photo_cut.cut(photo, 0.686).texture())
++    assert ori["reversed"]
++    fixed = meshgen.turn_around(backwards)
++    assert fixed.bounds == pytest.approx(backwards.bounds)  # same box, mount face at z = 0
++    assert not meshgen.orientation(fixed)["reversed"]
++
++
++@pytest.mark.asyncio
++async def test_texture_step_turns_a_backwards_cad_model(tmp_path, no_model, monkeypatch):
++    photo = _studio(tmp_path / "image.jpg")
++    geo, info = await assets._textured(_part(), _cad(front=False), photo, None, "front", "scad")
++    assert info["turned"]
++    photo_side = geo.geometry["photo"].vertices[:, 2]
++    assert photo_side.min() > 0.5  # the photo went on the true front, now at +Z
++    monkeypatch.setenv("ASSET_SCAD_ORIENT", "false")
++    get_settings.cache_clear()
++    _, info = await assets._textured(_part(), _cad(front=False), photo, None, "front", "scad")
++    assert "turned" not in info
++
++
++def _scad_llm(monkeypatch, replies: list) -> list:
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append({"role": role, "messages": messages})
++        text = replies[min(len(calls), len(replies)) - 1]
++        usage = SimpleNamespace(
++            prompt_tokens=1600,
++            completion_tokens=600,
++            cost_in_usd_ticks=35_000_000,
++            completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
++        )
++        return SimpleNamespace(
++            model="grok-4.20-0309-non-reasoning",
++            usage=usage,
++            choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++@pytest.mark.asyncio
++async def test_a_flat_cad_front_gets_one_relief_pass(tmp_path, no_model, monkeypatch):
++    monkeypatch.setenv("LLM_ASSET_SCAD", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls = _scad_llm(monkeypatch, ["```openscad\nFLAT\n```", "```openscad\nPROUD\n```"])
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/openscad")
++    w, h, d = DW_DIMS.w, DW_DIMS.h, DW_DIMS.d
++
++    def build(exe, code, work, dims):
++        if code == "FLAT":
++            return [(trimesh.creation.box(bounds=[[-w / 2, 0, 0], [w / 2, h, d]]), "#B9BCC0")], None
++        body = trimesh.creation.box(bounds=[[-w / 2, 0, 0], [w / 2, h, d - 30]])
++        handle = trimesh.creation.box(bounds=[[-200, h - 150, d - 30], [200, h - 110, d]])
++        return [(body, "#B9BCC0"), (handle, "#8A8A8A")], None
++
++    monkeypatch.setattr(meshgen, "build_scad", build)
++    out = tmp_path / "p" / "scad.glb"
++    rec = await meshgen.grok_scad_run(_part(), _studio(tmp_path / "image.jpg"), out)
++    assert rec["ok"] and rec["relief_pass"] == "kept" and len(calls) == 2
++    assert "flat" in calls[1]["messages"][-1]["content"]
++    assert rec["front_relief"] > meshgen.RELIEF_MIN and not rec.get("turned")
++    assert "Front and back" in calls[0]["messages"][0]["content"][0]["text"]  # the prompt says so
++
++
++# --- retexture ---------------------------------------------------------------------------------
++
++
++def _no_llm(monkeypatch):
++    async def chat(*a, **k):
++        raise AssertionError("an LLM call")
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++
++
++@pytest.mark.asyncio
++async def test_retexture_redoes_a_cad_variant_without_calls(tmp_path, no_model, monkeypatch):
++    monkeypatch.setenv("OFFLINE", "true")
++    get_settings.cache_clear()
++    _no_llm(monkeypatch)
++    part = _part(image_url=None)
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True)
++    _studio(pdir / "image.jpg")
++    _cad(front=False).export(pdir / "scad.glb")
++    old = Asset(tier="scad", status="ready", mode="llm_scad", made_by="xai:grok-4.7 + openscad")
++    trimesh.Scene(trimesh.creation.box()).export(pdir / "model.scad.glb")
++    (pdir / "asset.scad.json").write_text(old.model_dump_json())
++    part.asset = old
++    jobs.save_part(part)
++    (pdir / "model.glb").write_bytes((pdir / "model.scad.glb").read_bytes())
++
++    res = await assets.retexture(part, "llm_scad")
++    assert res["outcome"] == "done" and res["texture"]["turned"] and res["texture"]["photo"]
++    stored = Asset.model_validate_json((pdir / "asset.scad.json").read_text())
++    assert stored.made_by == old.made_by and stored.texture["cut"] == "flood"
++    assert stored.texture["finish"] == "metal" and stored.texture["body"]
++    served = trimesh.load(pdir / "model.glb", force="scene")  # the selected variant followed
++    assert "photo" in served.geometry
++    assert (await assets.retexture(part, "hf"))["outcome"] == "none"  # no such variant
++
++
++@pytest.mark.asyncio
++async def test_retexture_keeps_what_it_cannot_rebuild(tmp_path, no_model, monkeypatch):
++    monkeypatch.setenv("OFFLINE", "true")
++    get_settings.cache_clear()
++    _no_llm(monkeypatch)
++    part = _part(image_url=None)
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True)
++    _studio(pdir / "image.jpg")
++    old = Asset(tier="ai_mesh", status="ready", mode="hf")
++    trimesh.Scene(trimesh.creation.box()).export(pdir / "model.hf.glb")
++    (pdir / "asset.hf.json").write_text(old.model_dump_json())
++    part.asset = old
++    jobs.save_part(part)
++    before = (pdir / "model.hf.glb").read_bytes()
++    res = await assets.retexture(part, "hf")
++    assert res["outcome"] == "kept" and "Hunyuan" in res["reason"]
++    assert (pdir / "model.hf.glb").read_bytes() == before
++
++
++@pytest.mark.asyncio
++async def test_warm_retexture_rows_and_totals(tmp_path, no_model, monkeypatch, capsys):
++    monkeypatch.setenv("OFFLINE", "true")
++    get_settings.cache_clear()
++    _no_llm(monkeypatch)
++    for pid in ("a", "b"):
++        part = _part(id=pid, name=f"Dishwasher {pid.upper()}1", image_url=None)
++        pdir = assets.part_dir(pid)
++        pdir.mkdir(parents=True)
++        _studio(pdir / "image.jpg")
++        box = assets.proxy_mesh(part.dims_mm)
++        trimesh.Scene(box).export(pdir / "model.auto.glb")
++        asset = Asset(tier="proxy", status="ready", mode="auto")
++        (pdir / "asset.auto.json").write_text(asset.model_dump_json())
++        (pdir / "model.glb").write_bytes((pdir / "model.auto.glb").read_bytes())
++        part.asset = asset
++        jobs.save_part(part)
++    got = await warm.warm_retexture(match="B1")
++    assert got["done"] == 1 and got["parts"] == 1
++    got = await warm.warm_retexture()
++    assert got["done"] == 2
++    rows = json.loads((tmp_path / "retexture.json").read_text())
++    assert rows["a"]["auto"]["texture"]["cut"] == "flood"
++    assert "$0" in capsys.readouterr().out
++    served = trimesh.load(assets.part_dir("a") / "model.glb", force="scene")
++    assert "photo" in served.geometry  # the proxy box: the photo on its front, sides painted
+-- 
+2.50.1 (Apple Git-155)
+

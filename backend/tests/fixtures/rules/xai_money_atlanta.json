@@ -1,0 +1,420 @@
+{
+  "id": "a28dea1a-5910-96ca-9704-86d160899294",
+  "model": "grok-4.20-0309-non-reasoning",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "Georgia ductless mini-split heat pump rebates tax credits 2026 owner-occupied",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/ceep/57401_GP_Commercial_26-28_Heating_and_Cooling_v05_Release_Web.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/her-faqs"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-deductions/residential-clean-energy-credit"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/solutions/home-solutions/heip.html"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/faqs"
+          },
+          {
+            "type": "url",
+            "url": "https://gefa.georgia.gov/press-releases/2026-04-09/georgias-home-energy-rebates-surpasses-25-million-milestone"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Multifamily_Preconditions_Requirements_2026.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/media/871/download"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/solutions/home-solutions.html"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/media/871/download"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/forms-pubs/about-form-5695"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/program-resources"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/document/document/program-flyer-2-pages-english/download"
+          },
+          {
+            "type": "url",
+            "url": "https://data.energystar.gov/Active-Specifications-Most-Efficient/ENERGY-STAR-Most-Efficient-Air-Source-Heat-Pumps/8ac2-2j4q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "Federal 25C tax credit ductless mini-split heat pump 2026",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-deductions/home-energy-tax-credits"
+          },
+          {
+            "type": "url",
+            "url": "https://data.energystar.gov/Active-Specifications-Most-Efficient/ENERGY-STAR-Most-Efficient-Air-Source-Heat-Pumps/8ac2-2j4q"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/draft-tax-forms"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit-qualified-manufacturer-requirements"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/newsroom/faqs-for-modification-of-sections-25c-25d-25e-30c-30d-45l-45w-and-179d-under-public-law-119-21-139-stat-72-july-4-2025-commonly-known-as-the-one-big-beautiful-bill-obbb"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-and-deductions"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/publications/p505"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
+          },
+          {
+            "type": "url",
+            "url": "https://www.energystar.gov/about/federal-tax-credits/air-source-heat-pumps"
+          },
+          {
+            "type": "url",
+            "url": "https://www.irs.gov/publications/p523"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "\"Georgia Power\" Home Energy Improvement Program HEIP mini-split OR heat pump rebate",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/solutions/home-solutions/heip.html"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Multifamily_Preconditions_Requirements_2026.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Preconditions_Requirements_2026.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/solutions/home-solutions.html"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/solutions.html"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/ceep/57401_GP_Commercial_26-28_Heating_and_Cooling_v05_Release_Web.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://georgiapower.com/content/dam/georgia-power/pdfs/programs/heip-hvac.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/residential-pdfs/SFHEIPPreconditionsLimitedTimeFNL_0722.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://georgiapower.com/content/dam/georgia-power/pdfs/programs/heip-hems.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.georgiapower.com/residential/save-money-and-energy/products-programs/home-energy-efficiency-programs/home-energy-improvementprogram-multifamily.html?cid=print-collateral_owned_multifamily_heip_multifamilyimprovements-vanity"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "Georgia Home Energy Rebates HEAR program status 2026",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/hear-program-updates"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/hear-program-update"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/faqs"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/her-faqs"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/media/871/download"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/how-do-i-avoid-scam-or-report-scam"
+          },
+          {
+            "type": "url",
+            "url": "https://gefa.georgia.gov/press-releases/2026-04-09/georgias-home-energy-rebates-surpasses-25-million-milestone"
+          },
+          {
+            "type": "url",
+            "url": "https://energyrebates.georgia.gov/program-resources"
+          },
+          {
+            "type": "url",
+            "url": "https://gefa.georgia.gov/document/document/2025-georgia-energy-report/download"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.georgiapower.com/residential/solutions/home-solutions/heip.html"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://energyrebates.georgia.gov/"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Preconditions_Requirements_2026.pdf"
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"incentives\":[{\"name\":\"Ductless Mini-Split Heat Pump Rebate\",\"provider\":\"Georgia Power\",\"program\":\"other\",\"amount\":\"Up to $500\",\"how\":\"instant\",\"status\":\"active\",\"url\":\"https://www.georgiapower.com/residential/solutions/home-solutions/heip.html\",\"quote\":\"Up to $500 Ductless Mini Split Heat Pump - Combined 2\"},{\"name\":\"Energy Efficient Home Improvement Credit (25C)\",\"provider\":\"IRS / Federal\",\"program\":\"fed_25c\",\"amount\":\"up to $2,000\",\"how\":\"tax credit\",\"status\":\"ended\",\"url\":\"https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit\",\"quote\":\"You can claim the credit for improvements made through December 31, 2025.\"},{\"name\":\"Georgia Home Energy Rebates (HEAR) - Heat Pump for Space Heating or Cooling\",\"provider\":\"Georgia Environmental Finance Authority (GEFA)\",\"program\":\"ga_hear\",\"amount\":\"$8,000\",\"how\":\"instant\",\"status\":\"closed\",\"url\":\"https://energyrebates.georgia.gov/\",\"quote\":\"The HEAR program is not accepting new applications.\"}]}",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/program-resources"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/media/871/download"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/faqs"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.energystar.gov/about/federal-tax-credits/air-source-heat-pumps"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/residential-pdfs/SFHEIPPreconditionsLimitedTimeFNL_0722.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/hear-program-update"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/her-faqs"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/residential/save-money-and-energy/products-programs/home-energy-efficiency-programs/home-energy-improvementprogram-multifamily.html?cid=print-collateral_owned_multifamily_heip_multifamilyimprovements-vanity"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/publications/p523"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Multifamily_Preconditions_Requirements_2026.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/credits-deductions/residential-clean-energy-credit"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit-qualified-manufacturer-requirements"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/residential/solutions/home-solutions.html"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/credits-deductions/home-energy-tax-credits"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/ceep/57401_GP_Commercial_26-28_Heating_and_Cooling_v05_Release_Web.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://data.energystar.gov/Active-Specifications-Most-Efficient/ENERGY-STAR-Most-Efficient-Air-Source-Heat-Pumps/8ac2-2j4q"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/draft-tax-forms"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://georgiapower.com/content/dam/georgia-power/pdfs/programs/heip-hems.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/newsroom/faqs-for-modification-of-sections-25c-25d-25e-30c-30d-45l-45w-and-179d-under-public-law-119-21-139-stat-72-july-4-2025-commonly-known-as-the-one-big-beautiful-bill-obbb"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/forms-pubs/about-form-5695"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/how-do-i-avoid-scam-or-report-scam"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://gefa.georgia.gov/press-releases/2026-04-09/georgias-home-energy-rebates-surpasses-25-million-milestone"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/residential/solutions/home-solutions/heip.html"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://georgiapower.com/content/dam/georgia-power/pdfs/programs/heip-hvac.pdf"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/hear-program-updates"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/residential/solutions.html"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://gefa.georgia.gov/document/document/2025-georgia-energy-report/download"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://energyrebates.georgia.gov/document/document/program-flyer-2-pages-english/download"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/credits-and-deductions"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.irs.gov/publications/p505"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://www.georgiapower.com/content/dam/georgia-power/pdfs/programs/heip/HEIP_Preconditions_Requirements_2026.pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 47593,
+    "output_tokens": 798,
+    "cost_in_usd_ticks": 763723500,
+    "server_side_tool_usage_details": {
+      "web_search_calls": 8,
+      "x_search_calls": 0,
+      "x_posts_fetched": 0,
+      "x_users_fetched": 0,
+      "code_interpreter_calls": 0,
+      "file_search_calls": 0,
+      "mcp_calls": 0,
+      "document_search_calls": 0,
+      "image_generation_calls": 0
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+ "rows": [
+  {
+   "part": "frigidaire-fdpc4221as-341c87",
+   "mode": "hf",
+   "status": "ready",
+   "tier": "ai_mesh",
+   "made_by": "hf:tencent/Hunyuan3D-2.1",
+   "template": "box",
+   "note": null,
+   "asset_seconds": 20.79,
+   "wall_s": 20.8,
+   "glb_bytes": 423724,
+   "hdr_tier": "ai_mesh",
+   "hf_queued": false
+  },
+  {
+   "part": "frigidaire-fdpc4221as-341c87",
+   "mode": "llm_scad",
+   "status": "ready",
+   "tier": "llm",
+   "made_by": "groq:qwen/qwen3.8-27b",
+   "template": "box",
+   "note": "OpenSCAD isn't installed on the server: the LLM template instead",
+   "asset_seconds": 0.24,
+   "wall_s": 0.3,
+   "glb_bytes": 41160,
+   "hdr_tier": "llm",
+   "hf_queued": false
+  },
+  {
+   "part": "frigidaire-fdpc4221as-341c87",
+   "mode": "auto",
+   "status": "ready",
+   "tier": "llm",
+   "made_by": null,
+   "template": null,
+   "note": null,
+   "asset_seconds": null,
+   "wall_s": 0.0,
+   "glb_bytes": 43876,
+   "hdr_tier": "llm",
+   "hf_queued": false
+  },
+  {
+   "part": "jeld-wen-thdjw138500080-8a6138",
+   "mode": "hf",
+   "status": "ready",
+   "tier": "ai_mesh",
+   "made_by": "hf:tencent/Hunyuan3D-2.1",
+   "template": "window",
+   "note": "rebuilt from the cached mesh (Hunyuan 18.6 s) \u00b7 74% depth guess squashed to size",
+   "asset_seconds": 0.96,
+   "wall_s": 19.0,
+   "glb_bytes": 50340,
+   "hdr_tier": "llm",
+   "hf_queued": false,
+   "first_wall_s": 19.0
+  },
+  {
+   "part": "jeld-wen-thdjw138500080-8a6138",
+   "mode": "llm_scad",
+   "status": "ready",
+   "tier": "llm",
+   "made_by": "xai:grok-4.20-0309-non-reasoning",
+   "template": "window",
+   "note": "OpenSCAD isn't installed on the server: the LLM template instead",
+   "asset_seconds": 0.14,
+   "wall_s": 0.1,
+   "glb_bytes": 50340,
+   "hdr_tier": "llm",
+   "hf_queued": false
+  },
+  {
+   "part": "jeld-wen-thdjw138500080-8a6138",
+   "mode": "auto",
+   "status": "ready",
+   "tier": "llm",
+   "made_by": "xai:grok-4.20-0309-non-reasoning",
+   "template": "window",
+   "note": null,
+   "asset_seconds": 2.53,
+   "wall_s": 0.0,
+   "glb_bytes": 50340,
+   "hdr_tier": "llm",
+   "hf_queued": false
+  }
+ ],
+ "hf_warm": {
+  "enabled": true,
+  "queued": [],
+  "current": null,
+  "made": 0,
+  "mismatch": 0,
+  "failed": 0,
+  "no_photo": 0,
+  "quota_hits": 0,
+  "backoff_s": 0.0,
+  "resume_in_s": 0.0,
+  "recent": [],
+  "last_ai_mesh": {
+   "outcome": "ok",
+   "space": "tencent/Hunyuan3D-2.1",
+   "detail": null,
+   "at": 1790474911.667798,
+   "seconds": 18.653116500005126
+  },
+  "quota_messages": [],
+  "hf_keys_cooling_s": 0.0
+ }
+}

@@ -1,0 +1,139 @@
+zabel-gymnasium: facade (0.47) place='red brick institutional building' grok=stored
+   * Windows & frames         3 items, 3 3D  
+     Doors                    1 items, 1 3D  
+     Siding                   2 items, 2 3D  
+     Gutters & hangers        4 items, 4 3D  
+     Exterior lights          4 items, 3 3D  
+     Window AC units          4 items, 4 3D  
+   ~ HVAC units               1 items, 1 3D  
+   ~ Solar panels             4 items, 3 3D  
+   + Red Tile Roofs           2 items, 2 3D  
+   focus=roof:
+       Solar panels             4 items, 3 3D  
+       Gutters & hangers        4 items, 4 3D  
+       Roof vents               4 items, 3 3D  
+       HVAC units               1 items, 1 3D  
+       Skylights                4 items, 0 3D  searched
+       Chimney caps             4 items, 0 3D  searched
+       Flashing                 0 items, 0 3D  
+       Snow guards              0 items, 0 3D  
+       Satellite mounts         0 items, 0 3D  
+     + Red Tile Roofs           2 items, 2 3D  
+     * Windows & frames         3 items, 3 3D  
+   focus=wall:
+       Wall-mounted HVAC        4 items, 0 3D  searched
+     * Windows & frames         3 items, 3 3D  
+       Window AC units          4 items, 4 3D  
+       Doors                    1 items, 1 3D  
+       Siding                   2 items, 2 3D  
+       Exterior lights          4 items, 3 3D  
+       Wall vents               0 items, 0 3D  
+       Downspouts               0 items, 0 3D  
+   focus=ground:
+       Pavers                   4 items, 0 3D  searched
+       Planters                 4 items, 3 3D  
+       Benches                  1 items, 1 3D  
+       Drainage                 4 items, 0 3D  searched
+       Picnic tables            4 items, 3 3D  
+       Outdoor lighting         0 items, 0 3D  
+       HVAC units               1 items, 1 3D  
+   focus=ceiling:
+       Exterior lights          4 items, 3 3D  
+       Ceiling fans             2 items, 0 3D  searched
+       Siding                   2 items, 2 3D  
+   focus=opening:
+     * Windows & frames         3 items, 3 3D  
+       Doors                    1 items, 1 3D  
+       Window AC units          4 items, 4 3D  
+       Blinds & shades          0 items, 0 3D  searched
+   (141 s)
+hospital-bg: facade (0.53) place='abandoned apartment building' grok=stored
+     Windows & frames         3 items, 3 3D  
+     Doors                    1 items, 1 3D  
+     Siding                   2 items, 2 3D  
+     Gutters & hangers        4 items, 4 3D  
+     Exterior lights          4 items, 3 3D  
+     Window AC units          4 items, 4 3D  
+   ~ HVAC units               1 items, 1 3D  
+   ~ Solar panels             4 items, 3 3D  
+     Roof vents               4 items, 3 3D  
+   focus=roof:
+       Solar panels             4 items, 3 3D  
+       Gutters & hangers        4 items, 4 3D  
+     * Roof vents               4 items, 3 3D  
+     * HVAC units               1 items, 1 3D  
+       Skylights                4 items, 0 3D  searched
+       Chimney caps             4 items, 0 3D  searched
+       Flashing                 0 items, 0 3D  
+       Snow guards              0 items, 0 3D  
+       Satellite mounts         0 items, 0 3D  
+   focus=wall:
+       Wall-mounted HVAC        4 items, 0 3D  searched
+       Windows & frames         3 items, 3 3D  
+       Window AC units          4 items, 4 3D  
+       Doors                    1 items, 1 3D  
+       Siding                   2 items, 2 3D  
+       Exterior lights          4 items, 3 3D  
+       Wall vents               0 items, 0 3D  
+       Downspouts               0 items, 0 3D  
+   focus=ground:
+       Pavers                   4 items, 0 3D  searched
+       Planters                 4 items, 3 3D  
+       Benches                  1 items, 1 3D  
+       Drainage                 4 items, 0 3D  searched
+       Picnic tables            4 items, 3 3D  
+       Outdoor lighting         0 items, 0 3D  
+     * HVAC units               1 items, 1 3D  
+   focus=ceiling:
+       Exterior lights          4 items, 3 3D  
+       Ceiling fans             2 items, 0 3D  searched
+       Siding                   2 items, 2 3D  
+   focus=opening:
+       Windows & frames         3 items, 3 3D  
+       Doors                    1 items, 1 3D  
+       Window AC units          4 items, 4 3D  
+       Blinds & shades          0 items, 0 3D  searched
+   (0 s)
+kitchen: kitchen (1.00) place='kitchenette with sink and cabinets' grok=stored
+   * Fridges                  8 items, 8 3D  
+   * Dishwashers              8 items, 8 3D  
+   * Ranges & ovens           6 items, 6 3D  
+   * Microwaves               4 items, 3 3D  
+   * Range hoods              4 items, 3 3D  
+   * Sinks & faucets          1 items, 1 3D  
+   * Lighting                 3 items, 3 3D  
+     Cooktops                 4 items, 3 3D  
+     Cabinet hardware         8 items, 8 3D  
+   + Countertops              2 items, 2 3D  
+   focus=wall:
+     * Range hoods              4 items, 3 3D  
+     * Microwaves               4 items, 3 3D  
+       Cabinet hardware         8 items, 8 3D  
+     * Lighting                 3 items, 3 3D  
+     * Outlets & switches       4 items, 3 3D  
+       Backsplash tile          3 items, 0 3D  searched
+       Shelving                 4 items, 3 3D  
+   focus=ground:
+     * Dishwashers              8 items, 8 3D  
+     * Fridges                  8 items, 8 3D  
+     * Ranges & ovens           6 items, 6 3D  
+       Cabinet hardware         8 items, 8 3D  
+   focus=ceiling:
+       Ceiling lights           4 items, 3 3D  
+     * Smoke detectors          4 items, 3 3D  
+     * Range hoods              4 items, 3 3D  
+       Ceiling fans             2 items, 0 3D  searched
+   focus=counter:
+     * Microwaves               4 items, 3 3D  
+     * Sinks & faucets          1 items, 1 3D  
+       Cooktops                 4 items, 3 3D  
+       Backsplash tile          3 items, 0 3D  searched
+     * Lighting                 3 items, 3 3D  
+       Cabinet hardware         8 items, 8 3D  
+     + Countertops              2 items, 2 3D  
+   focus=opening:
+       Windows & frames         3 items, 3 3D  
+       Blinds & shades          0 items, 0 3D  searched
+       Doors                    1 items, 1 3D  
+   (54 s)
+catalog warm: 3 sites in 195.2 s, 8 searches (60 SerpApi calls, 37 web calls), 0 models; LLM $0.0514 over 42 calls {"extract groq:openai/gpt-oss-120b": 1, "extract xai:grok-4.20-0309-non-reasoning": 7, "cheap groq:openai/gpt-oss-20b": 19, "extract_retry xai:grok-4.20-0309-non-reasoning": 14, "cheap xai:grok-4.20-0309-non-reasoning": 1}

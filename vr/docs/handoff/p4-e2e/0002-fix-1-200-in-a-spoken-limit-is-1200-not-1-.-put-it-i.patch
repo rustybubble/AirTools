@@ -1,0 +1,122 @@
+From 35761ff292bcff68a6e4a7bf840ba7fede29864e Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 18:01:24 -0400
+Subject: [PATCH 2/3] fix: "$1,200" in a spoken limit is 1200, not 1; "..., put
+ it in" right after a search says to wait for the options
+
+Whisper writes "twelve hundred dollars" as "$1,200": the price-limit regex stopped at the comma,
+set a $1 limit and left ",200" in the command. Thousands commas are read now (both "$1,200"
+and "2,500 dollars"). And "remove the range, find a 30-inch induction range under $1,200 that
+fits, put it in" runs the limit, the removal and the gap-fitted search in one reply, then
+says to say "put it in" when the options are up (the candidates are not there yet). The
+fast-path table in docs/integration-grok-features.md gains the measure-and-replace row.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/integration-grok-features.md |  1 +
+ server/agent.py                   | 10 +++++--
+ tests/test_replace.py             | 44 +++++++++++++++++++++++++++++++
+ 3 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/docs/integration-grok-features.md b/docs/integration-grok-features.md
+index 85c3f0f..ff577b5 100644
+--- a/docs/integration-grok-features.md
++++ b/docs/integration-grok-features.md
+@@ -283,6 +283,7 @@ coach running, a reimagine on screen, both).
+ | 11 | `place_plan` (F7) | "place them" | after a plan |
+ | 12 | coach words (F17) | "check it", "done" → `check_step`; "next", "skip", "I did it", "back", "go back", "step back", "back up", "previous step", "repeat that" → `coach_step` | while a coach runs |
+ | 13 | reimagine words (F18) | "undo", "go back", "step back" → undo; "start over", "show me the original" → step 0; "darker ...", "no, lighter", "add ...", "remove ...", "swap ...", "replace ...", "paint ..." → refine ("add a note" excluded) | while a reimagine is on screen |
++| 13b | measure and replace (app e2e hand-off, `server/replace.py`) | "remove / take out the dishwasher" → `remove_component`; "measure it / the gap" → `measure_cavity`; "find a dishwasher that fits" → `find_part` fitted to the gap (`SearchRequest.cavity`); "put it in there" → `place_part` (the first that fits); "next / previous one", "option 2" → `place_part` for that candidate; "put it back" → `restore_component`; up to four joined by and / then / commas | a removable part by that name in the site's `parts.r<rev>.json`; the rest while a part is out (`context.removed`), placing and switching once there are candidates |
+ | 14 | `survey_query` (app lane) | "which one is the widest / tallest / narrowest / shortest / largest / smallest?" | while a tape survey is stored (after a `POST /agent/observe` report) |
+ 
+ So with both a coach and a reimagine live: every "back" is the coach's previous step (row 12
+diff --git a/server/agent.py b/server/agent.py
+index 56acf2e..f8cbce6 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -902,7 +902,9 @@ _CONDITION_RE = re.compile(
+ _LIMIT_PRICE_RE = re.compile(
+     r"\b(?:under|below|less\s+than|no\s+more\s+than|not\s+more\s+than|up\s+to|at\s+most"
+     r"|max(?:imum)?(?:\s+of)?|budget(?:\s+of)?|cap(?:\s+it)?\s+at)\s+"
+-    r"(?:\$\s?(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:dollars?|bucks|usd)\b)"
++    # "$1,200" is twelve hundred (Whisper writes thousands with a comma), not "$1" and a stray ",200"
++    r"(?:\$\s?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
++    r"|(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s*(?:dollars?|bucks|usd)\b)"
+     r"(?![\d.]|\s*(?:each|apiece|per\b|a\s+piece))",  # a unit price is not a cap on the order
+     re.IGNORECASE,
+ )
+@@ -1071,7 +1073,7 @@ def _extract_limits(text: str) -> tuple[dict[str, Any], str]:
+     limits: dict[str, Any] = {}
+     m = _LIMIT_PRICE_RE.search(text)
+     if m:
+-        limits["max_total_usd"] = float(m.group(1) or m.group(2))
++        limits["max_total_usd"] = float((m.group(1) or m.group(2)).replace(",", ""))
+         text = f"{text[: m.start()]} {text[m.end() :]}"
+     m = _LIMIT_DATE_RE.search(text)
+     if m:
+@@ -1264,6 +1266,10 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+         for phrase in args.get("phrases") or []:
+             step = _replace_step(session, phrase)
+             if step is None:
++                if phrase["kind"] in ("place", "option", "next", "previous") and any(
++                    a.get("name") == "search_started" for a in actions
++                ):  # "... find one that fits, put it in": the options aren't up yet
++                    spoken.append("Say put it in when the options are up.")
+                 break
+             if step[0] == "measure_cavity" and actions:  # the removal just said the gap's size
+                 step[1]["quiet"] = True
+diff --git a/tests/test_replace.py b/tests/test_replace.py
+index 81173b2..f17ed05 100644
+--- a/tests/test_replace.py
++++ b/tests/test_replace.py
+@@ -328,3 +328,47 @@ async def test_state_gates_the_phrases(monkeypatch):
+     with pytest.raises(RuntimeError):
+         await agent.handle_command("e2e", "measure it", {"site": SITE, "removed": []})
+     assert calls == ["measure it"], "no gap: the LLM gets it, as before"
++
++
++@pytest.mark.parametrize(
++    "text,usd,rest",
++    [
++        (
++            "find a 30-inch induction range under $1,200 that fits",
++            1200.0,
++            "find a 30-inch induction range that fits",
++        ),
++        ("order matching hinges under $1,200.50 please", 1200.5, "order matching hinges please"),
++        ("no more than 2,500 dollars", 2500.0, "no more than 2,500 dollars"[:0]),
++        ("find hangers under $40, arriving by Friday", 40.0, None),
++    ],
++)
++def test_a_spoken_limit_with_thousands(text, usd, rest):
++    limits, left = agent._extract_limits(text)
++    assert limits["max_total_usd"] == usd
++    if rest is not None:
++        assert left == rest
++
++
++@pytest.mark.asyncio
++async def test_remove_find_and_put_it_in_in_one_breath(monkeypatch):
++    """ "remove the dishwasher, find a 24-inch dishwasher under $1,200 that fits, put it in": the
++    limit, the removal and the search run; "put it in" waits for the options."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    started = {}
++
++    def fake_start_search(req):
++        started["req"] = req
++        return Job(id="job2", status="running", query=req.query)
++
++    monkeypatch.setattr(jobs, "start_search", fake_start_search)
++    r = await _say(
++        "remove the dishwasher, find a 24-inch dishwasher under $1,200 that fits, put it in",
++        removed=[],
++    )
++    names = [a["name"] for a in r["actions"]]
++    assert names == ["show_limits", "remove_component", "search_started"]
++    assert r["actions"][0]["args"]["max_total_usd"] == 1200.0
++    assert started["req"].query == "24-inch dishwasher"
++    assert started["req"].cavity.size_mm() == pytest.approx((600.0, 820.0, 580.0))
++    assert r["reply"].endswith("Say put it in when the options are up.")
+-- 
+2.50.1 (Apple Git-155)
+

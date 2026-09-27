@@ -1,0 +1,214 @@
+From e2d542cfe8ab1801772ecb8ef7f2eaebb163a16f Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 22:10:18 -0400
+Subject: [PATCH 2/2] fix(assets): Hunyuan results were never read --
+ gradio_client 2.x already downloaded them (the /file= fetch was a 403); hf
+ mode keeps a squashed depth guess
+
+Live on :8009 (2026-09-26): both Hunyuan Spaces generated (2.1: 13 s shape, 2: 4 s), then every call
+"failed" on 403 Forbidden fetching {src}/file=<path>: that path is the local copy gradio_client 2.7
+already downloaded. _resolve_remote_file reads a local path first, then the Space's prefixed route with
+the client's headers/cookies, then the old URL.
+- a photo the Space just failed on isn't sent again for 10 min (on-demand + the warm queue retried the
+  same photo back to back: 4 wasted generations)
+- hf mode keeps Hunyuan's mesh up to 200% residual (a thin window frame came back 74% off on depth, a
+  guess squashed to size; auto still drops > 60%, the 10-pack case was 9000%)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/assets.py         | 77 ++++++++++++++++++++++++++++++++--------
+ tests/test_asset_mode.py | 40 +++++++++++++++++++++
+ 2 files changed, 103 insertions(+), 14 deletions(-)
+
+diff --git a/server/assets.py b/server/assets.py
+index d43aa1a..5395728 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
+ MAX_IMAGE_BYTES = 10 * 1024 * 1024
+ MAX_FACES = 20_000
+ MAX_AI_RESIDUAL_PCT = 60.0  # uniform-scale mismatch beyond this = the photo isn't this shape
++# asset-mode "hf": the user asked for Hunyuan to compare it, so its mesh is kept up to this (a thin
++# window frame from a front photo came back 74% off on depth -- a guess, squashed to size; a
++# 10-pack box photo for one hanger was 9000%).
++MAX_HF_MODE_RESIDUAL_PCT = 200.0
+ DEFAULT_PROXY_COLOR = "#CCCCCC"  # light grey
+ _MESH_EXTENSIONS = (".glb", ".gltf", ".obj")
+ 
+@@ -236,13 +240,53 @@ def _save_jpeg(content: bytes, dest: Path) -> None:
+ 
+ def _resolve_remote_file(client: Client, value) -> bytes:
+     """Gradio's /shape_generation file output is a remote-path dict, not an auto-downloaded local
+-    file (see assets-3d.md §1.3 gotcha) -- fetch it via the documented `/file=` route."""
+-    if isinstance(value, dict) and "value" in value:
+-        remote_path = value["value"]
+-        resp = httpx.get(f"{client.src}/file={remote_path}", timeout=120)
+-        resp.raise_for_status()
+-        return resp.content
+-    return Path(value).read_bytes()
++    file (see assets-3d.md §1.3 gotcha) -- fetch it via the `/file=` route.
++    asset-mode (live, 2026-09-26): with gradio_client 2.x the answer's path is the local copy the
++    client already downloaded, and fetching `{src}/file=<that path>` is a 403 on both Hunyuan Spaces
++    (every Hunyuan call "failed" after a good generation). A path that exists here is read; else the
++    Space's own file route (the client's `src_prefixed`, headers and cookies), then the old URL."""
++    inner = value.get("value", value) if isinstance(value, dict) else value
++    path = inner.get("path") if isinstance(inner, dict) else inner
++    # asset-mode (live, 2026-09-26): gradio_client 2.x has already downloaded it -- `path` is a
++    # local temp file (the /file= fetch of that path is a 403).
++    if path and Path(str(path)).is_file():
++        return Path(str(path)).read_bytes()
++    if isinstance(value, dict):
++        url = inner.get("url") if isinstance(inner, dict) else None
++        root = getattr(client, "src_prefixed", None) or f"{str(client.src).rstrip('/')}/"
++        quoted = utils_encode(path) if path else ""
++        urls = [
++            u
++            for u in (
++                url if url and url.startswith("http") else None,
++                f"{root}file={quoted}",
++                f"{client.src}/file={path}",
++            )
++            if u
++        ]
++        headers = getattr(client, "headers", None) or {}
++        cookies = getattr(client, "cookies", None)
++        last: Exception | None = None
++        for u in dict.fromkeys(urls):
++            try:
++                resp = httpx.get(
++                    u, headers=headers, cookies=cookies, timeout=120, follow_redirects=True
++                )
++                resp.raise_for_status()
++                return resp.content
++            except httpx.HTTPError as exc:
++                last = exc
++        raise last or RuntimeError("no file url in the Space's answer")
++    return Path(inner).read_bytes()
++
++
++def utils_encode(path: str) -> str:
++    """gradio_client's own quoting for a `/file=` path (older clients: the path as is)."""
++    try:
++        from gradio_client.utils import encode_file_path
++    except ImportError:  # pragma: no cover -- older gradio_client
++        return path
++    return encode_file_path(path)
+ 
+ 
+ def _hunyuan_shape_generation(space_id: str, image_path: Path, token: str | None) -> bytes:
+@@ -426,6 +470,7 @@ def hunyuan_cached(photo: Path | None) -> Path | None:
+ 
+ 
+ _hy_locks: dict[str, asyncio.Lock] = {}
++HY_FAIL_RETRY_S = 600.0  # a photo the Space just failed on isn't sent again for 10 min (quota)
+ 
+ 
+ async def hunyuan_raw(photo: Path) -> tuple[Path | None, dict]:
+@@ -440,14 +485,18 @@ async def hunyuan_raw(photo: Path) -> tuple[Path | None, dict]:
+             return glb, _read_json(meta_path) or {"outcome": "cached"}
+         if get_settings().OFFLINE:
+             return None, {"outcome": "offline"}
++        failed = _hy_dir() / f"{digest}.failed"  # {"at": epoch s} of the last failure
++        failed_ago = time.time() - ((_read_json(failed) or {}).get("at") or -1e12)
++        if failed_ago < HY_FAIL_RETRY_S:
++            return None, {"outcome": "failed", "detail": f"failed {failed_ago:.0f} s ago"}
+         t0 = time.monotonic()
+         AI_MESH_LAST.update(outcome=None, space=None, detail=None)
+         tmp = await ai_mesh(photo)
+         if tmp is None:
+-            return None, {
+-                "outcome": AI_MESH_LAST.get("outcome") or "failed",
+-                "detail": AI_MESH_LAST.get("detail"),
+-            }
++            outcome = AI_MESH_LAST.get("outcome") or "failed"
++            if outcome == "failed":
++                cache.write_json_atomic(failed, json.dumps({"at": time.time()}))
++            return None, {"outcome": outcome, "detail": AI_MESH_LAST.get("detail")}
+         glb.parent.mkdir(parents=True, exist_ok=True)
+         staging = glb.with_name(f".{glb.name}.tmp")
+         shutil.move(str(tmp), staging)
+@@ -476,7 +525,7 @@ def _scad_made_by() -> str:
+     return f"{provider}:{model} + openscad"
+ 
+ 
+-async def _hunyuan_detail(part: Part, photo: Path):
++async def _hunyuan_detail(part: Part, photo: Path, max_residual: float = MAX_AI_RESIDUAL_PCT):
+     """((mesh, residual) or None, meta): the Hunyuan mesh, upright, scaled to size and painted;
+     None when the Space can't make it or its shape doesn't match the dims (e.g. a 10-pack box
+     photo for one hanger: meta outcome "mismatch" with the residual)."""
+@@ -487,7 +536,7 @@ async def _hunyuan_detail(part: Part, photo: Path):
+     mesh, residual = await asyncio.to_thread(
+         normalize_mesh, raw, part.dims_mm, part.mount.get("face") or "-z", True, True
+     )
+-    if residual > MAX_AI_RESIDUAL_PCT:
++    if residual > max_residual:
+         logger.info("asset %s: ai_mesh residual %.0f%% too high, dropped", part.id, residual)
+         return None, {**meta, "outcome": "mismatch", "residual": round(residual, 1)}
+     return (_paint(mesh, part.color_hex), residual), meta
+@@ -579,7 +628,7 @@ async def _generated_hf(part: Part, photo: Path | None, pdir: Path):
+     if photo is None:
+         reason = "No product photo for image-to-3D"
+     else:
+-        hy, meta = await _hunyuan_detail(part, photo)
++        hy, meta = await _hunyuan_detail(part, photo, MAX_HF_MODE_RESIDUAL_PCT)
+         if hy is not None:
+             (geometry, residual), tier = hy, "ai_mesh"
+             info = {**_plan_info(plan), "made_by": _hf_made_by(meta)}
+diff --git a/tests/test_asset_mode.py b/tests/test_asset_mode.py
+index 70e3f05..46c88bf 100644
+--- a/tests/test_asset_mode.py
++++ b/tests/test_asset_mode.py
+@@ -210,6 +210,21 @@ async def test_hf_quota_then_warm_replaces_the_stand_in_without_selecting_it(mon
+     assert (shown["tier"], shown["mode"]) == ("llm", "auto")  # the warm didn't change the model
+ 
+ 
++@pytest.mark.asyncio
++async def test_hf_mode_keeps_a_squashed_depth_guess(monkeypatch, tmp_path):
++    """Live: a thin window frame (1206 x 902 x 83 mm) from a front photo came back 74% off (a depth
++    guess). Auto drops that (> 60%); "hf" keeps it, squashed to size, and says how far off it was."""
++    _fake_llm(monkeypatch, template="window")
++    slab = trimesh.creation.box(extents=(1.2, 0.9, 0.3))  # too deep for a window: ~140% off
++    _fake_hunyuan(monkeypatch, tmp_path, mesh=slab)
++    part = _part("win", dims_mm=Dims(w=1206.5, d=82.55, h=901.7))
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(part, mode="hf")
++    assert got.asset.tier == "ai_mesh"
++    assert 60 < got.asset.scale_residual_pct < assets.MAX_HF_MODE_RESIDUAL_PCT
++
++
+ @pytest.mark.asyncio
+ async def test_hf_shape_mismatch_is_settled_and_noted(monkeypatch, tmp_path):
+     _fake_llm(monkeypatch)
+@@ -500,3 +515,28 @@ def test_part_json_with_a_mode_is_pending_until_made(monkeypatch):
+         r = client.post("/parts/ac-1/model", json={"mode": "llm_scad"})
+         assert r.json()["status"] == "pending"
+         assert client.get("/parts/nope/part.json?mode=hf").status_code == 404
++
++
++def test_the_space_answer_is_the_local_file_gradio_already_downloaded(tmp_path):
++    """Live 2026-09-26: gradio_client 2.x downloads the GLB itself; its path is local (the old
++    `/file=` fetch of that path was a 403, so every Hunyuan call "failed")."""
++    local = tmp_path / "white_mesh.glb"
++    local.write_bytes(b"glTF-local")
++    client = SimpleNamespace(src="https://example.invalid", src_prefixed="https://example.invalid/")
++    assert (
++        assets._resolve_remote_file(client, {"value": str(local), "__type__": "update"})
++        == b"glTF-local"
++    )
++    assert assets._resolve_remote_file(client, {"value": {"path": str(local)}}) == b"glTF-local"
++    assert assets._resolve_remote_file(client, str(local)) == b"glTF-local"
++
++
++@pytest.mark.asyncio
++async def test_a_photo_the_space_just_failed_on_is_not_resent(monkeypatch, tmp_path):
++    hy = _fake_hunyuan(monkeypatch, tmp_path, outcome="failed")
++    photo = tmp_path / "p.jpg"
++    photo.write_bytes(SOURCE_PHOTO.read_bytes())
++    assert (await assets.hunyuan_raw(photo))[0] is None
++    got, meta = await assets.hunyuan_raw(photo)
++    assert got is None and meta["outcome"] == "failed" and "ago" in meta["detail"]
++    assert len(hy) == 1
+-- 
+2.50.1 (Apple Git-155)
+

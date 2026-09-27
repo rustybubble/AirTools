@@ -1,0 +1,1867 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AirTool debug console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 1rem 1.5rem 3rem;
+    background: #f4f5f7; color: #1b1f24;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+  .muted { color: #666; font-size: .85rem; }
+  section {
+    background: #fff; border: 1px solid #d9dce1; border-radius: 8px;
+    padding: 1rem; margin-bottom: 1rem;
+  }
+  label { display: block; font-size: .8rem; color: #444; margin-bottom: .2rem; }
+  input, select, textarea, button {
+    font: inherit; padding: .4rem .55rem; border: 1px solid #c4c9d0; border-radius: 6px;
+  }
+  input, select { background: #fff; }
+  button {
+    background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #fff; color: #2563eb; }
+  button.secondary:hover { background: #eef2ff; }
+  button:disabled { opacity: .5; cursor: default; }
+  button#ptt.recording { background: #dc2626; border-color: #dc2626; }
+  .row { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+  .row > div { display: flex; flex-direction: column; }
+  code, pre {
+    background: #f0f1f4; border-radius: 4px; padding: .1rem .35rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+  }
+  pre { padding: .6rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  #transcript { font-style: italic; color: #444; min-height: 1.2em; }
+  #reply { font-weight: 600; min-height: 1.2em; }
+  .badge {
+    display: inline-block; font-size: .72rem; padding: .1rem .45rem; border-radius: 999px;
+    background: #e5e7eb; color: #374151; margin-left: .3rem;
+  }
+  .fit-fits { background: #d4edda; color: #155724; }
+  .fit-too_big { background: #f8d7da; color: #721c24; }
+  .fit-too_small { background: #fff3cd; color: #856404; }
+  .fit-unknown { background: #e2e3e5; color: #383d41; }
+  .safety-recalled { background: #dc2626; color: #fff; }
+  .safety-caution { background: #f59e0b; color: #1b1f24; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid #d9dce1; border-radius: 8px; padding: .75rem; background: #fafbfc; }
+  .card.selected { border-color: #2563eb; box-shadow: 0 0 0 2px #2563eb33; }
+  .card img { width: 100%; max-height: 160px; object-fit: contain; background: #fff; border-radius: 6px; }
+  model-viewer { width: 100%; height: 220px; background: #eee; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: .4rem; }
+  th, td { text-align: left; padding: .25rem .35rem; border-bottom: 1px solid #e5e7eb; }
+  tr.recommended { background: #eaf6ea; }
+  .card-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
+  .card-actions input[type="number"] { width: 4.5rem; }
+  .stage { font-size: .85rem; color: #444; }
+  #job-error { color: #b91c1c; }
+  #rv-thumbs { display: flex; gap: .3rem; overflow-x: auto; padding: .3rem 0; }
+  #rv-thumbs img { height: 54px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
+  #rv-thumbs img.selected { border-color: #2563eb; }
+  .ba { position: relative; max-width: 960px; margin-top: .5rem; }
+  .ba img { display: block; width: 100%; border-radius: 6px; }
+  .ba #rv-after { position: absolute; inset: 0; height: 100%; }
+  #pc-thumbs { display: flex; gap: .3rem; overflow-x: auto; padding: .3rem 0; }
+  #pc-thumbs img { height: 54px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
+  #pc-thumbs img.selected { border-color: #2563eb; }
+  .pc-pair { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+  .pc-pair > div { position: relative; flex: 1 1 420px; max-width: 640px; }
+  .pc-pair img { display: block; width: 100%; border-radius: 6px; }
+  #pc-frame-wrap { cursor: crosshair; user-select: none; }
+  #pc-box { position: absolute; border: 2px solid #dc2626; pointer-events: none; display: none; }
+  .fx-player { position: relative; max-width: 848px; margin-top: .5rem; }
+  .fx-player video { display: block; width: 100%; border-radius: 6px; background: #000; }
+  .ba .label, .pc-pair .label, .fx-player .label {
+    position: absolute; top: .4rem; left: .4rem; background: #000a; color: #fff;
+    font-size: .75rem; padding: .15rem .45rem; border-radius: 4px;
+  }
+  .frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: .75rem; }
+  .frame { position: relative; }
+  .frame img { width: 100%; display: block; border-radius: 6px; }
+  .frame .box { position: absolute; border: 2px solid; font-size: .7rem; color: #fff; }
+  .frame .box span { position: absolute; top: -1.2em; left: -2px; padding: 0 .25rem; white-space: nowrap; }
+  .box.sev-severe { border-color: #dc2626; } .sev-severe span { background: #dc2626; }
+  .box.sev-moderate { border-color: #d97706; } .sev-moderate span { background: #d97706; }
+  .box.sev-minor { border-color: #ca8a04; } .sev-minor span { background: #ca8a04; }
+  #cov-svg { width: 100%; max-width: 520px; aspect-ratio: 1; background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 6px; }
+  #cov-spoken { font-weight: 600; min-height: 1.2em; margin: .5rem 0; }
+  .lbl-frame { position: relative; display: inline-block; max-width: 100%; }
+  .lbl-frame img { display: block; max-width: 100%; }
+  .lbl-box { position: absolute; border: 2px solid #f59e0b; border-radius: 3px; }
+  .lbl-box.low { border-style: dashed; opacity: .6; }
+  .lbl-box span {
+    position: absolute; left: -2px; top: -1.35rem; white-space: nowrap; font-size: .72rem;
+    background: #f59e0b; color: #111; padding: 0 .3rem; border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<h1>AirTool debug console</h1>
+<p class="muted">Plain test harness for the parts server. Not the product UI (that's Unity/Quest).</p>
+
+<section>
+  <h2>Session</h2>
+  <div class="row">
+    <div><label>session_id</label><code id="session-id"></code></div>
+  </div>
+  <h2>Measurement (sent as context.measurement with every command)</h2>
+  <div class="row">
+    <div><label>label</label><input id="m-label" type="text" placeholder="window width" /></div>
+    <div><label>value (m)</label><input id="m-value" type="number" step="any" value="0" /></div>
+    <div>
+      <label>axis</label>
+      <select id="m-axis">
+        <option value="none">none</option>
+        <option value="w">w</option>
+        <option value="d">d</option>
+        <option value="h">h</option>
+        <option value="length">length</option>
+      </select>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Command</h2>
+  <div class="row">
+    <div style="flex:1"><label>text</label><input id="cmd-text" type="text" style="width:100%" placeholder="find a 5 inch gutter hanger" /></div>
+    <div><button id="cmd-send">Send</button></div>
+    <div><button id="ptt" class="secondary">Hold to talk (or hold space)</button></div>
+  </div>
+  <p class="muted">Transcript (voice only):</p>
+  <div id="transcript"></div>
+  <p class="muted">Reply:</p>
+  <div id="reply"></div>
+  <audio id="tts-audio" controls style="display:none; margin-top:.4rem"></audio>
+  <p class="muted">actions / job_id:</p>
+  <pre id="actions-json">[]</pre>
+</section>
+
+<section>
+  <h2>Reimagine this view (Grok Imagine edit of a capture frame)</h2>
+  <p class="muted">The selected site + frame also ride along as <code>context.site</code> /
+    <code>context.frame_id</code>, so a command like "what would navy cabinets look like?" works too.</p>
+  <div class="row">
+    <div><label>site</label><select id="rv-site"></select></div>
+    <div><label>frame</label><code id="rv-frame">-</code></div>
+    <div style="flex:1"><label>prompt</label><input id="rv-prompt" type="text" style="width:100%"
+      value="navy cabinets with brass pulls" /></div>
+    <div><button id="rv-go">Reimagine (~11 s, ~$0.07)</button></div>
+  </div>
+  <div id="rv-thumbs"></div>
+  <div class="muted" id="rv-status"></div>
+  <div class="ba" id="rv-ba" style="display:none">
+    <img id="rv-before" alt="before" />
+    <img id="rv-after" alt="after" />
+    <span class="label" id="rv-label"></span>
+  </div>
+  <input id="rv-slider" type="range" min="0" max="100" value="50" style="width:100%; max-width:960px; display:none" />
+  <p class="muted">Refine by Command: "darker blue", "add brass pulls", "no, lighter"; "undo", "start over".
+    Each step sends the latest edit plus the original frame; drift = median change outside the first edit (/255).</p>
+  <div id="rv-history"></div>
+</section>
+
+<section>
+  <h2>Who installs this near me? (<code>POST /intel/installers</code>, ~13 s live, instant cached)</h2>
+  <div class="row">
+    <div style="flex:1"><label>query</label><input id="intel-query" type="text" style="width:100%" value="K-style gutter installation" /></div>
+    <div><label>location (blank = server default)</label><input id="intel-location" type="text" placeholder="Atlanta, GA" /></div>
+    <div><button id="intel-send">Find installers</button></div>
+  </div>
+  <p class="muted" id="intel-status"></p>
+  <div id="intel-summary"></div>
+  <ul id="intel-list"></ul>
+</section>
+
+<section>
+  <h2>See it installed (Grok Imagine postcard)</h2>
+  <p class="muted">Pick a frame, drag a box where the part goes (optional), then generate. The
+    site + frame + box also ride along as <code>context.site</code> / <code>frame_id</code> /
+    <code>placed_box</code>, so "show me what it'll look like" works as a command too.</p>
+  <div class="row">
+    <div><label>part id</label><input id="pc-part" type="text" size="34" placeholder="select a card, or type an id" /></div>
+    <div><label>site</label><select id="pc-site"></select></div>
+    <div><label>frame</label><code id="pc-frame">-</code></div>
+    <div style="flex:1"><label>placement (optional)</label><input id="pc-placement" type="text" style="width:100%"
+      placeholder="on the fascia, left of the downspout" /></div>
+    <div><button id="pc-go">Generate (~10 s, ~$0.08)</button></div>
+    <div><button id="pc-clear" class="secondary">Clear box</button></div>
+  </div>
+  <div id="pc-thumbs"></div>
+  <div class="muted" id="pc-status"></div>
+  <div class="pc-pair">
+    <div id="pc-frame-wrap"><img id="pc-before" alt="site view" /><div id="pc-box"></div><span class="label">before</span></div>
+    <div id="pc-after-wrap" style="display:none"><img id="pc-after" alt="postcard" /><span class="label" id="pc-label"></span></div>
+  </div>
+</section>
+
+<section>
+  <h2>Recall and defect radar (<code>GET /parts/{part_id}/safety</code>, ~11 s live, instant cached)</h2>
+  <div class="row">
+    <div style="flex:1"><label>part_id (selecting a card fills it)</label><input id="safety-part" type="text" style="width:100%" value="midea-maw08u1qwt-8d6d08" /></div>
+    <div><button id="safety-send">Check safety</button></div>
+  </div>
+  <p class="muted" id="safety-status"></p>
+  <div><span class="badge" id="safety-verdict"></span> <b id="safety-headline"></b></div>
+  <div class="muted" id="safety-spoken"></div>
+  <ul id="safety-list"></ul>
+</section>
+
+<section>
+  <h2>Plan: "where does it go?" (POST /scene/plan)</h2>
+  <div class="row">
+    <div><label>site (also sent as context.site with commands)</label><input id="plan-site" type="text" value="kitchen" /></div>
+    <div style="flex:1"><label>utterance</label><input id="plan-text" type="text" style="width:100%" value="LED strip under these cabinets, it comes in 1 metre strips" /></div>
+    <div><button id="plan-send">Plan</button></div>
+  </div>
+  <p class="muted">Top-down view (x right, z down): plane outlines grey, objects blue, plan red.</p>
+  <div id="plan-reply"></div>
+  <svg id="plan-svg" style="width:100%; max-width:720px; height:auto; background:#fafbfc; border:1px solid #e5e7eb; border-radius:6px; display:none"></svg>
+</section>
+
+<section>
+  <h2>Walk-in renovation clip (Grok Imagine video)</h2>
+  <p class="muted">Starts ~0.6 m behind the capture frame and lands on it reimagined. Site + frame
+    also ride along as <code>context.site</code> / <code>context.frame_id</code>, so "walk me into
+    it with navy cabinets" works as a command too.</p>
+  <div class="row">
+    <div><label>site</label><input id="fx-site" type="text" value="kitchen" size="10" /></div>
+    <div><label>frame_id</label><input id="fx-frame" type="text" value="0301" size="6" /></div>
+    <div style="flex:1"><label>prompt</label><input id="fx-prompt" type="text" style="width:100%"
+      value="navy cabinets with brass pulls" /></div>
+    <div><label><input id="fx-public" type="checkbox" /> public (QR link)</label></div>
+    <div><button id="fx-go">Render (~1 min, ~$0.33)</button></div>
+  </div>
+  <div class="muted" id="fx-status"></div>
+  <div class="fx-player" id="fx-player" style="display:none">
+    <video id="fx-video" controls loop muted playsinline></video>
+    <span class="label" id="fx-label"></span>
+  </div>
+  <div id="fx-share"></div>
+</section>
+
+<section>
+  <h2>Install manual (<code>POST /parts/{id}/manual</code>, 10-130 s live; <code>/manual/ask</code>, ~1 s)</h2>
+  <div class="row">
+    <div><label>part_id (blank = selected)</label><input id="man-part" type="text" placeholder="midea-maw08u1qwt-8d6d08" /></div>
+    <div><button id="man-find">Find manual</button></div>
+  </div>
+  <div class="row">
+    <div style="flex:1"><label>question</label><input id="man-q" type="text" style="width:100%" value="What size drill bit do I need for the pilot holes?" /></div>
+    <div><button id="man-ask">Ask</button></div>
+  </div>
+  <p class="muted" id="man-status"></p>
+  <div id="man-answer"></div>
+</section>
+
+<section>
+  <h2>Condition survey (<code>POST /scene/survey</code>)</h2>
+  <div class="row">
+    <div><label>site (also sent as context.site)</label><input id="sv-site" type="text" placeholder="hospital" /></div>
+    <div>
+      <label>focus</label>
+      <select id="sv-focus"><option>all</option><option>roof</option><option>gutters</option><option>facade</option></select>
+    </div>
+    <div><label>model</label><select id="sv-model"><option>fast</option><option>careful</option></select></div>
+    <div><button id="sv-run">Survey</button></div>
+  </div>
+  <p class="stage" id="sv-status"></p>
+  <div class="frames" id="sv-frames"></div>
+  <table id="sv-pins"></table>
+  <pre id="sv-extra" style="display:none"></pre>
+</section>
+
+<section>
+  <h2>Finish variant</h2>
+  <p class="muted">POST /parts/{id}/finish: Grok re-renders the product photo in the finish and re-projects it onto the part (llm, ai_mesh, proxy tiers); cad/scad parts only tint.</p>
+  <div class="row">
+    <div><label>part_id</label><input id="fin-part" type="text" size="36" placeholder="Select a card, or type an id" /></div>
+    <div><label>finish</label><input id="fin-name" type="text" value="matte black" /></div>
+    <div><button id="fin-go">Render finish</button></div>
+  </div>
+  <p class="stage" id="fin-status"></p>
+  <div class="cards" id="fin-out"></div>
+</section>
+
+<section>
+  <h2>Capture coach</h2>
+  <div class="row">
+    <div><label>site (also sent as context.site)</label><select id="cov-site"><option value="">none</option></select></div>
+    <div><button id="cov-go">Check coverage</button></div>
+  </div>
+  <div id="cov-spoken"></div>
+  <p class="muted">Top down in the scene frame (X right, Z down). Wedges: green once a side has 3+ aimed views.
+    Dashed: the legs to fly (orbit blue, eave pass purple, roof grid grey). Dots: cameras.</p>
+  <svg id="cov-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+  <pre id="cov-json"></pre>
+</section>
+
+<section>
+  <h2>Rules and money check (<code>POST /rules/check</code>, ~15 s live, instant cached)</h2>
+  <div class="row">
+    <div><label>part_id (blank = selected)</label><input id="rules-part" type="text" placeholder="lg-knsah121b-04da2e" /></div>
+    <div>
+      <label>job</label>
+      <select id="rules-job">
+        <option value="">from the part</option>
+        <option>minisplit_install</option>
+        <option>water_heater_swap</option>
+        <option>window_ac</option>
+      </select>
+    </div>
+    <div style="flex:1"><label>address (also sent as context.address)</label><input id="rules-address" type="text" style="width:100%" value="225 North Ave NW, Atlanta, GA 30332" /></div>
+    <div><button id="rules-send">Check</button></div>
+  </div>
+  <p class="muted" id="rules-status"></p>
+  <div id="rules-spoken"></div>
+  <div id="rules-body"></div>
+</section>
+
+<section>
+  <h2>Install coach (<code>POST /coach/start</code>; <code>/coach/{id}/check</code>, ~1-2 s live, instant cached)</h2>
+  <div class="row">
+    <div><label>part_id (blank = selected)</label><input id="co-part" type="text" placeholder="midea-maw08u1qwt-8d6d08" /></div>
+    <div>
+      <label>or a template job</label>
+      <select id="co-job">
+        <option value="">from the part</option>
+        <option>window_ac</option>
+        <option>gutter_hanger</option>
+        <option>led_strip</option>
+        <option>faucet_swap</option>
+      </select>
+    </div>
+    <div><button id="co-start">Start</button></div>
+  </div>
+  <p id="co-spoken" style="font-weight:600"></p>
+  <ol id="co-steps"></ol>
+  <div class="row">
+    <div style="flex:1"><label>frame: a scene thumb URL or a JPEG file (also sent as context.frame_jpg_b64 while coaching). Click the frame to set the drill point (default: its centre).</label><input id="co-frame-url" type="text" style="width:100%" value="/scenes/kitchen/thumbs/0221.jpg" /></div>
+    <div><input id="co-frame-file" type="file" accept="image/jpeg" /></div>
+    <div><button id="co-load" class="secondary">Load frame</button></div>
+    <div><button id="co-check">Check</button></div>
+    <div><button id="co-did" class="secondary">I did it</button></div>
+    <div><button id="co-back" class="secondary">Back</button></div>
+  </div>
+  <p class="muted" id="co-status"></p>
+  <div class="frame" id="co-frame" style="max-width:640px"><img id="co-img" alt="" /></div>
+  <table id="co-answers"></table>
+</section>
+
+<section>
+  <h2>Paper-quote checker (<code>POST /quote/check</code>, ~6 s live, instant for a file read before)</h2>
+  <div class="row">
+    <div><label>quote photo or PDF (try <code>tests/fixtures/quotes/bad.png</code>, SYNTHETIC)</label><input id="quote-file" type="file" accept="image/*,application/pdf" /></div>
+    <div><label><input id="quote-frame" type="checkbox" checked /> send an image as context.frame_jpg_b64 ("check this quote")</label></div>
+    <div><button id="quote-send">Check</button></div>
+  </div>
+  <p class="muted">Uses the rules section's address. <i>~italic</i> values were inferred, not printed, and are never checked.</p>
+  <p class="muted" id="quote-status"></p>
+  <div id="quote-spoken"></div>
+  <div id="quote-body"></div>
+</section>
+
+<section>
+  <h2>Job packet (<code>POST /packet/{session_id}</code>, a few s live, public xAI Files link)</h2>
+  <div class="row">
+    <div><label>session_id (seed: <code>python -m server.report_demo</code>)</label><input id="packet-session" type="text" value="demo-kitchen" /></div>
+    <div><label>days</label><input id="packet-days" type="number" min="1" max="30" value="7" style="width:4.5rem" /></div>
+    <div><label><input id="packet-public" type="checkbox" checked /> public link</label></div>
+    <div><button id="packet-send">Make packet</button></div>
+    <div><button id="packet-revoke" class="secondary" disabled>Revoke link</button></div>
+  </div>
+  <p class="muted" id="packet-status"></p>
+  <p id="packet-links"></p>
+  <pre id="packet-json"></pre>
+</section>
+
+<section>
+  <h2>Do the whole job (<code>POST /job/run</code>, or say "do the whole job")</h2>
+  <p class="muted">Survey (when there's a site and no need), part, safety + rules + preview in
+    parallel, packet, pay panel. Uses this page's session and context. It never pays.</p>
+  <div class="row">
+    <div><label>site (blank = context.site)</label><input id="run-site" type="text" placeholder="hospital" /></div>
+    <div style="flex:1"><label>need (blank = survey the scan)</label><input id="run-goal" type="text" style="width:100%" placeholder="ductless mini-split 12000 BTU" /></div>
+    <div><button id="run-go">Run it</button></div>
+  </div>
+  <p class="muted" id="run-status"></p>
+  <table id="run-steps"></table>
+  <pre id="run-actions"></pre>
+</section>
+
+<section>
+  <h2>Live labels (<code>POST /scene/labels</code>)</h2>
+  <p class="muted">A scan thumb by site + frame id, or upload a photo. Pick "shop" on a label to run the search it would run in the headset.</p>
+  <div class="row">
+    <div><label>site</label><input id="lbl-site" type="text" value="kitchen" size="10" /></div>
+    <div><label>frame_id</label><input id="lbl-frame" type="text" value="0221" size="6" /></div>
+    <div><label>or upload</label><input id="lbl-file" type="file" accept="image/jpeg,image/png" /></div>
+    <div><label>focus (optional)</label><input id="lbl-focus" type="text" placeholder="electrical" /></div>
+    <div><button id="lbl-send">Label</button></div>
+  </div>
+  <p id="lbl-stats" class="muted"></p>
+  <div class="lbl-frame" id="lbl-view"></div>
+  <table id="lbl-table"></table>
+</section>
+
+<section>
+  <h2>Booth wall (<code>POST /booth/{session_id}/share</code>, screen at <a href="/booth" target="_blank">/booth</a>)</h2>
+  <div class="row">
+    <div><label>session_id</label><input id="booth-session" type="text" value="demo-kitchen" /></div>
+    <div><label>name (blank = Judge n)</label><input id="booth-name" type="text" /></div>
+    <div><label><input id="booth-consent" type="checkbox" /> the user asked for the wall</label></div>
+    <div><button id="booth-share">Share</button></div>
+    <div><button id="booth-post" class="secondary" disabled title="hold 1.5 s">Hold to post on X</button></div>
+  </div>
+  <p class="muted" id="booth-status"></p>
+  <div id="booth-preview"></div>
+  <pre id="booth-json"></pre>
+</section>
+
+<section id="job-section" style="display:none">
+  <h2>Job <code id="job-id"></code></h2>
+  <div class="stage" id="job-stage"></div>
+  <div id="job-error"></div>
+  <div class="cards" id="cards"></div>
+</section>
+
+<script>
+"use strict";
+
+// --- XSS guard: every untrusted string (part/seller names, eta, reasons, urls, transcript,
+// reply, ...) that lands in an innerHTML-built template literal must go through esc() or
+// safeUrl() first -- server data (LLM/SerpApi output) is not trusted HTML.
+function esc(value) {
+  const s = value === null || value === undefined ? "" : String(value);
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function safeUrl(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return esc(parsed.href);
+  } catch {
+    // malformed URL -- fall through to reject
+  }
+  return "";
+}
+
+// --- session -------------------------------------------------------------
+const sessionId = (crypto.randomUUID ? crypto.randomUUID() : "sess-" + Math.random().toString(36).slice(2));
+document.getElementById("session-id").textContent = sessionId;
+
+// --- state -----------------------------------------------------------------
+let candidateIds = [];   // ids from the last finished job, for the agent's fast "select" path
+let selectedPartId = null;
+let jobPollTimer = null;
+const assetPollTimers = {}; // part_id -> interval handle
+
+function buildContext() {
+  const label = document.getElementById("m-label").value;
+  const value = parseFloat(document.getElementById("m-value").value);
+  const axisSel = document.getElementById("m-axis").value;
+  const ctx = {
+    measurement: {
+      label: label || "",
+      value_m: Number.isFinite(value) ? value : 0,
+      axis: axisSel === "none" ? null : axisSel,
+    },
+  };
+  if (candidateIds.length) ctx.candidate_ids = candidateIds;
+  if (rvSite && rvFrame) { ctx.site = rvSite; ctx.frame_id = rvFrame.id; }
+  if (selectedPartId) ctx.selected_part_id = selectedPartId;
+  else if (document.getElementById("pc-part").value.trim()) ctx.selected_part_id = document.getElementById("pc-part").value.trim();
+  if (pcSite && pcFrame) { ctx.site = pcSite; ctx.frame_id = pcFrame.id; }
+  if (pcBox) ctx.placed_box = pcBox;
+  const svSite = document.getElementById("sv-site").value.trim(); // typed = wins over the defaults below
+  if (svSite && !ctx.site) ctx.site = svSite;
+  const covSite = document.getElementById("cov-site").value; // picked = wins over the defaults below
+  if (covSite && !ctx.site) ctx.site = covSite;
+  const fxSite = document.getElementById("fx-site").value.trim();
+  const fxFrame = document.getElementById("fx-frame").value.trim();
+  if (fxSite && fxFrame && !ctx.site) { ctx.site = fxSite; ctx.frame_id = fxFrame; }
+  const site = document.getElementById("plan-site").value.trim();
+  if (site && !ctx.site) ctx.site = site; // a picked reimagine/postcard frame names its own site
+  const address = document.getElementById("rules-address").value.trim();
+  if (address) ctx.address = address;
+  if (quoteB64 && document.getElementById("quote-frame").checked) ctx.frame_jpg_b64 = quoteB64;
+  if (coachId && coachFrameB64) { // "check it" checks the coach's frame
+    ctx.frame_jpg_b64 = coachFrameB64;
+    if (coachDrill) ctx.drill_px = coachDrill;
+  }
+  return ctx;
+}
+
+function mmToIn(mm) { return (mm / 25.4).toFixed(2); }
+
+// --- generic command result rendering --------------------------------------
+
+function showTranscript(text) {
+  document.getElementById("transcript").textContent = text || "";
+}
+
+function showCommandResult(result) {
+  document.getElementById("reply").textContent = result.reply || "";
+  document.getElementById("actions-json").textContent = JSON.stringify(
+    { actions: result.actions || [], job_id: result.job_id || null }, null, 2
+  );
+  if (result.job_id) startJobPoll(result.job_id);
+  const rv = (result.actions || []).find((a) => a.name === "show_reimagined");
+  if (rv) showReimagined(rv.args);
+  const shown = (result.actions || []).find((a) => a.name === "show_installers");
+  if (shown) renderInstallers(shown.args.installers, shown.args.summary, "from the agent's show_installers action");
+  const pc = (result.actions || []).find((a) => a.name === "show_postcard");
+  if (pc) showPostcard(pc.args);
+  const sf = (result.actions || []).find((a) => a.name === "show_safety");
+  if (sf) {
+    document.getElementById("safety-part").value = sf.args.part_id;
+    document.getElementById("safety-send").click(); // cached by now: fills in the evidence
+  }
+  for (const a of result.actions || []) {
+    if (a.name === "flythrough_started") pollFlythrough(a.args.job_id);
+    if (a.name === "show_video") showVideo(a.args);
+  }
+  const planAction = (result.actions || []).find((a) => a && a.name === "show_plan");
+  if (planAction) drawPlan(document.getElementById("plan-site").value.trim(), planAction.args);
+  const manual = (result.actions || []).find((a) => a.name === "show_manual_answer");
+  if (manual) renderManualAnswer(manual.args, "from the agent's show_manual_answer action");
+  const sv = (result.actions || []).find((a) => a.name === "survey_started");
+  if (sv) pollSurvey({ survey_id: sv.args.survey_id, status: "running" });
+  const cov = (result.actions || []).find((a) => a && a.name === "show_coverage");
+  if (cov) drawCoverage(cov.args);
+  const actions = result.actions || [];
+  const rulesShown = actions.find((a) => a.name === "show_rules");
+  const started = actions.find((a) => a.name === "rules_started");
+  if (rulesShown) renderRules(rulesShown.args, "from the agent's show_rules action");
+  else if (started) pollRules(started.args.check_id);
+  const jr = actions.find((a) => a.name === "job_started");
+  if (jr) pollRun(jr.args.run_id);
+  const pk = actions.find((a) => a.name === "show_packet");
+  if (pk) {
+    const a = pk.args;
+    showPacket({ ...a, url: a.public ? a.url : null, local_url: `/packet/${a.packet_id}.pdf` });
+  }
+  if (actions.some((a) => a.name.startsWith("coach_"))) renderCoach({ spoken: result.reply, actions });
+  const sp = actions.find((a) => a.name === "show_share_preview");
+  if (sp) {
+    const a = sp.args;
+    showBooth({ ...a, x: { ready: a.x_ready, preview_text: a.preview_text, confirm_token: a.confirm_token } });
+  }
+  const qc = actions.find((a) => a.name === "show_quote_check");
+  if (qc) renderQuote(qc.args, "from the agent's show_quote_check action");
+  if (actions.some((a) => a.name === "packet_revoked")) {
+    document.getElementById("packet-revoke").disabled = true;
+    document.getElementById("packet-status").textContent = "revoked by voice: the public link now 404s";
+  }
+}
+
+// --- plan: 2D top-down SVG of the plan over the structure layer ------------------
+
+const structureCache = {}; // site -> structure.json
+
+async function loadStructure(site) {
+  if (!structureCache[site]) {
+    const scene = await (await fetch(`/scenes/${encodeURIComponent(site)}/scene.json`)).json();
+    const file = scene.structure && scene.structure.file;
+    structureCache[site] = file ? await (await fetch(`/scenes/${encodeURIComponent(site)}/${encodeURIComponent(file)}`)).json() : { planes: [], objects: [] };
+  }
+  return structureCache[site];
+}
+
+function planeOutline(p) {  // same rules as server/plan.py plane_outline
+  const poly = p.polygon3d || p.polygon || [];
+  if (!poly.length || poly[0].length === 3) return poly;
+  const [n, u, o] = [p.normal, p.u, p.origin];
+  const v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+  return poly.map(([a, b]) => [0, 1, 2].map((i) => o[i] + a * u[i] + b * v[i]));
+}
+
+async function drawPlan(site, plan) {
+  const s = await loadStructure(site);
+  const shapes = [
+    ...s.planes.map((p) => ({ pts: planeOutline(p), cls: "#9ca3af" })),
+    ...s.objects.map((o) => ({ pts: o.corners3d, cls: "#2563eb" })),
+  ];
+  const all = shapes.flatMap((sh) => sh.pts).concat(plan.points, plan.segments.flatMap((g) => [g.a, g.b]));
+  const xs = all.map((p) => p[0]), zs = all.map((p) => p[2]);
+  const [x0, z0] = [Math.min(...xs) - 0.1, Math.min(...zs) - 0.1];
+  const [w, h] = [Math.max(...xs) + 0.1 - x0, Math.max(...zs) + 0.1 - z0];
+  const pt = (p) => `${(p[0] - x0).toFixed(3)},${(p[2] - z0).toFixed(3)}`;
+  const stroke = 'vector-effect="non-scaling-stroke" fill="none"';
+  const r = Math.max(w, h) / 120;
+  const svg = document.getElementById("plan-svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.innerHTML = [
+    ...shapes.map((sh) => `<polygon points="${sh.pts.map(pt).join(" ")}" stroke="${sh.cls}" stroke-width="1" ${stroke}/>`),
+    ...plan.segments.map((g) => `<polyline points="${pt(g.a)} ${pt(g.b)}" stroke="#dc2626" stroke-width="3" ${stroke}/>`),
+    ...plan.points.map((p) => `<circle cx="${p[0] - x0}" cy="${p[2] - z0}" r="${r}" fill="#dc2626"/>`),
+  ].join("");
+  svg.style.display = "block";
+}
+
+document.getElementById("plan-send").addEventListener("click", async () => {
+  const site = document.getElementById("plan-site").value.trim();
+  const out = document.getElementById("plan-reply");
+  out.textContent = "planning...";
+  const resp = await fetch("/scene/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ site, utterance: document.getElementById("plan-text").value, context: buildContext() }),
+  });
+  const body = await resp.json();
+  if (!resp.ok) { out.textContent = `${resp.status}: ${body.detail}`; return; }
+  out.innerHTML = `<b>${esc(body.spoken)}</b> <span class="badge">${esc(body.planner)}</span>
+    <span class="badge">${esc(body.latency_ms)} ms</span><pre>${esc(JSON.stringify(body, null, 2))}</pre>`;
+  drawPlan(site, body);
+});
+
+async function sendCommand(text) {
+  const resp = await fetch("/agent/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, text, context: buildContext() }),
+  });
+  const body = await resp.json();
+  showCommandResult(body);
+  return body;
+}
+
+document.getElementById("cmd-send").addEventListener("click", () => {
+  const text = document.getElementById("cmd-text").value.trim();
+  if (text) { showTranscript(""); sendCommand(text); }
+});
+document.getElementById("cmd-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("cmd-send").click();
+});
+
+// --- push to talk (MediaRecorder -> /voice/command) -------------------------
+
+const pttBtn = document.getElementById("ptt");
+let mediaRecorder = null;
+let recordedChunks = [];
+let recording = false;
+
+async function startRecording() {
+  if (recording) return;
+  recording = true;
+  pttBtn.classList.add("recording");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(recordedChunks, { type: "audio/webm" });
+      sendVoiceCommand(blob);
+    };
+    mediaRecorder.start();
+  } catch (err) {
+    recording = false;
+    pttBtn.classList.remove("recording");
+    document.getElementById("reply").textContent = "mic error: " + err.message;
+  }
+}
+
+function stopRecording() {
+  if (!recording) return;
+  recording = false;
+  pttBtn.classList.remove("recording");
+  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+}
+
+pttBtn.addEventListener("mousedown", startRecording);
+pttBtn.addEventListener("mouseup", stopRecording);
+pttBtn.addEventListener("mouseleave", stopRecording);
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.target === document.body) { e.preventDefault(); startRecording(); }
+});
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space") stopRecording();
+});
+
+function sniffMime(b64) {
+  // First 4 bytes of a RIFF/WAVE container decode to ASCII "RIFF"; anything else here is mpeg.
+  const head = atob(b64.slice(0, 8)).slice(0, 4);
+  return head === "RIFF" ? "audio/wav" : "audio/mpeg";
+}
+
+async function sendVoiceCommand(blob) {
+  showTranscript("(transcribing...)");
+  const form = new FormData();
+  form.append("audio", blob, "clip.webm");
+  form.append("session_id", sessionId);
+  form.append("context", JSON.stringify(buildContext()));
+  form.append("tts", "true");
+  const resp = await fetch("/voice/command", { method: "POST", body: form });
+  const body = await resp.json();
+  showTranscript(body.transcript);       // transcript first, per spec
+  showCommandResult(body);               // then reply / actions / job id
+  const audioEl = document.getElementById("tts-audio");
+  if (body.audio_b64) {
+    const mime = body.audio_mime || sniffMime(body.audio_b64);
+    audioEl.src = `data:${mime};base64,${body.audio_b64}`;
+    audioEl.style.display = "";
+    audioEl.play().catch(() => {}); // autoplay may be blocked; controls are visible either way
+  } else {
+    audioEl.style.display = "none";
+    audioEl.removeAttribute("src");
+  }
+}
+
+// --- job polling -------------------------------------------------------------
+
+function startJobPoll(jobId) {
+  if (jobPollTimer) clearInterval(jobPollTimer);
+  document.getElementById("job-section").style.display = "";
+  document.getElementById("job-id").textContent = jobId;
+  document.getElementById("job-error").textContent = "";
+  const poll = async () => {
+    const resp = await fetch(`/parts/jobs/${jobId}`);
+    if (!resp.ok) { document.getElementById("job-stage").textContent = `(job lookup failed: ${resp.status})`; return; }
+    const job = await resp.json();
+    document.getElementById("job-stage").textContent = `${job.status} - ${job.stage || ""}`;
+    if (job.status === "done") {
+      clearInterval(jobPollTimer);
+      candidateIds = job.candidates.map((p) => p.id);
+      renderCandidates(job.candidates);
+    } else if (job.status === "failed") {
+      clearInterval(jobPollTimer);
+      document.getElementById("job-error").textContent = job.error || "search failed";
+    }
+  };
+  poll();
+  jobPollTimer = setInterval(poll, 1000);
+}
+
+// --- candidate cards -----------------------------------------------------------
+
+function fitClass(status) { return "fit-" + (status || "unknown"); }
+
+function fitLabel(fit) {
+  if (fit.status === "fits") return `Fits${fit.spare_mm != null ? ` (+${fit.spare_mm.toFixed(0)}mm spare)` : ""}`;
+  if (fit.status === "too_big") return `Too big${fit.spare_mm != null ? ` (by ${Math.abs(fit.spare_mm).toFixed(0)}mm)` : ""}`;
+  if (fit.status === "too_small") return `Too small${fit.spare_mm != null ? ` (by ${Math.abs(fit.spare_mm).toFixed(0)}mm)` : ""}`;
+  return "Fit unknown";
+}
+
+function sellersTable(part, cardIdx) {
+  const rows = (part.sellers || []).map((s, i) => {
+    const pack = s.pack_qty ?? "-";
+    const unit = s.unit_price_usd ?? s.price_usd;
+    const rec = i === part.recommended_seller ? " recommended" : "";
+    const link = safeUrl(s.url);
+    return `<tr class="${i === part.recommended_seller ? "recommended" : ""}">
+      <td>${esc(s.name || "")}${rec ? ` <span class="badge">recommended</span>` : ""}</td>
+      <td>${s.price_usd != null ? "$" + s.price_usd.toFixed(2) : "-"}</td>
+      <td>${esc(pack)}</td>
+      <td>${unit != null ? "$" + Number(unit).toFixed(2) : "-"}</td>
+      <td>${esc(s.shipping || (s.shipping_usd != null ? "$" + s.shipping_usd.toFixed(2) : "-"))}</td>
+      <td>${esc(s.eta || "-")}</td>
+      <td>${s.in_stock === true ? "yes" : s.in_stock === false ? "no" : "-"}</td>
+      <td>${link ? `<a href="${link}" target="_blank" rel="noopener">link</a>` : "-"}</td>
+    </tr>`;
+  }).join("");
+  const reasonRow = part.recommendation_reason
+    ? `<p class="muted">Recommended: ${esc(part.recommendation_reason)}</p>` : "";
+  return `<table>
+    <thead><tr><th>seller</th><th>price</th><th>pack</th><th>unit</th><th>shipping</th><th>ETA</th><th>stock</th><th>link</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="8" class="muted">no sellers yet</td></tr>`}</tbody>
+  </table>${reasonRow}`;
+}
+
+function renderCandidates(parts) {
+  const container = document.getElementById("cards");
+  container.innerHTML = "";
+  parts.forEach((part, idx) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.id = `card-${part.id}`;
+    card.innerHTML = cardHtml(part, idx);
+    container.appendChild(card);
+    wireCard(card, part, idx);
+    pollAsset(part.id);
+  });
+}
+
+function cardHtml(part, idx) {
+  const d = part.dims_mm;
+  const dimsLine = `${d.w.toFixed(0)}x${d.d.toFixed(0)}x${d.h.toFixed(0)} mm `
+    + `(${mmToIn(d.w)}"x${mmToIn(d.d)}"x${mmToIn(d.h)}")`;
+  const imgFallback = safeUrl(part.image_url);
+  return `
+    <img src="/parts/${esc(part.id)}/image.jpg" alt="${esc(part.name)}" data-fallback="${imgFallback}" onerror="if (this.dataset.fallback) { this.src = this.dataset.fallback; this.dataset.fallback = ''; } else { this.style.display='none'; }" />
+    <h3>${idx + 1}. ${esc(part.name)}</h3>
+    <div>${esc(dimsLine)} <span class="badge">${esc(part.dims_source)}</span></div>
+    <div><span class="badge ${esc(fitClass(part.fit.status))}">${esc(fitLabel(part.fit))}</span></div>
+    <div><span class="badge" data-role="asset-badge">asset: ${esc(part.asset.tier)} / ${esc(part.asset.status)}</span></div>
+    <div data-role="model-slot"></div>
+    ${sellersTable(part, idx)}
+    <div class="card-actions">
+      <button data-act="select">Select</button>
+      <button data-act="cheapest" class="secondary">Sellers: cheapest</button>
+      <button data-act="fastest" class="secondary">Sellers: fastest</button>
+      <input type="number" min="1" value="1" data-role="qty" />
+      <select data-role="seller-select">
+        ${(part.sellers || []).map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join("")}
+      </select>
+      <button data-act="checkout" class="secondary">Checkout</button>
+    </div>
+    <pre data-role="receipt" style="display:none"></pre>
+  `;
+}
+
+function wireCard(card, part, idx) {
+  card.querySelector('[data-act="select"]').addEventListener("click", () => {
+    selectedPartId = part.id;
+    document.getElementById("pc-part").value = part.id;
+    document.getElementById("safety-part").value = part.id;
+    document.getElementById("fin-part").value = part.id;
+    document.querySelectorAll(".card").forEach((c) => c.classList.remove("selected"));
+    card.classList.add("selected");
+    document.getElementById("cmd-text").value = `select number ${idx + 1}`;
+    sendCommand(`select number ${idx + 1}`);
+  });
+
+  card.querySelector('[data-act="cheapest"]').addEventListener("click", () => resortSellers(part.id, "cheapest", card));
+  card.querySelector('[data-act="fastest"]').addEventListener("click", () => resortSellers(part.id, "fastest", card));
+
+  card.querySelector('[data-act="checkout"]').addEventListener("click", async () => {
+    const qty = parseInt(card.querySelector('[data-role="qty"]').value, 10) || 1;
+    const sellerIdx = parseInt(card.querySelector('[data-role="seller-select"]').value, 10) || 0;
+    const resp = await fetch("/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ part_id: part.id, seller_idx: sellerIdx, qty, session_id: sessionId }),
+    });
+    const body = await resp.json();
+    const pre = card.querySelector('[data-role="receipt"]');
+    pre.style.display = "";
+    pre.textContent = JSON.stringify(body, null, 2);
+  });
+}
+
+async function resortSellers(partId, sort, card) {
+  const resp = await fetch(`/parts/${partId}/sellers?sort=${sort}`, { method: "POST" });
+  if (!resp.ok) return;
+  const part = await resp.json();
+  const table = card.querySelector("table");
+  const tmp = document.createElement("div");
+  tmp.innerHTML = sellersTable(part, 0);
+  table.replaceWith(tmp.querySelector("table"));
+  const reason = tmp.querySelector(".muted");
+  const existingReason = card.querySelector(".card-actions").previousElementSibling;
+  if (reason && existingReason && existingReason.classList.contains("muted")) existingReason.replaceWith(reason);
+  else if (reason) card.querySelector(".card-actions").insertAdjacentElement("beforebegin", reason);
+}
+
+// --- finish variant: before/after -------------------------------------------------
+
+function finishCard(title, imgUrl, glbUrl, note) {
+  return `<div class="card"><h3>${esc(title)}</h3>
+    <img src="${safeUrl(imgUrl)}" alt="${esc(title)}" />
+    ${glbUrl ? `<model-viewer src="${safeUrl(glbUrl)}" camera-controls auto-rotate exposure="1"></model-viewer>` : ""}
+    <p class="muted">${esc(note)}</p></div>`;
+}
+
+document.getElementById("fin-go").addEventListener("click", async () => {
+  const partId = document.getElementById("fin-part").value.trim();
+  const name = document.getElementById("fin-name").value.trim();
+  if (!partId || !name) return;
+  const status = document.getElementById("fin-status");
+  const out = document.getElementById("fin-out");
+  status.textContent = "rendering (about 10 s the first time, instant once cached)...";
+  out.innerHTML = "";
+  const started = performance.now();
+  const resp = await fetch(`/parts/${encodeURIComponent(partId)}/finish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ finish: name }),
+  });
+  const body = await resp.json();
+  const secs = ((performance.now() - started) / 1000).toFixed(1);
+  if (!resp.ok) { status.textContent = `${resp.status}: ${JSON.stringify(body.detail)}`; return; }
+  const cost = body.cost_usd != null ? `, first render cost $${body.cost_usd.toFixed(3)}` : "";
+  status.textContent = `${body.source} in ${secs} s${cost}. ${body.spoken}`;
+  const base = `/parts/${encodeURIComponent(partId)}`;
+  const after = body.source === "imagine"
+    ? finishCard(`After: ${name}`, body.image_url, `${body.model_url}?ts=${Date.now()}`, body.label || "listed finish")
+    : `<div class="card"><h3>After: tint only</h3><p class="muted">${esc(body.reason || "")}</p></div>`;
+  out.innerHTML = finishCard("Before", `${base}/image.jpg`, `${base}/model.glb`, "seller photo and model.glb") + after;
+});
+
+// --- capture coach: the show_coverage ring, top down -----------------------------
+
+async function loadSites() {
+  const resp = await fetch("/scenes");
+  const sel = document.getElementById("cov-site");
+  for (const s of await resp.json()) {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = s.site;
+    sel.appendChild(opt);
+  }
+}
+loadSites();
+
+document.getElementById("cov-go").addEventListener("click", async () => {
+  const site = document.getElementById("cov-site").value;
+  if (!site) return;
+  const resp = await fetch(`/scenes/${encodeURIComponent(site)}/coverage`);
+  const body = await resp.json();
+  if (!resp.ok) { document.getElementById("cov-spoken").textContent = body.detail || resp.status; return; }
+  drawCoverage(body);
+});
+
+async function drawCoverage(cov) {
+  document.getElementById("cov-spoken").textContent = cov.spoken || "";
+  document.getElementById("cov-json").textContent = JSON.stringify(cov, null, 2);
+  const svg = document.getElementById("cov-svg");
+  svg.innerHTML = "";
+  if (cov.mode !== "exterior") return;
+  const cams = await (await fetch(`/scenes/${encodeURIComponent(cov.site)}/${encodeURI(cov.cameras)}`)).json();
+  const [cx, , cz] = cov.ring.centre;
+  const z0 = cov.ring.zero_dir, q = cov.ring.quarter_dir;
+  // bearing (degrees clockwise from above, from zero_dir) and radius -> scene [x, z]
+  const at = (deg, r) => {
+    const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    return [cx + r * (c * z0[0] + s * q[0]), cz + r * (c * z0[2] + s * q[2])];
+  };
+  const arc = (from, sweep, r) => {
+    const pts = [];
+    for (let d = 0; d <= sweep + 1e-6; d += 3) pts.push(at(from + d, r));
+    return pts;
+  };
+  let extent = Math.max(cov.ring.radius * 1.4, ...cov.legs.map((l) => l.radius * 1.15));
+  for (const c of cams) extent = Math.max(extent, Math.abs(c.position[0] - cx) * 1.05, Math.abs(c.position[2] - cz) * 1.05);
+  svg.setAttribute("viewBox", `${cx - extent} ${cz - extent} ${2 * extent} ${2 * extent}`);
+  const font = extent * 0.045;
+  const el = (tag, attrs) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    node.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(node);
+    return node;
+  };
+  const poly = (pts) => pts.map((p) => p.join(",")).join(" ");
+  const R = cov.ring.radius;
+  cov.sides.forEach((side, k) => {
+    const outer = arc(side.bearing_deg - 22.5, 45, R), inner = arc(side.bearing_deg - 22.5, 45, R * 0.7).reverse();
+    el("polygon", { points: poly([...outer, ...inner]), fill: side.seen ? "#16a34a" : "#dc2626", "fill-opacity": 0.55, stroke: "#fff", "stroke-width": 1.5 });
+    const [lx, lz] = at(side.bearing_deg, R * 0.85);
+    const t = el("text", { x: lx, y: lz, "font-size": font * 0.8, "text-anchor": "middle", "dominant-baseline": "middle", fill: "#111" });
+    t.textContent = side.label;
+  });
+  for (const leg of cov.legs) {
+    if (leg.pattern === "nadir_grid") {
+      const r = leg.radius;
+      el("rect", { x: cx - r, y: cz - r, width: 2 * r, height: 2 * r, fill: "none", stroke: "#6b7280", "stroke-width": 2, "stroke-dasharray": "6 4" });
+      continue;
+    }
+    const color = leg.pattern === "orbit" ? "#2563eb" : "#9333ea";
+    el("polyline", { points: poly(arc(leg.from_deg, leg.sweep_deg, leg.radius)), fill: "none", stroke: color, "stroke-width": 3, "stroke-dasharray": "8 6" });
+  }
+  for (const c of cams) {
+    el("circle", { cx: c.position[0], cy: c.position[2], r: extent * 0.008, fill: "#111", "fill-opacity": 0.6 });
+  }
+  const [zx, zz] = at(0, R * 1.25);
+  el("line", { x1: cx, y1: cz, x2: zx, y2: zz, stroke: "#111", "stroke-width": 1 });
+  const t = el("text", { x: zx, y: zz, "font-size": font, "text-anchor": "middle", fill: "#111" });
+  t.textContent = cov.zero === "north" ? "N (0°)" : "start side (0°)";
+}
+
+// --- live labels ---------------------------------------------------------------
+
+document.getElementById("lbl-send").addEventListener("click", async () => {
+  const file = document.getElementById("lbl-file").files[0];
+  const form = new FormData();
+  form.append("session_id", sessionId);
+  const focus = document.getElementById("lbl-focus").value.trim();
+  if (focus) form.append("focus", focus);
+  let src;
+  if (file) {
+    form.append("image", file, file.name);
+    src = URL.createObjectURL(file);
+  } else {
+    const site = document.getElementById("lbl-site").value.trim();
+    const frame = document.getElementById("lbl-frame").value.trim();
+    form.append("site", site);
+    form.append("frame_id", frame);
+    src = `/scenes/${encodeURIComponent(site)}/thumbs/${encodeURIComponent(frame)}.jpg`;
+  }
+  const stats = document.getElementById("lbl-stats");
+  stats.textContent = "labelling...";
+  const t0 = performance.now();
+  const resp = await fetch("/scene/labels", { method: "POST", body: form });
+  const body = await resp.json();
+  if (!resp.ok) { stats.textContent = `${resp.status}: ${JSON.stringify(body.detail)}`; return; }
+  stats.textContent = `first label ${body.first_label_ms ?? "-"} ms · all ${body.latency_ms} ms`
+    + ` (Grok, when first labelled) · round trip ${Math.round(performance.now() - t0)} ms`
+    + ` · $${body.cost_usd.toFixed(4)}${body.cached ? " · cached" : ""} · ${body.label}`;
+  const view = document.getElementById("lbl-view");
+  view.innerHTML = `<img src="${esc(src)}" alt="frame" />` + body.labels.map((l) => {
+    const [x0, y0, x1, y1] = l.box.map((v) => (v * 100).toFixed(2));
+    return `<div class="lbl-box${l.confidence < 0.7 ? " low" : ""}" style="left:${x0}%;top:${y0}%;`
+      + `width:${(x1 - x0).toFixed(2)}%;height:${(y1 - y0).toFixed(2)}%"><span>${esc(l.name)}</span></div>`;
+  }).join("");
+  document.getElementById("lbl-table").innerHTML =
+    "<thead><tr><th>name</th><th>kind</th><th>detail</th><th>source</th><th>conf</th><th></th></tr></thead>"
+    + body.labels.map((l, i) => `<tr><td>${esc(l.name)}</td><td>${esc(l.kind)}</td><td>${esc(l.detail)}</td>`
+      + `<td>${esc(l.source)}</td><td>${l.confidence}</td>`
+      + `<td><button class="secondary" data-lbl="${i}">shop</button></td></tr>`).join("");
+  document.querySelectorAll("#lbl-table [data-lbl]").forEach((btn) => btn.addEventListener("click", async () => {
+    const r = await fetch("/parts/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: body.labels[+btn.dataset.lbl].query }),
+    });
+    const job = await r.json();
+    if (job.job_id) startJobPoll(job.job_id);
+  }));
+});
+
+// --- asset polling + 3D preview -------------------------------------------------
+
+// --- rules and money check (endpoint, or the agent's show_rules action) ------
+function renderRules(r, note) {
+  document.getElementById("rules-status").textContent = note || "";
+  document.getElementById("rules-spoken").textContent = r.spoken || "";
+  if (r.status !== "done") {
+    document.getElementById("rules-body").innerHTML = r.error ? `<p>error: ${esc(r.error)}</p>` : "";
+    return;
+  }
+  const j = r.jurisdiction || {};
+  const p = r.permit;
+  const m = r.money || {};
+  const es = m.energy_star;
+  const link = (u, t) => u ? `<a href="${safeUrl(u)}" target="_blank" rel="noopener">${esc(t || "source")}</a>` : "";
+  const items = p ? (p.items || []).map((i) => `<li>${esc(i.name)} · ${esc(i.office)} ${link(i.url)}
+    <span class="muted">[${esc(i.quote_note || i.quote_status)}]</span>${i.fee ? " fee: " + esc(i.fee) : ""}</li>`).join("") : "";
+  const codes = (r.codes || []).map((c) => `<li>${esc(c.code)}: ${esc(c.applies)}${c.next_edition
+    ? ` (${esc(c.next_edition)} from ${esc(c.effective)})` : ""} ${link(c.source_url, "DCA")}</li>`).join("");
+  const money = (m.incentives || []).map((i) => `<li>${esc(i.name)} · ${i.amount_usd != null
+    ? "$" + esc(i.amount_usd) : esc(i.amount_note)} · <b>${esc(i.status)}</b> ${link(i.status_source || i.url, "status page")}
+    ${i.note ? `<span class="muted">${esc(i.note)}</span>` : ""}</li>`).join("");
+  document.getElementById("rules-body").innerHTML = `
+    <p>${esc(j.authority)}, ${esc(j.county || "")} ${esc(j.state)} <span class="muted">(${esc(j.source)}, ${esc(j.confidence)})</span></p>
+    <p>permit: <b>${p ? esc(p.required) : "unavailable"}</b>${p && p.office ? " · " + esc(p.office.name) + (p.office.phone ? " · " + esc(p.office.phone) : "") : ""}
+      ${p && p.who_can_pull ? `· homeowner may pull: ${esc(p.who_can_pull.homeowner_allowed)} <span class="muted">(model said ${esc(p.who_can_pull.model_said)})</span>` : ""}
+      ${p && p.dropped ? `<span class="muted">· ${esc(p.dropped)} uncited dropped</span>` : ""}</p>
+    <ul>${items}</ul>
+    <p>codes:</p><ul>${codes}</ul>
+    ${es ? `<p>ENERGY STAR ${esc(es.model)}: ${es.certified ? "certified" : "not certified"}${es.seer2 ? ` · ${esc(es.seer2)} SEER2 / ${esc(es.hspf2)} HSPF2` : ""}
+      ${es.missing ? ` · <b>rebate needs the pair: add ${esc(es.missing)}</b>` : ""}</p>` : ""}
+    <p>money (research: ${esc(m.research || "n/a")}):</p><ul>${money}</ul>
+    <p class="muted">${esc(r.label)}${r.cost_usd != null ? ` · cost when fetched $${esc(r.cost_usd)}` : ""}</p>`;
+}
+
+// --- paper-quote checker (endpoint, or the agent's show_quote_check action) ----
+let quoteB64 = null; // an image quote, sent as context.frame_jpg_b64 when the box is ticked
+document.getElementById("quote-file").addEventListener("change", () => {
+  const f = document.getElementById("quote-file").files[0];
+  quoteB64 = null;
+  if (!f || !f.type.startsWith("image/")) return;
+  const reader = new FileReader();
+  reader.onload = () => { quoteB64 = String(reader.result).split(",")[1]; };
+  reader.readAsDataURL(f);
+});
+
+function renderQuote(q, note) {
+  document.getElementById("quote-status").textContent = note || "";
+  document.getElementById("quote-spoken").textContent = q.spoken || "";
+  const body = document.getElementById("quote-body");
+  if (!q.lines) { body.innerHTML = ""; return; }
+  const v = (f, money) => {
+    if (!f || f.value === null || f.value === undefined) return "";
+    const s = money ? "$" + Number(f.value).toFixed(2) : String(f.value);
+    return f.source === "printed_text" ? esc(s) : `<i class="muted" title="inferred, not printed">~${esc(s)}</i>`;
+  };
+  const flag = (f) => `<div style="color:${f.severity === "warn" ? "#b91c1c" : "#555"}">${esc(f.text)}</div>`;
+  const rows = q.lines.map((l) => `<tr><td>${esc(l.i)}</td><td>${esc(l.description)}</td><td>${esc(l.kind)}</td>
+    <td>${v(l.model_no)}</td><td>${v(l.qty)}</td><td>${v(l.unit_price, true)}</td><td>${v(l.line_total, true)}</td>
+    <td>${l.compare ? `<a href="${safeUrl(l.compare.seller_url)}" target="_blank" rel="noopener">${esc(l.compare.text)}</a>` : ""}</td>
+    <td>${(l.flags || []).filter((f) => f.code !== "price_spread").map(flag).join("")}</td></tr>`).join("");
+  const t = q.totals || {};
+  body.innerHTML = `
+    <p>${v(q.contractor)} · ${esc(q.kind)} · job ${esc(q.job || "none")}${q.cached ? " · cached read" : ""}${q.cost_usd ? ` · $${esc(q.cost_usd)}` : ""}</p>
+    <table><thead><tr><th>#</th><th>description</th><th>kind</th><th>model</th><th>qty</th><th>unit</th><th>total</th><th>vs sellers</th><th>flags</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <p>subtotal ${v(t.subtotal, true)} · tax ${v(t.tax_rate_pct)} % ${v(t.tax, true)} · total ${v(t.total, true)}</p>
+    ${(q.flags || []).filter((f) => f.line === null).map(flag).join("")}
+    ${q.rules_note ? `<p class="muted">rules: ${esc(q.rules_note)}</p>` : ""}
+    <p class="muted">${esc(q.label)}</p>`;
+}
+
+document.getElementById("quote-send").addEventListener("click", async () => {
+  const f = document.getElementById("quote-file").files[0];
+  if (!f) { renderQuote({}, "pick a file first"); return; }
+  const form = new FormData();
+  form.append("file", f);
+  const address = document.getElementById("rules-address").value.trim();
+  if (address) form.append("address", address);
+  renderQuote({}, "reading...");
+  const resp = await fetch("/quote/check", { method: "POST", body: form });
+  const q = await resp.json();
+  if (!resp.ok) { renderQuote({}, `error ${resp.status}: ${q.detail}`); return; }
+  renderQuote(q, `quote ${q.quote_id}`);
+});
+
+let rulesPollTimer = null;
+function pollRules(checkId) {
+  clearInterval(rulesPollTimer);
+  renderRules({ status: "running" }, `check ${checkId} running...`);
+  rulesPollTimer = setInterval(async () => {
+    const r = await (await fetch(`/rules/check/${encodeURIComponent(checkId)}`)).json();
+    if (r.status === "running") return;
+    clearInterval(rulesPollTimer);
+    renderRules(r, `check ${checkId}`);
+  }, 1500);
+}
+
+document.getElementById("rules-send").addEventListener("click", async () => {
+  const body = {
+    part_id: document.getElementById("rules-part").value.trim() || selectedPartId || null,
+    job: document.getElementById("rules-job").value || null,
+    address: document.getElementById("rules-address").value.trim() || null,
+  };
+  const resp = await fetch("/rules/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const r = await resp.json();
+  if (!resp.ok) { renderRules({ status: "failed", error: r.detail }, `error ${resp.status}`); return; }
+  if (r.status === "running") pollRules(r.check_id);
+  else renderRules(r, `check ${r.check_id} (cached)`);
+});
+
+function pollAsset(partId) {
+  if (assetPollTimers[partId]) return;
+  const tick = async () => {
+    const resp = await fetch(`/parts/${partId}/part.json`);
+    if (!resp.ok) return;
+    const part = await resp.json();
+    const card = document.getElementById(`card-${partId}`);
+    if (!card) { clearInterval(assetPollTimers[partId]); delete assetPollTimers[partId]; return; }
+    const badge = card.querySelector('[data-role="asset-badge"]');
+    if (badge) badge.textContent = `asset: ${part.asset.tier} / ${part.asset.status}`;
+    if (part.asset.status === "ready") {
+      const slot = card.querySelector('[data-role="model-slot"]');
+      const d = part.dims_mm;
+      slot.innerHTML = `<model-viewer src="/parts/${esc(partId)}/model.glb?ts=${Date.now()}"
+          camera-controls auto-rotate exposure="1"></model-viewer>
+        <p class="muted">True size: ${esc(`${d.w.toFixed(0)}x${d.d.toFixed(0)}x${d.h.toFixed(0)} mm`)} (${esc(part.asset.tier)})</p>`;
+      clearInterval(assetPollTimers[partId]);
+      delete assetPollTimers[partId];
+    } else if (part.asset.status === "failed") {
+      const slot = card.querySelector('[data-role="model-slot"]');
+      slot.innerHTML = `<p class="muted">3D asset failed to resolve.</p>`;
+      clearInterval(assetPollTimers[partId]);
+      delete assetPollTimers[partId];
+    }
+  };
+  tick();
+  assetPollTimers[partId] = setInterval(tick, 3000);
+}
+
+// --- reimagine this view -----------------------------------------------------
+
+let rvSite = null;
+let rvFrame = null; // cameras.r<rev>.json entry
+let rvHistory = []; // refine stack as shown: [{url, drift}] for steps 1..n
+
+function showReimagined(out) {
+  const before = rvFrame && rvFrame.id === out.frame_id ? `/scenes/${rvSite}/${rvFrame.thumb}` : out.before_url;
+  document.getElementById("rv-before").src = before || "";
+  document.getElementById("rv-after").src = out.image_url;
+  document.getElementById("rv-label").textContent = out.label; // must always be shown
+  document.getElementById("rv-ba").style.display = "";
+  document.getElementById("rv-slider").style.display = "";
+  setSlider();
+  if (out.step === undefined) return;
+  // refine stack: rvHistory[i] = step i+1; step 0 is the original frame (the "before" image)
+  rvHistory = rvHistory.slice(0, out.step);
+  if (out.step > 0) rvHistory[out.step - 1] = { url: out.image_url, drift: out.drift };
+  const tiles = [{ url: document.getElementById("rv-before").src, drift: null }, ...rvHistory];
+  document.getElementById("rv-history").innerHTML = tiles.map((t, i) => `<figure style="display:inline-block; margin:4px">
+    <img src="${esc(t.url)}" style="width:160px; ${i === out.step ? "outline:3px solid #2a7" : ""}" />
+    <figcaption class="muted">${i ? `step ${i}` : "original"}${t.drift != null ? ` · drift ${t.drift}` : ""}</figcaption></figure>`).join("");
+}
+
+function setSlider() {
+  const v = document.getElementById("rv-slider").value;
+  document.getElementById("rv-after").style.clipPath = `inset(0 ${100 - v}% 0 0)`;
+}
+document.getElementById("rv-slider").addEventListener("input", setSlider);
+
+async function loadSite(site) {
+  rvSite = site; rvFrame = null;
+  document.getElementById("rv-frame").textContent = "-";
+  const strip = document.getElementById("rv-thumbs");
+  strip.innerHTML = "";
+  const scene = await (await fetch(`/scenes/${site}/scene.json`)).json();
+  const cams = await (await fetch(`/scenes/${site}/${scene.cameras || "cameras.json"}`)).json();
+  for (const cam of cams) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.src = `/scenes/${site}/${cam.thumb}`;
+    img.title = cam.id;
+    img.addEventListener("click", () => {
+      strip.querySelectorAll("img.selected").forEach((el) => el.classList.remove("selected"));
+      img.classList.add("selected");
+      rvFrame = cam;
+      document.getElementById("rv-frame").textContent = cam.id;
+    });
+    strip.appendChild(img);
+  }
+}
+
+(async () => {
+  const sel = document.getElementById("rv-site");
+  const sites = await (await fetch("/scenes")).json();
+  for (const s of sites) sel.add(new Option(s.site, s.site));
+  sel.addEventListener("change", () => loadSite(sel.value));
+  if (sites.length) loadSite(sites[0].site);
+})();
+
+document.getElementById("rv-go").addEventListener("click", async () => {
+  const status = document.getElementById("rv-status");
+  if (!rvSite || !rvFrame) { status.textContent = "Pick a frame thumbnail first."; return; }
+  const btn = document.getElementById("rv-go");
+  btn.disabled = true;
+  status.textContent = "Sketching it up...";
+  try {
+    const resp = await fetch("/scene/reimagine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ site: rvSite, frame_id: rvFrame.id, prompt: document.getElementById("rv-prompt").value, session_id: sessionId }),
+    });
+    const out = await resp.json();
+    if (!resp.ok) { status.textContent = `${resp.status}: ${out.detail}`; return; }
+    status.textContent = out.cached ? "Cached replay ($0)." : `$${out.cost_usd} in ${out.latency_s} s.`;
+    showReimagined({ ...out, step: 1, drift: null }); // the server started this session's refine stack
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- installer intel (endpoint, or the agent's show_installers action) -------
+function renderInstallers(installers, summary, note) {
+  document.getElementById("intel-summary").textContent = summary || "";
+  document.getElementById("intel-status").textContent = note || "";
+  document.getElementById("intel-list").innerHTML = (installers || []).map((i) => `<li>
+    <b>${esc(i.name)}</b> <span class="muted">${esc(i.area)} · ${esc(i.source)} · ${esc(i.sentiment)}</span>
+    ${i.website ? `<a href="${safeUrl(i.website)}" target="_blank" rel="noopener">site</a>` : ""}
+    ${i.phone ? esc(i.phone) : ""}
+    ${i.quote ? `<div class="muted">"${esc(i.quote)}"</div>` : ""}
+    <div>evidence: ${(i.evidence_urls || []).map((u, n) =>
+      `<a href="${safeUrl(u)}" target="_blank" rel="noopener">[${n + 1}]</a>`).join(" ")}</div>
+  </li>`).join("");
+}
+
+document.getElementById("intel-send").addEventListener("click", async () => {
+  const btn = document.getElementById("intel-send");
+  btn.disabled = true;
+  renderInstallers([], "", "searching the web and X...");
+  const t0 = performance.now();
+  try {
+    const resp = await fetch("/intel/installers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: document.getElementById("intel-query").value,
+        location: document.getElementById("intel-location").value || null,
+      }),
+    });
+    const body = await resp.json();
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (!resp.ok) { renderInstallers([], "", `error ${resp.status}: ${body.detail}`); return; }
+    const cost = body.cost_usd != null ? `, cost when fetched $${body.cost_usd.toFixed(3)}` : "";
+    renderInstallers(body.installers, body.summary,
+      `${body.location}: ${body.installers.length} with evidence, ${body.dropped} dropped, ${secs} s${cost}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- see it installed (postcard) -------------------------------------------------
+
+let pcSite = null;
+let pcFrame = null; // cameras entry
+let pcBox = null;   // [x0, y0, x1, y1] normalized, or null
+
+function showPostcard(out) {
+  if (out.before_url) document.getElementById("pc-before").src = out.before_url;
+  document.getElementById("pc-after").src = out.image_url;
+  document.getElementById("pc-label").textContent = out.label; // must always be shown
+  document.getElementById("pc-after-wrap").style.display = "";
+}
+
+function drawBox() {
+  const el = document.getElementById("pc-box");
+  if (!pcBox) { el.style.display = "none"; return; }
+  const img = document.getElementById("pc-before");
+  Object.assign(el.style, {
+    display: "", left: `${pcBox[0] * img.clientWidth}px`, top: `${pcBox[1] * img.clientHeight}px`,
+    width: `${(pcBox[2] - pcBox[0]) * img.clientWidth}px`, height: `${(pcBox[3] - pcBox[1]) * img.clientHeight}px`,
+  });
+}
+
+(() => {
+  const img = document.getElementById("pc-before");
+  let start = null;
+  const pos = (e) => {
+    const r = img.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+  };
+  img.addEventListener("dragstart", (e) => e.preventDefault());
+  img.addEventListener("mousedown", (e) => { start = pos(e); });
+  window.addEventListener("mousemove", (e) => {
+    if (!start) return;
+    const p = pos(e);
+    pcBox = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])];
+    drawBox();
+  });
+  window.addEventListener("mouseup", () => {
+    if (start && pcBox && (pcBox[2] - pcBox[0] < 0.01 || pcBox[3] - pcBox[1] < 0.01)) { pcBox = null; drawBox(); }
+    start = null;
+  });
+  document.getElementById("pc-clear").addEventListener("click", () => { pcBox = null; drawBox(); });
+})();
+
+async function loadPostcardSite(site) {
+  pcSite = site; pcFrame = null; pcBox = null; drawBox();
+  document.getElementById("pc-frame").textContent = "-";
+  const strip = document.getElementById("pc-thumbs");
+  strip.innerHTML = "";
+  const scene = await (await fetch(`/scenes/${site}/scene.json`)).json();
+  const cams = await (await fetch(`/scenes/${site}/${scene.cameras || "cameras.json"}`)).json();
+  for (const cam of cams) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.src = `/scenes/${site}/${cam.thumb}`;
+    img.title = cam.id;
+    img.addEventListener("click", () => {
+      strip.querySelectorAll("img.selected").forEach((el) => el.classList.remove("selected"));
+      img.classList.add("selected");
+      pcFrame = cam; pcBox = null; drawBox();
+      document.getElementById("pc-frame").textContent = cam.id;
+      document.getElementById("pc-before").src = img.src;
+      document.getElementById("pc-after-wrap").style.display = "none";
+    });
+    strip.appendChild(img);
+  }
+}
+
+(async () => {
+  const sel = document.getElementById("pc-site");
+  const sites = await (await fetch("/scenes")).json();
+  for (const s of sites) sel.add(new Option(s.site, s.site));
+  sel.addEventListener("change", () => loadPostcardSite(sel.value));
+  if (sites.length) loadPostcardSite(sites[0].site);
+})();
+
+document.getElementById("pc-go").addEventListener("click", async () => {
+  const status = document.getElementById("pc-status");
+  const partId = document.getElementById("pc-part").value.trim();
+  if (!partId || !pcSite || !pcFrame) { status.textContent = "Need a part id and a frame thumbnail."; return; }
+  const btn = document.getElementById("pc-go");
+  btn.disabled = true;
+  status.textContent = "Sketching it in...";
+  try {
+    const body = { site: pcSite, frame_id: pcFrame.id, placement: document.getElementById("pc-placement").value };
+    if (pcBox) body.box = pcBox;
+    const resp = await fetch(`/parts/${encodeURIComponent(partId)}/postcard`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const out = await resp.json();
+    if (!resp.ok) { status.textContent = `${resp.status}: ${out.detail}`; return; }
+    status.textContent = out.cached ? "Cached replay ($0)." : `$${out.cost_usd} in ${out.latency_s} s.`;
+    showPostcard(out);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- recall and defect radar (endpoint, or the agent's show_safety action) ------
+document.getElementById("safety-send").addEventListener("click", async () => {
+  const btn = document.getElementById("safety-send");
+  const partId = document.getElementById("safety-part").value.trim();
+  const status = document.getElementById("safety-status");
+  const verdict = document.getElementById("safety-verdict");
+  if (!partId) return;
+  btn.disabled = true;
+  status.textContent = "checking CPSC and the web...";
+  const t0 = performance.now();
+  try {
+    const resp = await fetch(`/parts/${encodeURIComponent(partId)}/safety`);
+    const body = await resp.json();
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (!resp.ok) { status.textContent = `error ${resp.status}: ${body.detail}`; return; }
+    verdict.textContent = body.verdict.toUpperCase();
+    verdict.className = `badge safety-${body.verdict}`;
+    document.getElementById("safety-headline").textContent = body.headline;
+    document.getElementById("safety-spoken").textContent = `spoken: "${body.spoken}"`;
+    const cost = body.cost_usd != null ? `, cost when fetched $${body.cost_usd.toFixed(3)}` : "";
+    status.textContent = `sources: ${body.sources.join(" + ") || "none"}, checked ${body.checked_at}, ${secs} s${cost}`;
+    document.getElementById("safety-list").innerHTML = [
+      ...body.recalls.map((r) => `<li><b>recall</b> <span class="muted">${esc(r.source)} · applies: ${esc(r.applies)} · ${esc(r.date)}</span>
+        <a href="${safeUrl(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></li>`),
+      ...body.complaints.map((c) => `<li><b>${esc(c.theme)}</b> <span class="muted">${esc(c.source)}</span>
+        <a href="${safeUrl(c.url)}" target="_blank" rel="noopener">source</a>
+        ${c.quote ? `<div class="muted">"${esc(c.quote)}"</div>` : ""}</li>`),
+    ].join("");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- walk-in renovation clip ---------------------------------------------------
+
+let fxPollTimer = null;
+
+function showVideo(out) {
+  const video = document.getElementById("fx-video");
+  video.poster = out.poster_url || "";
+  video.src = out.video_url;
+  document.getElementById("fx-label").textContent = out.label; // must always be shown
+  document.getElementById("fx-player").style.display = "";
+  const share = safeUrl(out.share_url);
+  document.getElementById("fx-share").innerHTML = share
+    ? `<p class="muted">Public link (for the QR): <a href="${share}" target="_blank">${share}</a></p>` : "";
+  video.play().catch(() => {});
+}
+
+function fxDone(out) {
+  const status = document.getElementById("fx-status");
+  if (out.status === "failed") {
+    status.textContent = `${out.spoken} (${out.error})`;
+    if (out.poster_url) { showVideo({ ...out, video_url: "" }); }
+    return;
+  }
+  status.textContent = out.cached ? "Cached replay ($0)."
+    : `$${out.cost_usd} in ${out.latency_s} s (${out.from_frame} -> ${out.to_frame}).`;
+  showVideo(out);
+}
+
+function pollFlythrough(jobId) {
+  clearInterval(fxPollTimer);
+  const status = document.getElementById("fx-status");
+  const t0 = Date.now();
+  const tick = async () => {
+    const out = await (await fetch(`/scene/flythrough/${jobId}`)).json();
+    if (out.status === "pending") {
+      status.textContent = `Rendering ${out.from_frame} -> ${out.to_frame}... ${Math.round((Date.now() - t0) / 1000)} s`;
+      return;
+    }
+    clearInterval(fxPollTimer);
+    fxDone(out);
+  };
+  fxPollTimer = setInterval(tick, 3000);
+  tick();
+}
+
+document.getElementById("fx-go").addEventListener("click", async () => {
+  const status = document.getElementById("fx-status");
+  const btn = document.getElementById("fx-go");
+  btn.disabled = true;
+  status.textContent = "Reimagining the end frame and submitting...";
+  try {
+    const resp = await fetch("/scene/flythrough", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        site: document.getElementById("fx-site").value.trim(),
+        frame_id: document.getElementById("fx-frame").value.trim(),
+        prompt: document.getElementById("fx-prompt").value,
+        public: document.getElementById("fx-public").checked,
+      }),
+    });
+    const out = await resp.json();
+    if (!resp.ok) { status.textContent = `${resp.status}: ${out.detail}`; return; }
+    if (out.status === "done") fxDone(out); else pollFlythrough(out.job_id);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- install manual (endpoints, or the agent's show_manual_answer action) ----
+function manualPartId() {
+  return document.getElementById("man-part").value.trim() || selectedPartId || "";
+}
+
+function renderManualAnswer(a, note) {
+  document.getElementById("man-status").textContent = note || "";
+  const flags = [a.covered === false ? "not covered" : "", a.rejected ? "quote rejected" : "",
+    a.offline ? "offline" : ""].filter(Boolean).join(", ");
+  document.getElementById("man-answer").innerHTML = `
+    <div><b>${esc(a.answer)}</b> ${flags ? `<span class="muted">(${esc(flags)})</span>` : ""}</div>
+    ${a.quote ? `<div class="muted">"${esc(a.quote)}"</div>` : ""}
+    ${a.pdf_url ? `<a href="${safeUrl(a.pdf_url)}" target="_blank" rel="noopener">open the manual${
+      a.page ? ` at page ${esc(a.page)}` : ""}</a>` : ""}`;
+}
+
+async function manualCall(path, body, busy) {
+  const partId = manualPartId();
+  if (!partId) { renderManualAnswer({ answer: "" }, "no part id (select a candidate or type one)"); return null; }
+  renderManualAnswer({ answer: "" }, busy);
+  const t0 = performance.now();
+  const resp = await fetch(`/parts/${encodeURIComponent(partId)}/${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  if (!resp.ok) { renderManualAnswer({ answer: "" }, `error ${resp.status}: ${data.detail}`); return null; }
+  return [data, secs];
+}
+
+document.getElementById("man-find").addEventListener("click", async () => {
+  const got = await manualCall("manual", {}, "searching the manufacturer's site...");
+  if (!got) return;
+  const [m, secs] = got;
+  const cost = m.cost_usd != null ? `, $${m.cost_usd.toFixed(3)} when fetched` : "";
+  renderManualAnswer(
+    { answer: m.found ? `${m.title} (${m.pages} pages)` : "no manual found", pdf_url: m.pdf_url },
+    `${secs} s${cost}. ${m.found ? `source: ${m.source_url}` : ""} ${m.note || ""}`);
+});
+
+document.getElementById("man-ask").addEventListener("click", async () => {
+  const got = await manualCall("manual/ask", { question: document.getElementById("man-q").value },
+    "reading the manual...");
+  if (!got) return;
+  const [a, secs] = got;
+  const cost = a.cost_usd != null ? `, $${a.cost_usd.toFixed(4)} when asked` : "";
+  renderManualAnswer(a, `${secs} s${cost}`);
+});
+
+// --- condition survey: frames with boxes + the pin list --------------------------------------
+
+async function runSurvey() {
+  const site = document.getElementById("sv-site").value.trim();
+  const status = document.getElementById("sv-status");
+  status.textContent = "Surveying...";
+  const resp = await fetch("/scene/survey", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      site,
+      focus: document.getElementById("sv-focus").value,
+      model: document.getElementById("sv-model").value,
+    }),
+  });
+  let body = await resp.json();
+  if (!resp.ok) { status.textContent = `${resp.status}: ${JSON.stringify(body.detail)}`; return; }
+  await pollSurvey(body);
+}
+
+async function pollSurvey(body) {  // also the agent's survey_started action
+  while (body.status === "running") {
+    document.getElementById("sv-status").textContent = `Surveying ${body.survey_id}...`;
+    await new Promise((r) => setTimeout(r, 1500));
+    body = await (await fetch(`/scene/survey/${encodeURIComponent(body.survey_id)}`)).json();
+  }
+  renderSurvey(body.site, body);
+}
+
+function renderSurvey(site, s) {
+  const status = document.getElementById("sv-status");
+  if (s.status !== "done") { status.textContent = `failed: ${s.error}`; return; }
+  status.textContent = `${s.survey_id} · ${s.model} · $${s.cost_usd}${s.cached ? " (cached)" : ""} · ${s.label} · "${s.spoken}"`;
+  document.getElementById("sv-frames").innerHTML = s.frames.map((f) => {
+    const boxes = s.pins.filter((p) => p.frame_id === f.id && p.box).map((p) => {
+      const [x0, y0, x1, y1] = p.box.map((v) => v * 100);
+      return `<div class="box sev-${esc(p.severity)}" style="left:${x0}%;top:${y0}%;width:${x1 - x0}%;height:${y1 - y0}%"><span>${esc(p.id)} ${esc(p.element)}</span></div>`;
+    }).join("");
+    return `<div class="frame"><img src="/scenes/${encodeURIComponent(site)}/${f.file.split("/").map(encodeURIComponent).join("/")}" /><div class="muted">${esc(f.id)}</div>${boxes}</div>`;
+  }).join("");
+  const fmt = (p) => (p ? p.map((v) => v.toFixed(3)).join(", ") : "not projected");
+  document.getElementById("sv-pins").innerHTML =
+    "<tr><th>id</th><th>severity</th><th>element</th><th>issue</th><th>conf</th><th>action</th><th>part_query</th><th>frame</th><th>p</th></tr>" +
+    s.pins.map((p) => `<tr><td>${esc(p.id)}</td><td>${esc(p.severity)}</td><td>${esc(p.element)}</td><td>${esc(p.issue)}</td>
+      <td>${esc(p.confidence)}</td><td>${esc(p.action)}</td><td>${esc(p.part_query || "")}</td>
+      <td>${esc(p.frame_id)}${p.also_in.length ? " +" + esc(p.also_in.join(",")) : ""}</td><td>${esc(fmt(p.p))}</td></tr>`).join("");
+  const extra = document.getElementById("sv-extra");
+  extra.style.display = "";
+  extra.textContent = JSON.stringify({ looked_fine: s.looked_fine, coverage_gaps: s.coverage_gaps }, null, 2);
+}
+
+document.getElementById("sv-run").addEventListener("click", runSurvey);
+
+
+// --- job packet (the agent's show_packet action carries the same url) --------------------
+let packetId = null;
+function showPacket(body) {
+  packetId = body.packet_id;
+  document.getElementById("packet-revoke").disabled = !body.public;
+  const links = [`<a href="${safeUrl(body.local_url)}" target="_blank">LAN PDF</a>`];
+  if (body.url) links.push(`<a href="${safeUrl(body.url)}" target="_blank">public link</a>`);
+  document.getElementById("packet-links").innerHTML =
+    `${links.join(" · ")} <span class="muted">${esc(body.label)}</span>`;
+  document.getElementById("packet-json").textContent = JSON.stringify(body, null, 2);
+}
+document.getElementById("packet-send").addEventListener("click", async () => {
+  const status = document.getElementById("packet-status");
+  const session = document.getElementById("packet-session").value.trim();
+  status.textContent = "building...";
+  const t0 = performance.now();
+  const resp = await fetch(`/packet/${encodeURIComponent(session)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      days: parseInt(document.getElementById("packet-days").value, 10) || 7,
+      public: document.getElementById("packet-public").checked,
+    }),
+  });
+  const body = await resp.json();
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  if (!resp.ok) {
+    status.textContent = `error ${resp.status}`;
+    if (body.detail && body.detail.local_url) showPacket(body.detail);
+    else document.getElementById("packet-json").textContent = JSON.stringify(body, null, 2);
+    return;
+  }
+  const cost = body.cost_usd != null ? `, summaries $${body.cost_usd.toFixed(4)} when fetched` : "";
+  status.textContent =
+    `${body.pages} pages, sections: ${body.sections.join(", ") || "none"}, ${secs} s${cost}`;
+  showPacket(body);
+});
+document.getElementById("packet-revoke").addEventListener("click", async () => {
+  if (!packetId) return;
+  const resp = await fetch(`/packet/${packetId}`, { method: "DELETE" });
+  const body = await resp.json();
+  document.getElementById("packet-status").textContent =
+    resp.ok ? "revoked: the public link now 404s" : `error ${resp.status}: ${body.detail}`;
+  if (resp.ok) showPacket(body);
+});
+
+// --- do the whole job: step timeline, paged with ?after=n --------------------------------
+let runTimer = null;
+function renderRunSteps(steps) {
+  const rows = steps.map((s) => `<tr><td>${s.i}</td><td>${esc(s.name)}</td>
+    <td><span class="badge">${esc(s.status)}</span></td><td>${s.seconds != null ? s.seconds + " s" : ""}</td>
+    <td>${s.cost_usd != null ? "$" + s.cost_usd.toFixed(4) : ""}</td><td>${esc(s.spoken || "")}</td></tr>`);
+  document.getElementById("run-steps").innerHTML =
+    "<tr><th>#</th><th>step</th><th>status</th><th>time</th><th>cost</th><th>spoken</th></tr>" + rows.join("");
+}
+function pollRun(runId) {
+  clearTimeout(runTimer);
+  let after = 0;
+  const log = document.getElementById("run-actions");
+  log.textContent = "";
+  const t0 = performance.now();
+  const tick = async () => {
+    const resp = await fetch(`/job/run/${runId}?after=${after}`);
+    if (!resp.ok) { document.getElementById("run-status").textContent = `error ${resp.status}`; return; }
+    const body = await resp.json();
+    after = body.next;
+    renderRunSteps(body.steps);
+    for (const a of body.actions) log.textContent += `${a.name} ${JSON.stringify(a.args)}\n`;
+    // the steps' own actions draw in their sections; a job_step's line is the caption
+    const own = body.actions.filter((a) => !a.name.startsWith("job_"));
+    const said = body.actions.filter((a) => a.name === "job_step").map((a) => a.args.spoken);
+    if (own.length || said.length) showCommandResult({ reply: said.join(" "), actions: own });
+    const secs = ((performance.now() - t0) / 1000).toFixed(0);
+    const done = body.actions.find((a) => a.name === "job_done");
+    document.getElementById("run-status").textContent = done
+      ? `${body.status}: parts $${done.args.total_usd ?? "n/a"}, after rebates $${done.args.after_rebates_usd ?? "n/a"}, Grok $${done.args.cost_usd}`
+      : `run ${runId}: ${body.status}, ${secs} s`;
+    if (body.status === "running") runTimer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+document.getElementById("run-go").addEventListener("click", async () => {
+  const ctx = buildContext();
+  const site = document.getElementById("run-site").value.trim() || ctx.site || null;
+  const goal = document.getElementById("run-goal").value.trim() || null;
+  const resp = await fetch("/job/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, site, goal, context: ctx }),
+  });
+  const body = await resp.json();
+  if (!resp.ok) { document.getElementById("run-status").textContent = `error ${resp.status}: ${body.detail}`; return; }
+  pollRun(body.run_id);
+});
+
+// --- install coach (endpoints, or the agent's coach_* actions) ----------------------------
+let coachId = null;
+let coachFrameB64 = null;
+let coachDrill = null; // [x, y] 0-1, or null = the frame centre
+function coachBox(box, color, text) {
+  const [x0, y0, x1, y1] = box.map((v) => v * 100);
+  return `<div class="box" style="left:${x0}%;top:${y0}%;width:${x1 - x0}%;height:${y1 - y0}%;border-color:${color}">` +
+    `<span style="background:${color}">${esc(text)}</span></div>`;
+}
+function drawCoachFrame(check, stop) {
+  const wrap = document.getElementById("co-frame");
+  wrap.querySelectorAll(".box").forEach((b) => b.remove());
+  const colors = { yes: "#16a34a", no: "#d97706", cant_see: "#2563eb" };
+  let html = "";
+  for (const r of (check && check.results) || []) {
+    if (r.box) html += coachBox(r.box, colors[r.answer] || "#666", `${r.id}: ${r.answer}`);
+  }
+  if (stop) html += coachBox(stop.box, "#dc2626", `stop: ${stop.kind}`);
+  const [dx, dy] = (coachDrill || [0.5, 0.5]).map((v) => v * 100);
+  html += `<div class="box" style="left:${dx - 1}%;top:${dy - 1.5}%;width:2%;height:3%;border-color:#dc2626;border-radius:50%"></div>`;
+  wrap.insertAdjacentHTML("beforeend", html);
+}
+function renderCoach(out) {
+  if (out.coach_id) coachId = out.coach_id;
+  document.getElementById("co-spoken").textContent = out.spoken || "";
+  const actions = out.actions || [];
+  const started = actions.find((a) => a.name === "coach_started");
+  if (started) {
+    coachId = started.args.coach_id;
+    document.getElementById("co-steps").innerHTML = started.args.steps.map((s) =>
+      `<li id="co-step-${esc(s.i)}">${esc(s.say)}${s.page ? ` <span class="muted">(manual p. ${esc(s.page)})</span>` : ""}</li>`
+    ).join("");
+  }
+  const step = actions.find((a) => a.name === "coach_step");
+  const check = actions.find((a) => a.name === "coach_check");
+  const current = step ? step.args.i : check ? check.args.i : out.i;
+  document.querySelectorAll("#co-steps li").forEach((li) => {
+    li.style.fontWeight = li.id === `co-step-${current}` ? "700" : "400";
+  });
+  if (check) {
+    document.getElementById("co-answers").innerHTML =
+      `<tr><th>check</th><th>expect</th><th>answer</th><th>evidence</th></tr>` +
+      check.args.results.map((r) =>
+        `<tr><td>${esc(r.question)}</td><td>${esc(r.expect)}</td><td>${esc(r.answer)}</td><td>${esc(r.evidence)}</td></tr>`
+      ).join("") + `<tr><td colspan="4"><b>verdict: ${esc(check.args.verdict)}</b></td></tr>`;
+    const stop = actions.find((a) => a.name === "coach_stop");
+    drawCoachFrame(check.args, stop && stop.args);
+  }
+  if (actions.some((a) => a.name === "coach_done")) document.getElementById("co-status").textContent = "done";
+}
+async function coachCall(path, body) {
+  const status = document.getElementById("co-status");
+  status.textContent = "working...";
+  const t0 = performance.now();
+  const resp = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const out = await resp.json();
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  if (!resp.ok) {
+    status.textContent = `error ${resp.status}`;
+    document.getElementById("co-spoken").textContent =
+      (out.detail && out.detail.spoken) || JSON.stringify(out.detail);
+    return;
+  }
+  const cost = out.cost_usd != null ? `, $${out.cost_usd.toFixed(5)}` : "";
+  status.textContent = `${secs} s${cost}${out.verdict ? `, verdict ${out.verdict}` : ""}`;
+  renderCoach(out);
+}
+function setCoachFrame(dataUrl) {
+  coachFrameB64 = dataUrl.split(",")[1];
+  coachDrill = null;
+  document.getElementById("co-img").src = dataUrl;
+  drawCoachFrame(null, null);
+}
+function readAsDataUrl(blob) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+async function loadCoachFrame() {
+  const file = document.getElementById("co-frame-file").files[0];
+  const url = document.getElementById("co-frame-url").value.trim();
+  const blob = file || (url ? await (await fetch(url)).blob() : null);
+  if (blob) setCoachFrame(await readAsDataUrl(blob));
+}
+document.getElementById("co-load").addEventListener("click", loadCoachFrame);
+document.getElementById("co-img").addEventListener("click", (ev) => {
+  const rect = ev.target.getBoundingClientRect();
+  coachDrill = [(ev.clientX - rect.left) / rect.width, (ev.clientY - rect.top) / rect.height];
+  drawCoachFrame(null, null);
+});
+document.getElementById("co-start").addEventListener("click", () => {
+  const job = document.getElementById("co-job").value || null;
+  const part = document.getElementById("co-part").value.trim() || (job ? null : selectedPartId);
+  coachCall("/coach/start", { session_id: sessionId, part_id: part, job });
+});
+document.getElementById("co-check").addEventListener("click", async () => {
+  if (!coachId) return;
+  if (!coachFrameB64) await loadCoachFrame();
+  if (!coachFrameB64) return;
+  coachCall(`/coach/${coachId}/check`, { frame: { id: "debug", jpg_b64: coachFrameB64 }, drill_px: coachDrill });
+});
+document.getElementById("co-did").addEventListener("click", () => {
+  if (coachId) coachCall(`/coach/${coachId}/advance`, { move: "next" });
+});
+document.getElementById("co-back").addEventListener("click", () => {
+  if (coachId) coachCall(`/coach/${coachId}/advance`, { move: "back" });
+});
+
+// --- booth wall: share, then a hold-to-post button standing in for the headset's ring -------
+let boothToken = null;
+function showBooth(body) {
+  const x = body.x || {};
+  boothToken = x.ready ? x.confirm_token : null;
+  document.getElementById("booth-post").disabled = !boothToken;
+  const needs = x.needs && x.needs.length ? `: set ${esc(x.needs.join(", "))}` : "";
+  const post = x.ready
+    ? `<div>X post: ${esc(x.preview_text)}</div>`
+    : `<div class="muted">${esc(x.error || "X off")}${needs}</div>`;
+  document.getElementById("booth-preview").innerHTML =
+    `<img src="${safeUrl(body.card_url)}" style="width:480px;max-width:100%" alt="card">` +
+    `<div><b>${esc(body.caption)}</b></div>${post}`;
+  document.getElementById("booth-json").textContent = JSON.stringify(body, null, 2);
+}
+document.getElementById("booth-share").addEventListener("click", async () => {
+  const status = document.getElementById("booth-status");
+  const session = document.getElementById("booth-session").value.trim();
+  status.textContent = "sharing...";
+  const resp = await fetch(`/booth/${encodeURIComponent(session)}/share`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      consent: document.getElementById("booth-consent").checked,
+      name: document.getElementById("booth-name").value.trim() || null,
+    }),
+  });
+  const body = await resp.json();
+  if (!resp.ok) {
+    status.textContent = `error ${resp.status}: ${JSON.stringify(body.detail)}`;
+    return;
+  }
+  status.textContent = `on the wall, caption by ${body.caption_source}`;
+  showBooth(body);
+});
+let boothHold = null;
+const boothPost = document.getElementById("booth-post");
+boothPost.addEventListener("pointerdown", () => {
+  if (!boothToken) return;
+  document.getElementById("booth-status").textContent = "keep holding...";
+  boothHold = setTimeout(async () => {
+    const resp = await fetch("/booth/x/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm_token: boothToken }),
+    });
+    const body = await resp.json();
+    boothToken = null;
+    boothPost.disabled = true;
+    document.getElementById("booth-status").innerHTML = resp.ok
+      ? `posted: <a href="${safeUrl(body.url)}" target="_blank">${esc(body.url)}</a>`
+      : `error ${resp.status}: ${esc(body.detail)}`;
+  }, 1500);
+});
+for (const ev of ["pointerup", "pointerleave"]) {
+  boothPost.addEventListener(ev, () => clearTimeout(boothHold));
+}
+</script>
+</body>
+</html>

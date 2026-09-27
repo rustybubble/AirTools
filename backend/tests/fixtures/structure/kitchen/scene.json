@@ -1,0 +1,31 @@
+{
+ "name": "kitchen",
+ "units": "meters",
+ "up": [
+  0,
+  1,
+  0
+ ],
+ "recommended_spawn": {
+  "pos": [
+   3.2996135742613637,
+   0.417710419293136,
+   0.22318931329992325
+  ],
+  "look": [
+   -1.1666110045162048,
+   -0.2625455766916692,
+   -0.12122010465562749
+  ]
+ },
+ "quality": "full",
+ "revision": 1,
+ "structure": {
+  "file": "structure.r1.json",
+  "schema": "airtools.structure/1",
+  "edges": 671,
+  "corners": 594,
+  "planes": 61,
+  "objects": 40
+ }
+}

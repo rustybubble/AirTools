@@ -1,0 +1,130 @@
+From 34593da660f593e58fbe57a7d3a94e8373f765bb Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:48:34 -0400
+Subject: [PATCH 05/11] fix: read Home Depot's cabinet-hardware sizes (pull
+ length/projection, knob diameter/projection)
+
+Integration finding #15: voice "find me a cabinet door handle" -> 5 listings, all dropped with
+"no dims from LLM, Home Depot, or page" -> "No parts found that fit". The Home Depot product
+records do publish sizes, just not as Width/Depth/Height: pulls have "Pull Length (in.)" and
+"Pull Projection (in.)" (plus "Center to Center Measurement (mm)", the screw spacing), knobs
+"Knob Diameter (in.)" and "Knob Projection (in.)". _parse_dims ignored all of them.
+
+- knob diameter -> w and h, projection -> d, pull length -> w
+- a pull's thickness is never published: h takes its projection (a bar pull is thinner than it
+  projects, so the proxy box is a little tall rather than too thin)
+- centre-to-centre stays ignored; a lone "Product Length" (shelf brackets) or height + width
+  without depth (a door hinge) still returns None
+
+Re-parsing all 25 home_depot_product responses in the live server's SerpApi cache: 5/5 pulls
+and 4/4 knobs now resolve (were 0/9); the other 16 parse exactly as before (4 shelf brackets and
+a door hinge still None).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/sellers.py     | 14 ++++++++++++
+ tests/test_sellers.py | 52 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 66 insertions(+)
+
+diff --git a/server/sellers.py b/server/sellers.py
+index 32254d5..02686fd 100644
+--- a/server/sellers.py
++++ b/server/sellers.py
+@@ -317,6 +317,7 @@ def _parse_dims(specs: list[dict]) -> Dims | None:
+         if group.get("key") != "Dimensions":
+             continue
+         w = d = h = length = None
++        pull = False
+         for item in group.get("value", []):
+             name = (item.get("name") or "").lower()
+             if "window" in name:
+@@ -331,6 +332,15 @@ def _parse_dims(specs: list[dict]) -> Dims | None:
+                 h = inches
+             elif "front to back" in name:
+                 d = inches
++            # Cabinet hardware has no Width/Depth/Height at all: a knob publishes its diameter
++            # and projection (off the door), a pull its length and projection -- its
++            # "Center to Center Measurement (mm)" is the screw spacing, not a size.
++            elif "knob diameter" in name:
++                w = h = inches
++            elif "projection" in name:
++                d = inches
++            elif "pull length" in name:
++                w, pull = inches, True
+             elif "width" in name:
+                 w = inches
+             elif "depth" in name:
+@@ -339,6 +349,10 @@ def _parse_dims(specs: list[dict]) -> Dims | None:
+                 h = inches
+             elif "length" in name:
+                 length = inches
++        if pull and h is None and d is not None:
++            # A pull's thickness isn't published: use its projection (a bar pull is thinner than
++            # it projects, so its proxy box comes out a little tall rather than too thin).
++            h = d
+         if w is not None and d is not None and h is not None:
+             return Dims(w=w * 25.4, d=d * 25.4, h=h * 25.4)
+         known = [v for v in (w, d, h) if v is not None]
+diff --git a/tests/test_sellers.py b/tests/test_sellers.py
+index 0076dea..e98c97b 100644
+--- a/tests/test_sellers.py
++++ b/tests/test_sellers.py
+@@ -541,3 +541,55 @@ def test_parse_sink_directional_dims_and_min_cabinet():
+     dims = sellers._parse_dims(specs)
+     assert (round(dims.w), round(dims.d), round(dims.h)) == (813, 483, 254)
+     assert sellers._parse_fit_range(specs) == {"min": 914.4, "max": 10_000.0}
++
++
++# Spec groups verbatim from the live `home_depot_product` responses behind integration finding
++# #15 ("find me a cabinet door handle": all 5 listings dropped for "no dims").
++_PULL_SPECS = [  # 206951260 European Style 3 in. (76 mm) Center-to-Center ... Pull (25-Pack)
++    {
++        "key": "Dimensions",
++        "value": [
++            {"name": "Center to Center Measurement (mm)", "value": "76"},
++            {"name": "Pull Length (in.)", "value": "5.75 in"},
++            {"name": "Pull Projection (in.)", "value": "1.25 in"},
++        ],
++    }
++]
++_KNOB_SPECS = [  # 202824439 10-Pack Garrett 1-1/4 in. (32 mm) Classic Satin Nickel Round Knob
++    {
++        "key": "Dimensions",
++        "value": [
++            {"name": "Knob Diameter (in.)", "value": "1.25 in"},
++            {"name": "Knob Projection (in.)", "value": "1.13 in"},
++        ],
++    }
++]
++
++
++def test_parse_dims_cabinet_pull_length_and_projection():
++    dims = sellers._parse_dims(_PULL_SPECS)
++    # w = pull length, d = projection off the door; its thickness isn't published, so h takes
++    # the projection. The 76 mm centre-to-centre is screw spacing, never read as a size.
++    assert (dims.w, dims.d, dims.h) == (146.05, 31.75, 31.75)
++
++
++def test_parse_dims_cabinet_knob_diameter_and_projection():
++    dims = sellers._parse_dims(_KNOB_SPECS)
++    assert (dims.w, dims.d, dims.h) == (31.75, 28.7, 31.75)
++
++
++def test_parse_dims_still_none_without_enough_sides():
++    """A shelf bracket's only field ("Product Length") and a hinge with no depth stay unknown --
++    no guessing from one side."""
++    bracket = [{"key": "Dimensions", "value": [{"name": "Product Length (in.)", "value": "8 in"}]}]
++    hinge = [
++        {
++            "key": "Dimensions",
++            "value": [
++                {"name": "Product Height (in.)", "value": "3.5 in"},
++                {"name": "Product Width (in.)", "value": "3.5 in"},
++            ],
++        }
++    ]
++    assert sellers._parse_dims(bracket) is None
++    assert sellers._parse_dims(hinge) is None
+-- 
+2.50.1 (Apple Git-155)
+

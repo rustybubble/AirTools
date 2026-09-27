@@ -1,0 +1,288 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "facade",
+ "title": "Facade",
+ "focus": "wall",
+ "foci": [
+  "roof",
+  "wall",
+  "ground",
+  "ceiling",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "wall-hvac",
+   "title": "Wall-mounted HVAC",
+   "icon": "thermometer-cold",
+   "query": "ductless mini split air conditioner",
+   "items": [
+    {
+     "part_id": "costway-ghm0542-cf4a3a",
+     "name": "17 SEER2 12,000 BTU 1 Ton Ductless Mini Split Air Conditioner with Heat Pump 208/230V",
+     "price_usd": 499.99,
+     "dims_mm": {
+      "w": 736.6,
+      "h": 533.4,
+      "d": 279.4
+     },
+     "image_url": "/parts/costway-ghm0542-cf4a3a/image.jpg",
+     "model_url": "/parts/costway-ghm0542-cf4a3a/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "hessaire-h12fb1-24957f",
+     "name": "DIY 22 SEER2 12,000 BTU Wi-Fi 1-Ton Ductless Mini Split Air Conditioner and Heat Pump Variable Speed Inverter-115-Volt",
+     "price_usd": 799.0,
+     "dims_mm": {
+      "w": 368.3,
+      "h": 604.52,
+      "d": 919.48
+     },
+     "image_url": "/parts/hessaire-h12fb1-24957f/image.jpg",
+     "model_url": "/parts/hessaire-h12fb1-24957f/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ramsond-gw-12hp-230vi-o-255c4c",
+     "name": "12,000 BTU SEER 19 1+Ton Wi-Fi Ductless Mini Split Air Conditioner and Heat Pump -230-Volt/60Hz+25 Ft Line Set Kit",
+     "price_usd": 1082.87,
+     "dims_mm": {
+      "w": 735.08,
+      "h": 474.98,
+      "d": 249.94
+     },
+     "image_url": "/parts/ramsond-gw-12hp-230vi-o-255c4c/image.jpg",
+     "model_url": "/parts/ramsond-gw-12hp-230vi-o-255c4c/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "windows",
+   "title": "Windows & frames",
+   "icon": "squares-four",
+   "query": "vinyl window",
+   "items": [
+    {
+     "part_id": "jeld-wen-thdjw235100032-d0809e",
+     "name": "V-2500 Series 59.5 in. W x 47.5 in. H Left-Handed White Vinyl Low-E Sliding Window w/Brickmould Nail Fin Frame and Grids",
+     "price_usd": 415.6,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw235100032-d0809e/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw235100032-d0809e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw140400129-e52d6c",
+     "name": "59.5 in. x 47.5 in. V-4500 Series White Vinyl Right-Handed Sliding Window with Fiberglass Mesh Screen",
+     "price_usd": 597.42,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw140400129-e52d6c/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw140400129-e52d6c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw138500119-d5f663",
+     "name": "59.5 in. x 47.5 in. V-2500 Series Desert Sand Vinyl Right-Handed Sliding Window with Colonial Grids/Grilles",
+     "price_usd": 640.45,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw138500119-d5f663/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw138500119-d5f663/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "window-ac",
+   "title": "Window AC units",
+   "icon": "thermometer-cold",
+   "query": "window ac",
+   "items": [
+    {
+     "part_id": "vissani-v05wc3r-ae8225",
+     "name": "5,000 BTU 115-Volt Window Air Conditioner cools 150 sq. ft. with Remote in White",
+     "price_usd": 169.0,
+     "dims_mm": {
+      "w": 405.89,
+      "h": 304.8,
+      "d": 331.98
+     },
+     "image_url": "/parts/vissani-v05wc3r-ae8225/image.jpg",
+     "model_url": "/parts/vissani-v05wc3r-ae8225/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "vissani-vw5025r-618d1e",
+     "name": "5,000 BTU 115-Volt Window Air Conditioner Cools 150 sq. ft. with Remote and Dehumidifier in White",
+     "price_usd": 169.0,
+     "dims_mm": {
+      "w": 440.18,
+      "h": 282.96,
+      "d": 325.88
+     },
+     "image_url": "/parts/vissani-vw5025r-618d1e/image.jpg",
+     "model_url": "/parts/vissani-vw5025r-618d1e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "windmill-w1w12-adf5c5",
+     "name": "6,000 BTU 115-Volts Quiet Smart Window Air Conditioner, Wi-Fi/Remote, #1 Easiest-to-Install, up to 250 sq ft.",
+     "price_usd": 299.0,
+     "dims_mm": {
+      "w": 457.2,
+      "h": 304.8,
+      "d": 396.88
+     },
+     "image_url": "/parts/windmill-w1w12-adf5c5/image.jpg",
+     "model_url": "/parts/windmill-w1w12-adf5c5/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "doors",
+   "title": "Doors",
+   "icon": "door",
+   "query": "exterior door",
+   "items": [
+    {
+     "part_id": "emco-e1ss-36wh-26984d",
+     "name": "36 in. x 80 in. White Universal 3/4-Light Vinyl Storm Door with Black Hardware",
+     "price_usd": 154.0,
+     "dims_mm": {
+      "w": 914.4,
+      "h": 2032.0,
+      "d": 25.4
+     },
+     "image_url": "/parts/emco-e1ss-36wh-26984d/image.jpg",
+     "model_url": "/parts/emco-e1ss-36wh-26984d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "siding",
+   "title": "Siding",
+   "icon": "rows",
+   "query": "vinyl siding",
+   "items": [
+    {
+     "part_id": "ejoy-outdoorcladding-wsp-few3-91ed43",
+     "name": "106 in. x 6.1 in. x 0.83 in. Outdoor WPC Vinyl Wall Siding Panel in Red Pine Color (Set of 4-Piece)",
+     "price_usd": 96.62,
+     "dims_mm": {
+      "w": 154.9,
+      "h": 2692.4,
+      "d": 21.1
+     },
+     "image_url": "/parts/ejoy-outdoorcladding-wsp-few3-91ed43/image.jpg",
+     "model_url": "/parts/ejoy-outdoorcladding-wsp-few3-91ed43/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ply-gem-pc4004h-ef6abd",
+     "name": "Transformations Double 4 in. Lap 9.23 in. x 150 in. White Vinyl Siding Carton (24-Pieces)",
+     "price_usd": 219.0,
+     "dims_mm": {
+      "w": 3810.0,
+      "h": 101.6,
+      "d": 234.44
+     },
+     "image_url": "/parts/ply-gem-pc4004h-ef6abd/image.jpg",
+     "model_url": "/parts/ply-gem-pc4004h-ef6abd/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "exterior-lights",
+   "title": "Exterior lights",
+   "icon": "lamp",
+   "query": "outdoor wall light",
+   "items": [
+    {
+     "part_id": "private-brand-unbranded-cam-001-bk-99b1e5",
+     "name": "8 in. Black Outdoor Hardwired Wall Lantern Sconce with Clear Glass Shade and No Bulb Included",
+     "price_usd": 19.97,
+     "dims_mm": {
+      "w": 203.2,
+      "h": 205.74,
+      "d": 109.22
+     },
+     "image_url": "/parts/private-brand-unbranded-cam-001-bk-99b1e5/image.jpg",
+     "model_url": "/parts/private-brand-unbranded-cam-001-bk-99b1e5/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "hampton-bay-jbo1691a-4-f37b8e",
+     "name": "8.2 in. 1-Light Black Outdoor Wall Light Lantern Porch or Patio Sconce (2-Pack)",
+     "price_usd": 49.97,
+     "dims_mm": {
+      "w": 180.34,
+      "h": 208.28,
+      "d": 157.48
+     },
+     "image_url": "/parts/hampton-bay-jbo1691a-4-f37b8e/image.jpg",
+     "model_url": "/parts/hampton-bay-jbo1691a-4-f37b8e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "c-cattleya-hca2429-2w-bf91ef",
+     "name": "Matte Black Outdoor Hardwired Wall Lantern Sconces with Water Glass, No Bulbs Included (2-Pack)",
+     "price_usd": 59.97,
+     "dims_mm": {
+      "w": 254.0,
+      "h": 254.0,
+      "d": 152.4
+     },
+     "image_url": "/parts/c-cattleya-hca2429-2w-bf91ef/image.jpg",
+     "model_url": "/parts/c-cattleya-hca2429-2w-bf91ef/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "wall-vents",
+   "title": "Wall vents",
+   "icon": "wind",
+   "query": "exterior wall vent",
+   "items": []
+  },
+  {
+   "id": "downspouts",
+   "title": "Downspouts",
+   "icon": "cloud-rain",
+   "query": "vinyl downspout",
+   "items": []
+  }
+ ]
+}

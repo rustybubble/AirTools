@@ -1,0 +1,2116 @@
+From 3322eda29a71f142654f1835e2e1436dbd5c2c37 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 22:03:15 -0400
+Subject: [PATCH 1/2] feat(assets): asset modes -- HF image-to-3D vs LLM +
+ OpenSCAD per request, both variants kept per part, HF cached and warmed
+
+- asset_mode "hf" | "llm_scad" | "auto" from the session context (/agent/command, /voice/command),
+  the /parts/search body and ?mode= on part.json / model.glb; POST /parts/{id}/model?mode= -> pending/ready
+- variants model.hf.glb / model.scad.glb / model.auto.glb (+ asset.<v>.json) side by side; model.glb and
+  part.json follow the mode asked for last; legacy parts adopted (an ai_mesh model is the hf variant)
+- asset.mode + asset.note (why the preferred tier didn't make it); asset.made_by names the Hunyuan Space
+  (hf:tencent/Hunyuan3D-2.1) or the OpenSCAD writer (xai:grok-4.7 + openscad)
+- HF: raw Hunyuan mesh cached by photo hash (one Space call per photo, ever); an ai_mesh variant is never
+  rebuilt; server/hf_warm.py warms searched parts ahead of need, one at a time, backing off on the ZeroGPU
+  quota; GET /assets/hf-warm; python -m server.warm --hf for every cached part
+- llm_scad: Grok's OpenSCAD in the background (minutes) with the template meanwhile; no openscad binary on
+  the server = the template, labelled
+- tests: tests/test_asset_mode.py (29, HF/LLM/OpenSCAD stubbed); suite 1469 passed (3 pre-existing
+  pipeline failures: os.sched_getaffinity on macOS)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md              |  44 ++-
+ server/agent.py          |   8 +
+ server/app.py            | 109 +++++++-
+ server/assets.py         | 586 ++++++++++++++++++++++++++++++++++-----
+ server/config.py         |   4 +
+ server/hf_warm.py        | 183 ++++++++++++
+ server/jobs.py           |  17 +-
+ server/keys.py           |  13 +
+ server/models.py         |   8 +
+ server/replace_job.py    |  25 +-
+ server/warm.py           |  74 +++++
+ tests/conftest.py        |   1 +
+ tests/test_asset_mode.py | 502 +++++++++++++++++++++++++++++++++
+ 13 files changed, 1487 insertions(+), 87 deletions(-)
+ create mode 100644 server/hf_warm.py
+ create mode 100644 tests/test_asset_mode.py
+
+diff --git a/docs/api.md b/docs/api.md
+index a7866f9..ce278eb 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -46,6 +46,41 @@ Origin at the **mounting-face centre**: X/Y plane at Z=0, part extends toward +Z
+ | `"proxy"` | Proxy — exact size | Box at exact dims with the product photo on one face, or a plain coloured box without a photo |
+ 
+ `asset.scale_residual_pct` — max per-axis deviation (%) vs uniform scale; 0 for `llm` and proxy.
++
++### Asset modes (asset-mode)
++
++The headset can choose how the models are made (Settings ▸ 3D models) and compare the results per part.
++`asset_mode` = `"hf"` | `"llm_scad"` | `"auto"` (anything else is `"auto"`), sent in the context of
++`/agent/command` and `/voice/command` (the session remembers it: its searches and the replace job use it), in the
++`POST /parts/search` body, and as `?mode=` on the part/model endpoints below.
++
++| mode | tier order | `asset.made_by` |
++|---|---|---|
++| `"auto"` | today's order above (`cad` → `llm` / moulded: `scad` → `ai_mesh` → `proxy`) | as above |
++| `"hf"` | `ai_mesh` (Hunyuan3D-2.1 image-to-3D, every part with a photo, photo-textured) → `llm` template → `proxy` | `"hf:tencent/Hunyuan3D-2.1"` |
++| `"llm_scad"` | `scad` (Grok writes OpenSCAD, role `asset_scad`, rendered by the `openscad` binary, photo-textured) → `llm` template → `proxy` | `"xai:grok-4.7 + openscad"` |
++
++- **Both variants per part.** Each mode's model is kept next to `model.glb`: `model.hf.glb`, `model.scad.glb`,
++  `model.auto.glb` (+ `asset.<hf|scad|auto>.json`). `model.glb` and `part.json`'s `asset` are the mode asked for last
++  (clients that don't send `?mode=`). `asset.mode` says which mode made it.
++- **`asset.note`** says why the preferred tier didn't make it, e.g. `"OpenSCAD isn't installed on the server: the LLM
++  template instead"`, `"Hunyuan's ZeroGPU quota is spent for now: the LLM template instead"`, `"Grok is still writing the
++  OpenSCAD model: the LLM template instead"`, `"No product photo for image-to-3D: ..."`. Null when it did.
++- **HF results are cached aggressively.** The raw Hunyuan mesh is kept by photo hash
++  (`data/cache/hunyuan/<sha1>.glb`): one Space call per photo, ever. A part's `ai_mesh` model is never rebuilt. The HF
++  warm queue makes Hunyuan models for every searched (and catalog) part ahead of need, one at a time, backing off on
++  a ZeroGPU quota error (5 min doubling to 1 h); an `"hf"` request that got a stand-in (quota spent) jumps the queue
++  and its model is replaced once the quota allows. `HF_WARM=false` turns the queue off; never OFFLINE (a cached Hunyuan
++  mesh still serves offline). `python -m server.warm --hf` pre-generates for every cached part.
++- **OpenSCAD** takes minutes per part (Grok's generate / fix / fit loop), so an `"llm_scad"` request without a cached
++  `scad.glb` starts it in the background and serves the template (noted) meanwhile; the next request gets the CAD model.
++
++`GET /parts/{id}/part.json?mode=` — the part with that mode's model (`asset.status` `"pending"` while it's being made;
++the request starts it). `GET /parts/{id}/model.glb?mode=` — that mode's GLB (built first when needed, as without a mode;
++`504` after 90 s), with headers `X-Asset-Tier`, `X-Asset-Made-By`, `X-Asset-Mode`. `POST /parts/{id}/model?mode=`
++(`?wait_s=` ≤ 60, or a JSON body `{mode, wait_s}`) → `{part_id, mode, status: "ready"|"pending", asset, model_url,
++hf_queued, scad_pending}`. `GET /assets/hf-warm` → the warm queue: `queued`, `current`, `made`, `mismatch`, `failed`,
++`quota_hits`, `backoff_s`, `resume_in_s`, `recent[]`, `last_ai_mesh`, `quota_messages[]`, `hf_keys_cooling_s`.
+ Photo-textured GLBs carry one extra JPEG-textured primitive named `photo`.
+ 
+ Who made it (additive, null from older servers): `asset.made_by` — the provider:model that answered the
+@@ -170,6 +205,7 @@ Start a background search; returns after a 0.5 s fast-path wait.
+ | `frame_jpg_b64` | string | base64 JPEG hint for part ID |
+ | `max_candidates` | int | default 3 |
+ | `cavity` | Cavity | optional: a removed scene part's gap, `{w_m, h_m, d_m, component_id?, label?, estimated?, measured?: {w_m, h_m, d_m}}` in real metres (the parts file's `size_m` x the scale calibration; `measured` = the headset's tape, which wins). Every candidate's `fit` is then against all three axes (width across the opening, height, depth; the tightest clearance decides, `axis` names it) and fitting ones sort first |
++| `asset_mode` | string | optional (asset-mode): `"hf"` / `"llm_scad"` / `"auto"` (default) — how the candidates' models are made (section 2, "Asset modes") |
+ | `opening` | Opening | optional: an opening the headset taped (a window's width and height tapes), `{w_m, h_m, d_m?, label?, kind?}` in real metres. The shops are searched with its size ("window frame 59 x 47 in"), the planner is told the product goes into it, and every candidate's `fit` is against its width and height (its depth only with `d_m`): more than 3 mm over is `too_big`, more than 51 mm (2 in.) under on an axis is `too_small` (made for a smaller opening), else `fits`; the ones that fit come first, least spare first |
+ 
+ `Measurement.axis`: `"w"/"d"/"h"/"length"` or null.
+@@ -212,6 +248,7 @@ Full `Part` object. Key fields for rendering:
+ | `asset.tier` / `asset.status` | string | see section 2 |
+ | `asset.scale_residual_pct` | float | |
+ | `asset.made_by` / `asset.template` / `asset.retried` / `asset.seconds` | string / string / bool / float | who made the model and how long it took (section 2); null from older servers |
++| `asset.mode` / `asset.note` | string / string | asset-mode: which mode made this model, and why its preferred tier didn't (section 2, "Asset modes"); null from older servers |
+ | `fit.status` | string | `"fits"/"too_big"/"too_small"/"unknown"` |
+ | `fit.spare_mm` | float\|null | negative = too big |
+ | `fit.note` | string\|null | e.g. `"exact fit"`, `"fits a 23–36 in. window opening"` |
+@@ -228,7 +265,8 @@ Full `Part` object. Key fields for rendering:
+ Errors: `400` invalid part id, `404` not found.
+ 
+ ### `GET /parts/{part_id}/model.glb` → `model/gltf-binary`
+-Binary GLB in metres. Load with glTFast. Check `asset.status == "ready"` before loading.
++Binary GLB in metres. Load with glTFast. Check `asset.status == "ready"` before loading. `?mode=hf|llm_scad|auto`:
++that mode's model (section 2, "Asset modes").
+ 
+ ### `GET /parts/{part_id}/image.jpg` → `image/jpeg`
+ Product photo, written by the asset worker. `404` until then (or if the photo couldn't be fetched): fall back to `part.image_url`.
+@@ -2072,7 +2110,8 @@ Send with every `/agent/command` and `/voice/command`, and as a `{"type":"contex
+   "survey_id": "84e27743a1c9",
+   "address": "225 North Ave NW, Atlanta, GA 30332",
+   "location": "Atlanta, GA",
+-  "scale": 1.0
++  "scale": 1.0,
++  "asset_mode": "hf"
+ }
+ ```
+ 
+@@ -2098,6 +2137,7 @@ Send with every `/agent/command` and `/voice/command`, and as a `{"type":"contex
+ | `removed` | the scene parts taken out, oldest first (`[]` when none; sent whenever the loaded package has parts). The last one is "the gap" for measure and replace |
+ | `cavity` | that gap: `{component_id, label, w_m, h_m, d_m, estimated, measured?}` (the `Cavity` of `POST /parts/search`) |
+ | `opening` | the opening the headset taped last (a window's width and height tapes): `{w_m, h_m, d_m?, label}` (the `Opening` of `POST /parts/search`). `find_part` passes it on; it lasts while the headset keeps sending it |
++| `asset_mode` | asset-mode: `"hf"` / `"llm_scad"` / `"auto"`, the headset's Settings ▸ 3D models. The session keeps the last one sent; its searches (`find_part`, `find_in_gap`, the replace job) make their candidates' models that way (section 2, "Asset modes") |
+ 
+ Session state is in-memory; it resets on server restart. Keep `session_id` consistent across all calls.
+ 
+diff --git a/server/agent.py b/server/agent.py
+index f9aa231..cd25a53 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -29,6 +29,7 @@ import httpx
+ import openai
+ 
+ from server import (
++    assets,
+     bom,
+     booth,
+     cache,
+@@ -778,6 +779,9 @@ class Session:
+     # assetgen: the opening the headset taped (context `opening`: a window's width x height);
+     # "find a window frame that fits" searches for it (SearchRequest.opening).
+     opening: dict[str, Any] | None = None
++    # asset-mode: how the headset wants 3D models made (context `asset_mode`: "hf" | "llm_scad" |
++    # "auto", Settings ▸ 3D models); its searches resolve candidates that way.
++    asset_mode: str = "auto"
+ 
+ 
+ _sessions: OrderedDict[str, Session] = OrderedDict()
+@@ -1657,6 +1661,7 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+                 measurement=session.measurement,
+                 frame_jpg_b64=ctx.get("frame_jpg_b64"),
+                 cavity=cav,
++                asset_mode=session.asset_mode,  # asset-mode
+             )
+         )
+         session.job_id = job.id
+@@ -1942,6 +1947,7 @@ async def _run_tool(
+                 measurement=session.measurement,
+                 frame_jpg_b64=context.get("frame_jpg_b64"),
+                 opening=_opening(session),  # assetgen
++                asset_mode=session.asset_mode,  # asset-mode
+             )
+         )
+         session.job_id = job.id
+@@ -2708,6 +2714,8 @@ def _apply_context(session: Session, context: dict[str, Any]) -> None:
+     if isinstance(context.get("removed"), list):
+         session.removed = [str(x) for x in context["removed"] if x]
+         session.cavity = context.get("cavity") if isinstance(context.get("cavity"), dict) else None
++    if context.get("asset_mode"):  # asset-mode
++        session.asset_mode = assets.normalize_mode(context["asset_mode"])
+     # context["tool"] (currently-equipped tool) is headset-side state the agent doesn't need.
+ 
+ 
+diff --git a/server/app.py b/server/app.py
+index d9e7f8e..7e7a220 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -40,6 +40,7 @@ from server import (
+     coverage,
+     finish,
+     flythrough,
++    hf_warm,
+     imagine,
+     intel,
+     jobs,
+@@ -179,20 +180,66 @@ def _serve_part_file(part_id: str, filename: str, media_type: str) -> FileRespon
+     return FileResponse(path, media_type=media_type)
+ 
+ 
+-@app.get("/parts/{part_id}/part.json")
+-def get_part_json(part_id: str) -> FileResponse:
+-    return _serve_part_file(part_id, "part.json", "application/json")
++@app.get("/parts/{part_id}/part.json", response_model=None)
++async def get_part_json(part_id: str, mode: str | None = None) -> FileResponse | JSONResponse:
++    """asset-mode: with `?mode=hf|llm_scad|auto` the part with that mode's model (asset.tier,
++    made_by, note); asset.status "pending" while it's being made (started here, poll again)."""
++    if mode is None:
++        return _serve_part_file(part_id, "part.json", "application/json")
++    _validated_part_dir(part_id)
++    part = jobs.load_part(part_id)
++    if part is None:
++        raise HTTPException(404, f"part.json not found for part {part_id!r}")
++    m = assets.normalize_mode(mode)
++    got = assets.ready(part_id, m)
++    if got is not None:
++        got = assets.select(got, m)
++    else:
++        assets.start(part, mode=m)
++        pending = part.asset.model_copy(update={"status": "pending", "mode": m, "note": None})
++        got = part.model_copy(update={"asset": pending})
++    if m == "hf" and not assets.hf_final(part_id):
++        hf_warm.enqueue(part, front=True)
++    return JSONResponse(got.model_dump(mode="json"))
+ 
+ 
+ MODEL_ON_DEMAND_S = 90.0  # one LLM template call + build; a queued Groq call can take a minute
+ 
+ 
++def _asset_headers(asset) -> dict[str, str]:
++    """asset-mode: which tier made the served model, ASCII-safe (a badge without part.json)."""
++    safe = lambda v: str(v).encode("ascii", "replace").decode()
++    return {
++        "X-Asset-Tier": safe(asset.tier),
++        "X-Asset-Made-By": safe(asset.made_by or ""),
++        "X-Asset-Mode": safe(asset.mode or "auto"),
++    }
++
++
+ @app.get("/parts/{part_id}/model.glb")
+-async def get_part_model(part_id: str) -> FileResponse:
++async def get_part_model(part_id: str, mode: str | None = None) -> FileResponse:
+     """The part's GLB. A searched part whose model isn't built yet (the search's background worker
+     hasn't got to it; "next one" after a replace job that stopped) is built now, once
+-    (assets.resolve_shared), so a candidate's model_url never 404s."""
++    (assets.resolve_shared), so a candidate's model_url never 404s.
++    asset-mode: `?mode=hf|llm_scad|auto` serves (building it first when needed) that mode's
++    model, `model.<hf|scad|auto>.glb`, and makes it model.glb; X-Asset-Tier / X-Asset-Made-By say
++    who made it."""
+     pdir = _validated_part_dir(part_id)
++    if mode is not None:
++        m = assets.normalize_mode(mode)
++        part = assets.ready(part_id, m) or jobs.load_part(part_id)
++        if part is None:
++            raise HTTPException(404, f"no part {part_id!r}")
++        try:
++            part = await asyncio.wait_for(assets.resolve_shared(part, mode=m), MODEL_ON_DEMAND_S)
++        except TimeoutError as exc:
++            raise HTTPException(504, f"the {m} model for {part_id!r} is still being built") from exc
++        if m == "hf" and not assets.hf_final(part_id):
++            hf_warm.enqueue(part, front=True)
++        glb, _ = assets.variant_paths(part_id, m)
++        if not glb.exists():
++            raise HTTPException(404, f"no {m} model for part {part_id!r}")
++        return FileResponse(glb, media_type="model/gltf-binary", headers=_asset_headers(part.asset))
+     if not (pdir / "model.glb").exists():
+         part = jobs.load_part(part_id)
+         if part is not None:
+@@ -203,6 +250,58 @@ async def get_part_model(part_id: str) -> FileResponse:
+     return _serve_part_file(part_id, "model.glb", "model/gltf-binary")
+ 
+ 
++class ModelRequest(BaseModel):
++    """asset-mode: POST /parts/{id}/model body (all optional; `?mode=` works too)."""
++
++    mode: str | None = None
++    wait_s: float = Field(default=0, ge=0, le=60)
++
++
++@app.post("/parts/{part_id}/model")
++async def request_part_model(
++    part_id: str, mode: str | None = None, wait_s: float = 0, body: ModelRequest | None = None
++) -> dict:
++    """asset-mode: ask for the part's model in a mode ("hf" | "llm_scad" | "auto"); it's made in
++    the background (a Hunyuan mesh ~15-20 s + queue; Grok's OpenSCAD minutes) and `status` is
++    "ready" or "pending" -- poll this or part.json?mode=. `wait_s` (<= 60) waits that long first.
++    HF meshes are made once per part and kept; an "hf" request that got a stand-in (quota spent)
++    jumps the HF warm queue."""
++    _validated_part_dir(part_id)
++    part = _load_part(part_id)
++    m = assets.normalize_mode(mode or (body.mode if body else None))
++    wait = min(60.0, max(wait_s, body.wait_s if body else 0))
++    got = assets.ready(part_id, m)
++    if got is None:
++        task = assets.start(part, mode=m)
++        if wait > 0:
++            try:
++                await asyncio.wait_for(asyncio.shield(task), wait)
++            except TimeoutError:
++                pass
++        got = assets.ready(part_id, m)
++    hf_queued = m == "hf" and not assets.hf_final(part_id) and hf_warm.enqueue(part, front=True)
++    asset = (
++        got.asset
++        if got is not None
++        else part.asset.model_copy(update={"status": "pending", "mode": m, "note": None})
++    )
++    return {
++        "part_id": part_id,
++        "mode": m,
++        "status": "ready" if got is not None else "pending",
++        "asset": asset.model_dump(mode="json"),
++        "model_url": f"/parts/{part_id}/model.glb?mode={m}",
++        "hf_queued": bool(hf_queued),
++        "scad_pending": assets.scad_pending(part_id),
++    }
++
++
++@app.get("/assets/hf-warm")
++def get_hf_warm() -> dict:
++    """asset-mode: the HF warm queue (queued / running / made, the backoff, ZeroGPU quota notes)."""
++    return hf_warm.status()
++
++
+ @app.get("/parts/{part_id}/image.jpg")
+ def get_part_image(part_id: str) -> FileResponse:
+     return _serve_part_file(part_id, "image.jpg", "image/jpeg")
+diff --git a/server/assets.py b/server/assets.py
+index 767202d..d43aa1a 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -27,10 +27,13 @@ under `data/parts/<id>/`, written by `resolve_asset`.
+ """
+ 
+ import asyncio
++import hashlib
+ import io
+ import itertools
++import json
+ import logging
+ import os
++import shutil
+ import tempfile
+ import time
+ from pathlib import Path
+@@ -41,7 +44,7 @@ import trimesh
+ from gradio_client import Client, handle_file
+ from PIL import Image
+ 
+-from server import cache, meshgen, web
++from server import cache, llm, meshgen, web
+ from server.config import get_settings
+ from server.keys import KeyPool, KeysExhausted
+ from server.models import Asset, Dims, Part
+@@ -62,9 +65,22 @@ _HUNYUAN_SPACES = [
+     "tencent/Hunyuan3D-2.1",
+     "tencent/Hunyuan3D-2",
+ ]
++HF_QUOTA_SEEN: list[dict] = []  # asset-mode: the last few ZeroGPU quota messages (the report)
++
++
++def _hf_limited(exc: Exception) -> bool:
++    """A ZeroGPU quota refusal ("You have exceeded your ZeroGPU quota (90s requested vs. 59s
++    left)"); asset-mode keeps the message for GET /assets/hf-warm."""
++    limited = "ZeroGPU quota" in str(exc)
++    if limited:
++        HF_QUOTA_SEEN.append({"at": time.time(), "message": str(exc)[:300]})
++        del HF_QUOTA_SEEN[:-5]
++    return limited
++
++
+ HF_KEYS = KeyPool(
+     "HF_TOKEN",
+-    is_limited=lambda exc: "ZeroGPU quota" in str(exc),
++    is_limited=_hf_limited,
+     cooldown_s=3600,  # quota resets ~daily; an hourly re-check costs one quick refusal
+     anonymous_last=True,
+ )
+@@ -252,10 +268,27 @@ def _hunyuan_shape_generation(space_id: str, image_path: Path, token: str | None
+     return _resolve_remote_file(client, file_out)
+ 
+ 
++# asset-mode: how the last ai_mesh call went (the warm queue backs off on "quota"; GET
++# /assets/hf-warm and the report show `detail`, e.g. the ZeroGPU quota message).
++AI_MESH_LAST: dict = {"outcome": None, "space": None, "detail": None, "at": None, "seconds": None}
++
++
++def _ai_mesh_outcome(
++    outcome: str, space: str | None = None, detail: str | None = None, seconds: float | None = None
++) -> None:
++    AI_MESH_LAST.update(
++        outcome=outcome, space=space, detail=detail, at=time.time(), seconds=seconds
++    )
++
++
+ async def ai_mesh(image_path: Path) -> Path | None:
+     """Shape-only Hunyuan3D-2.1 mesh from a product photo. None (never raises) if every space in
+-    `_HUNYUAN_SPACES` fails or times out. Caller owns deleting the returned temp file."""
++    `_HUNYUAN_SPACES` fails or times out. Caller owns deleting the returned temp file.
++    asset-mode: `AI_MESH_LAST` records the outcome ("ok" + the space that answered, "quota",
++    "failed") -- callers go through `hunyuan_raw`, which caches the result by photo hash."""
+     async with _ai_mesh_semaphore:
++        t0 = time.monotonic()
++        failures = []
+         for space_id in _HUNYUAN_SPACES:
+ 
+             async def generate(token: str | None, space_id: str = space_id) -> bytes:
+@@ -268,6 +301,7 @@ async def ai_mesh(image_path: Path) -> Path | None:
+                 data = await HF_KEYS.call(generate)
+             except KeysExhausted as exc:  # every token's (and the IP's) ZeroGPU quota is spent
+                 logger.info("ai_mesh: %s", exc)
++                _ai_mesh_outcome("quota", space_id, str(exc), time.monotonic() - t0)
+                 return None
+             # Blind except is deliberate: gradio_client surfaces arbitrary remote-space failures
+             # (AppError wrapping any server-side traceback, plain RuntimeError, etc, see
+@@ -275,12 +309,15 @@ async def ai_mesh(image_path: Path) -> Path | None:
+             # narrow to, and the whole point of the fallback loop is "space misbehaved, try next".
+             except Exception as exc:  # noqa: BLE001
+                 logger.info("ai_mesh: %s failed: %s", space_id, exc)
++                failures.append(f"{space_id}: {str(exc)[:200]}")
+                 continue
+             fd, tmp_path = tempfile.mkstemp(suffix=".glb")
+             os.close(fd)
+             out_path = Path(tmp_path)
+             out_path.write_bytes(data)
++            _ai_mesh_outcome("ok", space_id, None, time.monotonic() - t0)
+             return out_path
++        _ai_mesh_outcome("failed", None, "; ".join(failures) or None, time.monotonic() - t0)
+     return None
+ 
+ 
+@@ -310,59 +347,317 @@ async def _try_cad(url: str) -> trimesh.Trimesh | None:
+         return None
+ 
+ 
+-async def _hunyuan(part: Part, photo: Path) -> tuple[trimesh.Trimesh, float] | None:
+-    """Hunyuan mesh, upright, scaled to size; None if the Space fails or the shape doesn't match
+-    the dims (e.g. a 10-pack box photo for one hanger)."""
+-    glb_path = await ai_mesh(photo)  # contract: never raises, None on failure
+-    if glb_path is None:
++# --- asset-mode: the generator preference (HF image-to-3D vs LLM + OpenSCAD) ---------------------
++#
++# The headset picks how parts' 3D models are made (Settings ▸ 3D models): "hf" = Hunyuan3D image-
++# to-3D on the HF ZeroGPU Spaces for every part with a photo; "llm_scad" = Grok writes OpenSCAD
++# (role `asset_scad`) rendered by the openscad binary; "auto" = the tier order above. Each mode's
++# model is kept next to model.glb as a variant -- `model.<stem>.glb` + `asset.<stem>.json` (stems
++# auto / hf / scad) -- so both can be compared per part, and model.glb (+ part.json's asset) is
++# whichever mode was asked for last, for clients that don't send `?mode=`. HF results are cached
++# aggressively: the raw Hunyuan mesh by photo hash under <DATA_DIR>/cache/hunyuan/ (one Space call
++# per photo, ever), and a part's `ai_mesh` variant is never rebuilt; server/hf_warm.py makes them
++# ahead of need within the ZeroGPU quota.
++
++ASSET_MODES = ("auto", "hf", "llm_scad")
++_MODE_ALIASES = {
++    "auto": "auto",
++    "hf": "hf",
++    "hunyuan": "hf",
++    "ai_mesh": "hf",
++    "llm_scad": "llm_scad",
++    "llm+scad": "llm_scad",
++    "llm+cad": "llm_scad",
++    "scad": "llm_scad",
++    "openscad": "llm_scad",
++}
++_STEM = {"auto": "auto", "hf": "hf", "llm_scad": "scad"}
++_FALLBACK_WORDS = {"llm": "the LLM template", "proxy": "the photo box", "scad": "Grok's OpenSCAD"}
++
++
++def normalize_mode(value: object) -> str:
++    """ "hf" | "llm_scad" | "auto" from whatever the client sent (None / unknown = "auto")."""
++    key = str(value or "").strip().lower().replace(" ", "").replace("-", "_")
++    return _MODE_ALIASES.get(key, "auto")
++
++
++def variant_paths(part_id: str, mode: str) -> tuple[Path, Path]:
++    """(model.<stem>.glb, asset.<stem>.json) for the mode's model of the part."""
++    stem = _STEM[normalize_mode(mode)]
++    pdir = part_dir(part_id)
++    return pdir / f"model.{stem}.glb", pdir / f"asset.{stem}.json"
++
++
++def _read_json(path: Path) -> dict | None:
++    try:
++        value = json.loads(path.read_text())
++    except (OSError, ValueError):
+         return None
++    return value if isinstance(value, dict) else None
++
++
++def _disk_part(part_id: str) -> Part | None:
+     try:
+-        raw = trimesh.load(glb_path, force="scene")
+-    finally:
+-        glb_path.unlink(missing_ok=True)
++        return Part.model_validate_json((part_dir(part_id) / "part.json").read_text())
++    except (OSError, ValueError):
++        return None
++
++
++def _copy_atomic(src: Path, dst: Path) -> None:
++    tmp = dst.with_name(f".{dst.name}.tmp")
++    shutil.copyfile(src, tmp)
++    os.replace(tmp, dst)
++
++
++def photo_hash(photo: Path) -> str:
++    return hashlib.sha1(photo.read_bytes()).hexdigest()
++
++
++def _hy_dir() -> Path:
++    return Path(get_settings().DATA_DIR) / "cache" / "hunyuan"
++
++
++def hunyuan_cached(photo: Path | None) -> Path | None:
++    """The raw Hunyuan mesh already made for this photo, else None."""
++    if photo is None or not photo.exists():
++        return None
++    path = _hy_dir() / f"{photo_hash(photo)}.glb"
++    return path if path.exists() else None
++
++
++_hy_locks: dict[str, asyncio.Lock] = {}
++
++
++async def hunyuan_raw(photo: Path) -> tuple[Path | None, dict]:
++    """The raw Hunyuan3D mesh for this photo, made at most once per photo: <DATA_DIR>/cache/
++    hunyuan/<sha1(photo)>.glb + .json {space, seconds, at}. (None, {"outcome": "quota" | "failed"
++    | "offline", ...}) when the Space can't make it now. Two callers wanting the same photo share
++    one call; `ai_mesh`'s semaphore keeps every generation sequential."""
++    digest = photo_hash(photo)
++    glb, meta_path = _hy_dir() / f"{digest}.glb", _hy_dir() / f"{digest}.json"
++    async with _hy_locks.setdefault(digest, asyncio.Lock()):
++        if glb.exists():
++            return glb, _read_json(meta_path) or {"outcome": "cached"}
++        if get_settings().OFFLINE:
++            return None, {"outcome": "offline"}
++        t0 = time.monotonic()
++        AI_MESH_LAST.update(outcome=None, space=None, detail=None)
++        tmp = await ai_mesh(photo)
++        if tmp is None:
++            return None, {
++                "outcome": AI_MESH_LAST.get("outcome") or "failed",
++                "detail": AI_MESH_LAST.get("detail"),
++            }
++        glb.parent.mkdir(parents=True, exist_ok=True)
++        staging = glb.with_name(f".{glb.name}.tmp")
++        shutil.move(str(tmp), staging)
++        os.replace(staging, glb)
++        meta = {
++            "outcome": "made",
++            "space": AI_MESH_LAST.get("space") or _HUNYUAN_SPACES[0],
++            "seconds": round(time.monotonic() - t0, 2),
++            "at": time.time(),
++            "photo_sha1": digest,
++        }
++        cache.write_json_atomic(meta_path, json.dumps(meta))
++        logger.info("hunyuan: %s made in %.1f s by %s", digest[:10], meta["seconds"], meta["space"])
++        return glb, meta
++
++
++def _hf_made_by(meta: dict | None) -> str:
++    return f"hf:{(meta or {}).get('space') or _HUNYUAN_SPACES[0]}"
++
++
++def _scad_made_by() -> str:
++    try:
++        provider, model = llm.resolve_role("asset_scad")
++    except ValueError:
++        return "openscad"
++    return f"{provider}:{model} + openscad"
++
++
++async def _hunyuan_detail(part: Part, photo: Path):
++    """((mesh, residual) or None, meta): the Hunyuan mesh, upright, scaled to size and painted;
++    None when the Space can't make it or its shape doesn't match the dims (e.g. a 10-pack box
++    photo for one hanger: meta outcome "mismatch" with the residual)."""
++    glb, meta = await hunyuan_raw(photo)
++    if glb is None:
++        return None, meta
++    raw = trimesh.load(glb, force="scene")
+     mesh, residual = await asyncio.to_thread(
+         normalize_mesh, raw, part.dims_mm, part.mount.get("face") or "-z", True, True
+     )
+     if residual > MAX_AI_RESIDUAL_PCT:
+         logger.info("asset %s: ai_mesh residual %.0f%% too high, dropped", part.id, residual)
+-        return None
+-    return _paint(mesh, part.color_hex), residual
++        return None, {**meta, "outcome": "mismatch", "residual": round(residual, 1)}
++    return (_paint(mesh, part.color_hex), residual), meta
+ 
+ 
+-async def _generated(part: Part, photo: Path | None, pdir: Path):
+-    """The `llm` / `scad` / `ai_mesh` tiers (module docstring): (geometry, tier, residual, info),
+-    or None when none of them produced anything. Photo-textured when there's a one-product photo.
+-    assetgen: `info` = {made_by, template, retried} from the template call (`meshgen.Plan`)."""
++async def _hunyuan(part: Part, photo: Path) -> tuple[trimesh.Trimesh, float] | None:
++    """Hunyuan mesh, upright, scaled to size; None if the Space fails or the shape doesn't match
++    the dims (e.g. a 10-pack box photo for one hanger)."""
++    made, _ = await _hunyuan_detail(part, photo)
++    return made
++
++
++async def _plan_and_face(part: Part, photo: Path | None):
+     plan = await meshgen.ask(part, photo)  # never raises; None when both LLM paths failed
+     face = (plan and plan.face) or (
+         photo and await asyncio.to_thread(meshgen.aspect_guess, part.dims_mm, photo)
+     )
++    return plan, face
++
++
++def _plan_info(plan) -> dict:
++    if plan is None:
++        return {}
++    return {"made_by": plan.made_by or None, "template": plan.template, "retried": plan.retried}
++
++
++async def _textured(part: Part, geometry, photo: Path | None, plan, face):
++    """The photo on the face it shows, when it shows this one product."""
++    if photo and (plan is None or plan.single):
++        rotate = plan.rotate_cw if plan else 0
++        try:
++            geometry = await asyncio.to_thread(meshgen.project, geometry, photo, face, rotate)
++        # Blind except is deliberate: a photo that won't project (odd crop, degenerate mesh)
++        # still leaves a good untextured asset; not worth losing the tier over.
++        except Exception as exc:  # noqa: BLE001
++            logger.info("asset %s: photo projection failed: %s", part.id, exc)
++    return geometry
++
++
++async def _generated(part: Part, photo: Path | None, pdir: Path):
++    """The `llm` / `scad` / `ai_mesh` tiers (module docstring): (geometry, tier, residual, info),
++    or None when none of them produced anything. Photo-textured when there's a one-product photo.
++    assetgen: `info` = {made_by, template, retried} from the template call (`meshgen.Plan`);
++    asset-mode: made_by names the Hunyuan Space / the OpenSCAD writer for those tiers."""
++    plan, face = await _plan_and_face(part, photo)
+     moulded = plan is not None and plan.shape_class != "template"
+-    geometry, tier, residual = None, None, 0.0
++    geometry, tier, residual, hy_meta = None, None, 0.0, None
+     if moulded and (pdir / "scad.glb").exists():
+         geometry, tier = trimesh.load(pdir / "scad.glb", force="scene"), "scad"
+-    elif (plan is None or moulded) and photo and not get_settings().OFFLINE:
+-        hy = await _hunyuan(part, photo)
++    elif (
++        (plan is None or moulded)
++        and photo
++        and (not get_settings().OFFLINE or hunyuan_cached(photo))  # asset-mode: a cached one
++    ):
++        hy, hy_meta = await _hunyuan_detail(part, photo)
+         if hy is not None:
+             (geometry, residual), tier = hy, "ai_mesh"
+     if geometry is None and plan is not None:
+         geometry, tier = await asyncio.to_thread(meshgen.build, plan, part.dims_mm), "llm"
+     if geometry is None:
+         return None
+-    if photo and (plan is None or plan.single):
+-        rotate = plan.rotate_cw if plan else 0
+-        try:
+-            geometry = await asyncio.to_thread(meshgen.project, geometry, photo, face, rotate)
+-        # Blind except is deliberate: a photo that won't project (odd crop, degenerate mesh)
+-        # still leaves a good untextured asset; not worth losing the tier over.
+-        except Exception as exc:  # noqa: BLE001
+-            logger.info("asset %s: photo projection failed: %s", part.id, exc)
+-    info = {}
+-    if plan is not None:
+-        info = {"made_by": plan.made_by or None, "template": plan.template, "retried": plan.retried}
++    geometry = await _textured(part, geometry, photo, plan, face)
++    info = _plan_info(plan)
++    if tier == "ai_mesh":
++        info["made_by"] = _hf_made_by(hy_meta)
++    elif tier == "scad":
++        info["made_by"] = _scad_made_by()
+     return geometry, tier, residual, info
+ 
+ 
++def _hf_reason(meta: dict | None) -> str:
++    outcome = (meta or {}).get("outcome")
++    if outcome == "quota":
++        return "Hunyuan's ZeroGPU quota is spent for now"
++    if outcome == "offline":
++        return "Offline, and no Hunyuan mesh is cached for this photo"
++    if outcome == "mismatch":
++        return f"Hunyuan's shape didn't match the listed size ({(meta or {}).get('residual', 0):.0f}% off)"
++    return "Hunyuan didn't answer"
++
++
++async def _generated_hf(part: Part, photo: Path | None, pdir: Path):
++    """asset-mode "hf": Hunyuan3D image-to-3D for every part with a photo (not only moulded ones),
++    photo-textured. ((geometry, tier, residual, info) or None, note): when the Space can't (no
++    photo, the quota, a failure, a shape that doesn't match the size) the LLM template stands in
++    and `note` says why."""
++    plan, face = await _plan_and_face(part, photo)
++    geometry, tier, residual, info, reason = None, None, 0.0, {}, None
++    if photo is None:
++        reason = "No product photo for image-to-3D"
++    else:
++        hy, meta = await _hunyuan_detail(part, photo)
++        if hy is not None:
++            (geometry, residual), tier = hy, "ai_mesh"
++            info = {**_plan_info(plan), "made_by": _hf_made_by(meta)}
++        else:
++            reason = _hf_reason(meta)
++    if geometry is None and plan is not None:
++        geometry, tier = await asyncio.to_thread(meshgen.build, plan, part.dims_mm), "llm"
++        info = _plan_info(plan)
++    if geometry is None:
++        return None, reason
++    geometry = await _textured(part, geometry, photo, plan, face)
++    return (geometry, tier, residual, info), reason
++
++
++_scad_jobs: dict[str, asyncio.Task] = {}
++_scad_failed: set[str] = set()
++
++
++def scad_pending(part_id: str) -> bool:
++    task = _scad_jobs.get(part_id)
++    return task is not None and not task.done()
++
++
++def _start_grok_scad(part: Part, photo: Path) -> None:
++    """Grok's OpenSCAD loop in the background (minutes); when it lands, the part's llm_scad
++    variant is rebuilt from it (the next request serves it)."""
++    if scad_pending(part.id) or part.id in _scad_failed:
++        return
++
++    async def run() -> None:
++        out = part_dir(part.id) / "scad.glb"
++        try:
++            ok = await meshgen.grok_scad(part, photo, out)
++        except Exception as exc:  # noqa: BLE001 -- grok_scad logs; the template stays
++            logger.info("asset %s: grok_scad failed: %s", part.id, exc)
++            ok = False
++        if not ok:
++            _scad_failed.add(part.id)
++            return
++        await resolve_asset(part, mode="llm_scad", select_it=False, rebuild=True)
++
++    _scad_jobs[part.id] = asyncio.create_task(run())
++
++
++async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
++    """asset-mode "llm_scad": Grok writes OpenSCAD (role `asset_scad`) for every part with a photo,
++    rendered by the openscad binary (`meshgen.grok_scad`, E4), photo-textured. Minutes per part,
++    so a missing scad.glb starts in the background and the LLM template stands in (noted) until it
++    lands. No openscad binary on the server: the template, noted -- clearly not CAD."""
++    plan, face = await _plan_and_face(part, photo)
++    scad = pdir / "scad.glb"
++    reason = None
++    if not scad.exists():
++        if photo is None:
++            reason = "No product photo for Grok's OpenSCAD"
++        elif meshgen.openscad() is None:
++            reason = "OpenSCAD isn't installed on the server"
++        elif get_settings().OFFLINE:
++            reason = "Offline, and no OpenSCAD model is cached"
++        elif part.id in _scad_failed:
++            reason = "Grok's OpenSCAD model didn't build"
++        else:
++            _start_grok_scad(part, photo)
++            reason = "Grok is still writing the OpenSCAD model"
++    geometry, tier, info = None, None, {}
++    if scad.exists():
++        geometry, tier = trimesh.load(scad, force="scene"), "scad"
++        info = {**_plan_info(plan), "made_by": _scad_made_by()}
++        reason = None
++    elif plan is not None:
++        geometry, tier = await asyncio.to_thread(meshgen.build, plan, part.dims_mm), "llm"
++        info = _plan_info(plan)
++    if geometry is None:
++        return None, reason
++    geometry = await _textured(part, geometry, photo, plan, face)
++    return (geometry, tier, 0.0, info), reason
++
++
+ def _box(part: Part, photo: Path | None):
+     """Last tier: the photo decal box (E3), or a plain coloured box if the photo won't do."""
+     if photo is not None:
+@@ -374,24 +669,121 @@ def _box(part: Part, photo: Path | None):
+     return proxy_mesh(part.dims_mm, part.color_hex)
+ 
+ 
+-async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
++# --- asset-mode: variants on disk ------------------------------------------------------------
++
++
++def variant_asset(part_id: str, mode: str) -> Asset | None:
++    """The mode's ready model of the part (its asset), else None. The auto variant only counts
++    while model.glb exists: deleting model.glb still means "re-resolve" (warm --retry-proxies,
++    --grok-moulded), as before variants."""
++    mode = normalize_mode(mode)
++    glb, meta = variant_paths(part_id, mode)
++    if not glb.exists() or not meta.exists():
++        return None
++    if mode == "auto" and not (part_dir(part_id) / "model.glb").exists():
++        return None
++    try:
++        asset = Asset.model_validate_json(meta.read_text())
++    except (OSError, ValueError):
++        return None
++    return asset if asset.status == "ready" else None
++
++
++def _store_variant(part_id: str, mode: str, geometry, asset: Asset) -> None:
++    glb, meta = variant_paths(part_id, mode)
++    glb.parent.mkdir(parents=True, exist_ok=True)
++    tmp = glb.with_name(f".{glb.name}.tmp")
++    geometry.export(tmp, file_type="glb")
++    os.replace(tmp, glb)
++    cache.write_json_atomic(meta, asset.model_dump_json(indent=2))
++
++
++def _adopt_legacy(part_id: str) -> None:
++    """A part resolved before variants existed (model.glb + a ready part.json whose asset has no
++    mode): its model becomes the auto variant, and an `ai_mesh` / `scad` one is also that mode's
++    (a Hunyuan mesh made once is never made again)."""
++    pdir = part_dir(part_id)
++    model = pdir / "model.glb"
++    if not model.exists():
++        return
++    part = _disk_part(part_id)
++    if part is None or part.asset.status != "ready" or part.asset.mode is not None:
++        return
++    part.asset.mode = "auto"
++    for mode in ("auto", {"ai_mesh": "hf", "scad": "llm_scad"}.get(part.asset.tier)):
++        if mode is None or variant_asset(part_id, mode) is not None:
++            continue
++        glb, meta = variant_paths(part_id, mode)
++        _copy_atomic(model, glb)
++        cache.write_json_atomic(
++            meta, part.asset.model_copy(update={"mode": mode}).model_dump_json()
++        )
++    cache.write_json_atomic(pdir / "part.json", part.model_dump_json(indent=2))
++
++
++def select(part: Part, mode: str, asset: Asset | None = None) -> Part:
++    """model.glb := the mode's variant and part.json's asset := its asset (model.glb is the mode
++    asked for last, for clients without `?mode=`). The part as written; unchanged when the mode
++    has no ready model."""
++    mode = normalize_mode(mode)
++    asset = asset or variant_asset(part.id, mode)
++    if asset is None:
++        return part
++    pdir = part_dir(part.id)
++    glb, _ = variant_paths(part.id, mode)
++    part = part.model_copy(update={"asset": asset})
++    current = _disk_part(part.id)
++    model = pdir / "model.glb"
++    same = (
++        current is not None
++        and current.asset == asset
++        and model.exists()
++        and model.stat().st_size == glb.stat().st_size
++    )
++    if not same:
++        _copy_atomic(glb, model)
++        cache.write_json_atomic(pdir / "part.json", part.model_dump_json(indent=2))
++    return part
++
++
++def hf_final(part_id: str) -> bool:
++    """The part's HF model is settled: a Hunyuan mesh (never rebuilt), or the variant was built
++    after the Space already answered for this photo (its shape didn't fit the size)."""
++    asset = variant_asset(part_id, "hf")
++    if asset is None:
++        return False
++    return asset.tier == "ai_mesh" or hunyuan_cached(part_dir(part_id) / "image.jpg") is not None
++
++
++async def resolve_asset(
++    part: Part,
++    *,
++    allow_ai: bool = True,
++    mode: str = "auto",
++    select_it: bool = True,
++    rebuild: bool = False,
++) -> Part:
+     """Resolve model.glb + image.jpg for `part`, tier by tier, always writing part.json.
+ 
+-    Never raises for tier failures -- falls through to the next tier. Idempotent: if model.glb
+-    exists and the on-disk part.json already says ready, returns that immediately.
++    Never raises for tier failures -- falls through to the next tier. Idempotent: if the mode's
++    model exists (model.glb + a ready part.json, for auto), returns that immediately.
++    asset-mode: `mode` picks the tier order ("auto" as documented above, "hf" Hunyuan first,
++    "llm_scad" Grok's OpenSCAD first); the result is that mode's variant, and `select_it` (the
++    default) makes it model.glb too. `rebuild`: make it again even if the variant exists (the HF
++    warm queue replacing a fallback; a landed OpenSCAD model).
+     """
++    mode = normalize_mode(mode)
+     pdir = part_dir(part.id)
+-    model_path = pdir / "model.glb"
+-    json_path = pdir / "part.json"
+     image_path = pdir / "image.jpg"
+ 
+-    if model_path.exists() and json_path.exists():
+-        try:
+-            cached = Part.model_validate_json(json_path.read_text())
+-            if cached.asset.status == "ready":
+-                return cached
+-        except ValueError as exc:  # json.JSONDecodeError / pydantic.ValidationError (a ValueError)
+-            logger.info("resolve_asset: stale part.json for %s, re-resolving: %s", part.id, exc)
++    _adopt_legacy(part.id)
++    if not rebuild:
++        cached_asset = variant_asset(part.id, mode)
++        if cached_asset is not None:
++            base = _disk_part(part.id) or part
++            if select_it:
++                return select(base, mode, cached_asset)
++            return base.model_copy(update={"asset": cached_asset})
+ 
+     pdir.mkdir(parents=True, exist_ok=True)
+     start = time.monotonic()  # assetgen: asset.seconds
+@@ -399,9 +791,9 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+     image_ok = bool(part.image_url) and await fetch_image(part.image_url, image_path)
+     photo = image_path if image_ok or image_path.exists() else None  # offline: last fetch's
+ 
+-    geometry, tier, residual, source_url, info = None, "proxy", 0.0, None, {}
++    geometry, tier, residual, source_url, info, reason = None, "proxy", 0.0, None, {}, None
+ 
+-    if part.asset.source_url:
++    if mode == "auto" and part.asset.source_url:
+         mesh = await _try_cad(part.asset.source_url)
+         if mesh is not None:
+             geometry, residual = await asyncio.to_thread(
+@@ -412,7 +804,12 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+ 
+     if geometry is None and allow_ai:
+         try:
+-            made = await _generated(part, photo, pdir)
++            if mode == "hf":
++                made, reason = await _generated_hf(part, photo, pdir)
++            elif mode == "llm_scad":
++                made, reason = await _generated_scad(part, photo, pdir)
++            else:
++                made = await _generated(part, photo, pdir)
+         # Blind except is deliberate: template booleans, a corrupt scad.glb, mesh maths on a
+         # strange Hunyuan output -- whatever breaks, the part still gets its box below.
+         except Exception as exc:  # noqa: BLE001
+@@ -425,8 +822,6 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+     if geometry is None:
+         geometry = await asyncio.to_thread(_box, part, photo)
+ 
+-    geometry.export(model_path)
+-
+     part.asset = Asset(
+         tier=tier,
+         source_url=source_url,
+@@ -434,19 +829,25 @@ async def resolve_asset(part: Part, *, allow_ai: bool = True) -> Part:
+         scale_residual_pct=round(residual, 3),
+         status="ready",
+         seconds=round(time.monotonic() - start, 2),
++        mode=mode,
++        note=f"{reason}: {_FALLBACK_WORDS.get(tier, tier)} instead" if reason else None,
+         **info,
+     )
++    _store_variant(part.id, mode, geometry, part.asset)
+     logger.info(
+-        "asset %s ready: tier=%s template=%s made_by=%s retried=%s in %.1f s",
++        "asset %s ready (%s): tier=%s template=%s made_by=%s retried=%s in %.1f s%s",
+         part.id,
++        mode,
+         tier,
+         part.asset.template,
+         part.asset.made_by,
+         part.asset.retried,
+         part.asset.seconds,
++        f" ({part.asset.note})" if part.asset.note else "",
+     )
+-    cache.write_json_atomic(json_path, part.model_dump_json(indent=2))
+-    return part
++    if select_it:
++        return select(part, mode, part.asset)
++    return part.model_copy()
+ 
+ 
+ # --- shared resolution + upgrades (the replace job, server/replace_job.py) --------------------
+@@ -455,8 +856,14 @@ _inflight: dict[str, asyncio.Task] = {}
+ _upgrade_tried: set[str] = set()
+ 
+ 
+-def ready(part_id: str) -> Part | None:
+-    """The part as on disk when its model.glb is ready, else None."""
++def ready(part_id: str, mode: str | None = None) -> Part | None:
++    """The part as on disk when its model.glb is ready, else None. asset-mode: with `mode`, the
++    part with that mode's model (its variant), None until it's made."""
++    if mode is not None:
++        _adopt_legacy(part_id)
++        asset = variant_asset(part_id, mode)
++        base = _disk_part(part_id) if asset is not None else None
++        return base.model_copy(update={"asset": asset}) if base is not None else None
+     pdir = part_dir(part_id)
+     if not (pdir / "model.glb").exists():
+         return None
+@@ -467,21 +874,32 @@ def ready(part_id: str) -> Part | None:
+     return cached if cached.asset.status == "ready" else None
+ 
+ 
+-async def resolve_shared(part: Part, *, allow_ai: bool = True) -> Part:
++def start(part: Part, *, allow_ai: bool = True, mode: str | None = None) -> asyncio.Task:
++    """`resolve_shared` in the background (asset-mode: a `?mode=` request that isn't ready)."""
++    task = asyncio.ensure_future(resolve_shared(part, allow_ai=allow_ai, mode=mode))
++    task.add_done_callback(lambda t: t.cancelled() or t.exception())  # no "never retrieved"
++    return task
++
++
++async def resolve_shared(part: Part, *, allow_ai: bool = True, mode: str | None = None) -> Part:
+     """`resolve_asset`, one run per part at a time: a second caller (the search's background
+     worker and the replace job both want the same GLB) awaits the first one's task instead of
+-    generating it twice. Cancelling a caller (a timeout) leaves the task running."""
+-    done = ready(part.id)
++    generating it twice. Cancelling a caller (a timeout) leaves the task running.
++    asset-mode: `mode` resolves (and selects) that mode's model; None is the old behaviour."""
++    m = normalize_mode(mode) if mode is not None else None
++    done = ready(part.id, m)
+     if done is not None:
+-        return done
+-    task = _inflight.get(part.id)
++        return select(done, m) if m is not None else done
++    key = f"{part.id}:{m or 'auto'}"
++    task = _inflight.get(key)
+     if task is None or task.done():
+-        task = asyncio.create_task(resolve_asset(part, allow_ai=allow_ai))
+-        _inflight[part.id] = task
++        kw = {"mode": m} if m is not None else {}  # tests stub resolve_asset(part, allow_ai=)
++        task = asyncio.create_task(resolve_asset(part, allow_ai=allow_ai, **kw))
++        _inflight[key] = task
+ 
+-        def _forget(t: asyncio.Task, pid: str = part.id) -> None:
+-            if _inflight.get(pid) is t:
+-                del _inflight[pid]
++        def _forget(t: asyncio.Task, k: str = key) -> None:
++            if _inflight.get(k) is t:
++                del _inflight[k]
+ 
+         task.add_done_callback(_forget)
+     return await asyncio.shield(task)
+@@ -490,10 +908,13 @@ async def resolve_shared(part: Part, *, allow_ai: bool = True) -> Part:
+ async def upgrade_proxy(part: Part) -> Part:
+     """A part whose GLB is still the `proxy` box (its LLM call failed or was rate limited when it
+     was first resolved) gets one more try at the generated tiers; a better model replaces
+-    model.glb in place (same URL). Once per part per server run; never offline; never raises."""
++    model.glb in place (same URL). Once per part per server run; never offline; never raises.
++    asset-mode: the auto variant is replaced (upgrades are the auto order's)."""
+     current = ready(part.id) or part
+     if current.asset.tier != "proxy" or part.id in _upgrade_tried or get_settings().OFFLINE:
+         return current
++    if normalize_mode(current.asset.mode) != "auto":
++        return current
+     _upgrade_tried.add(part.id)
+     pdir = part_dir(part.id)
+     photo = pdir / "image.jpg"
+@@ -506,17 +927,44 @@ async def upgrade_proxy(part: Part) -> Part:
+         return current
+     geometry, tier, residual, *more = made
+     info = more[0] if more else {}
+-    tmp = pdir / "model.glb.tmp"
+-    geometry.export(tmp, file_type="glb")
+-    os.replace(tmp, pdir / "model.glb")
+-    current.asset = Asset(
++    asset = Asset(
+         tier=tier,
+         source_url=current.asset.source_url,
+         license=current.asset.license,
+         scale_residual_pct=round(residual, 3),
+         status="ready",
++        mode="auto",
+         **info,
+     )
+-    cache.write_json_atomic(pdir / "part.json", current.model_dump_json(indent=2))
++    _store_variant(part.id, "auto", geometry, asset)
++    current = select(current, "auto", asset)
+     logger.info("asset %s: upgraded proxy -> %s", part.id, tier)
+     return current
++
++
++# --- asset-mode: the HF warm step (server/hf_warm.py, server.warm --hf) ------------------------
++
++
++async def warm_hf(part: Part) -> str:
++    """The part's Hunyuan model made (or found) without changing the model it shows. "ready" (a
++    Hunyuan mesh exists), "mismatch" (made; its shape didn't fit the size, the template stands
++    in), "quota" (every HF token's and the IP's ZeroGPU quota is spent: back off), "failed",
++    "no_photo" or "offline". Never raises."""
++    if hf_final(part.id):
++        asset = variant_asset(part.id, "hf")
++        return "ready" if asset is not None and asset.tier == "ai_mesh" else "mismatch"
++    photo = part_dir(part.id) / "image.jpg"
++    if not photo.exists() and not (part.image_url and await fetch_image(part.image_url, photo)):
++        return "no_photo"
++    if get_settings().OFFLINE and hunyuan_cached(photo) is None:
++        return "offline"
++    try:
++        got = await resolve_asset(part, mode="hf", select_it=False, rebuild=True)
++    except Exception as exc:  # noqa: BLE001 -- one part's failure never stops the queue
++        logger.warning("hf warm %s failed: %s", part.id, exc)
++        return "failed"
++    if got.asset.tier == "ai_mesh":
++        return "ready"
++    if hunyuan_cached(photo) is not None:
++        return "mismatch"
++    return "quota" if AI_MESH_LAST.get("outcome") == "quota" or HF_KEYS.exhausted() else "failed"
+diff --git a/server/config.py b/server/config.py
+index 5998dd8..1c37ae9 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -29,6 +29,10 @@ class Settings(BaseSettings):
+     REQUIRE_HOLD_PROOF: bool = False
+ 
+     HF_TOKEN: str | None = None  # optional, raises HF Spaces anon GPU quota
++    # asset-mode: the HF warm queue (server/hf_warm.py) makes Hunyuan3D meshes for searched and
++    # catalog parts ahead of need, one at a time, backing off on a ZeroGPU quota error. Off = only
++    # on demand (an "hf" request). Never offline.
++    HF_WARM: bool = True
+ 
+     DATA_DIR: str = "./data"
+     SCENE_DIR: str = "./scene"  # scene packages served read-only at GET /scenes/<site>/<file>
+diff --git a/server/hf_warm.py b/server/hf_warm.py
+new file mode 100644
+index 0000000..aaf72dd
+--- /dev/null
++++ b/server/hf_warm.py
+@@ -0,0 +1,183 @@
++"""asset-mode: the HF warm queue -- Hunyuan3D meshes for searched and catalog parts made ahead of
++need, so switching the headset's 3D models to "HF" is instant (docs/api.md "Asset modes").
++
++One worker, one generation at a time (the HF ZeroGPU quota is per token / per IP, and
++`assets.ai_mesh` holds a semaphore anyway). A part is queued once; an on-demand "hf" request moves
++it to the front. When every HF token's and the IP's quota is spent (`assets.warm_hf` says
++"quota"), the worker backs off -- BACKOFF_START_S, doubling to BACKOFF_MAX_S -- and retries the same
++part; a success resets the backoff. Nothing runs OFFLINE or with HF_WARM off. A part whose
++Hunyuan mesh exists is never queued (`assets.hf_final`): HF results are made once and kept.
++
++    enqueue(part_or_id, front=False)   # jobs._resolve_assets, GET/POST ?mode=hf, the catalog
++    status()                           # GET /assets/hf-warm
++"""
++
++import asyncio
++import collections
++import logging
++import time
++
++from server import assets, jobs
++from server.config import get_settings
++from server.models import Part
++
++logger = logging.getLogger(__name__)
++
++BACKOFF_START_S = 300.0
++BACKOFF_MAX_S = 3600.0
++PAUSE_S = 1.0  # between generations: be gentle with the shared Space
++RECENT = 20
++
++_queue: collections.deque[str] = collections.deque()
++_queued: set[str] = set()
++_worker: asyncio.Task | None = None
++_state: dict = {}
++
++
++def reset() -> None:
++    """Forget the queue and counters (tests)."""
++    global _worker
++    if _worker is not None and not _worker.done():
++        _worker.cancel()
++    _worker = None
++    _queue.clear()
++    _queued.clear()
++    _state.clear()
++    _state.update(
++        current=None,
++        made=0,
++        mismatch=0,
++        failed=0,
++        no_photo=0,
++        quota_hits=0,
++        backoff_s=0.0,
++        resume_at=0.0,
++        recent=[],
++    )
++
++
++reset()
++
++
++def enabled() -> bool:
++    s = get_settings()
++    return bool(s.HF_WARM) and not s.OFFLINE
++
++
++def enqueue(part: Part | str, *, front: bool = False) -> bool:
++    """Queue the part's Hunyuan mesh (front: next up). False when there's nothing to do: warm off
++    or offline, the mesh already exists, or the part has no photo to make it from."""
++    pid = part if isinstance(part, str) else part.id
++    if not enabled() or not pid or assets.hf_final(pid):
++        return False
++    if not isinstance(part, str):
++        photo = assets.part_dir(pid) / "image.jpg"
++        if not part.image_url and not photo.exists():
++            return False
++    if pid in _queued:
++        if front and _queue and _queue[0] != pid and _state["current"] != pid:
++            _queue.remove(pid)
++            _queue.appendleft(pid)
++        _ensure_worker()
++        return True
++    _queued.add(pid)
++    if front:
++        _queue.appendleft(pid)
++    else:
++        _queue.append(pid)
++    _ensure_worker()
++    return True
++
++
++def enqueue_many(parts: list[Part]) -> int:
++    return sum(enqueue(p) for p in parts)
++
++
++def _ensure_worker() -> None:
++    global _worker
++    if _worker is not None and not _worker.done():
++        return
++    try:
++        loop = asyncio.get_running_loop()
++    except RuntimeError:  # no loop (a sync caller): the next async enqueue starts it
++        return
++    _worker = loop.create_task(_run())
++
++
++def _record(pid: str, outcome: str, seconds: float) -> None:
++    key = {"ready": "made"}.get(outcome, outcome)
++    if key in _state and isinstance(_state[key], int):
++        _state[key] += 1
++    _state["recent"].append({"part_id": pid, "outcome": outcome, "seconds": round(seconds, 1)})
++    del _state["recent"][:-RECENT]
++
++
++async def _run() -> None:
++    while _queue:
++        wait = _state["resume_at"] - time.time()
++        if wait > 0:
++            await asyncio.sleep(wait)
++        if not enabled():
++            await asyncio.sleep(5.0)
++            continue
++        pid = _queue[0]
++        part = jobs.load_part(pid)
++        if part is None or assets.hf_final(pid):
++            _pop(pid)
++            continue
++        _state["current"] = pid
++        t0 = time.monotonic()
++        outcome = await assets.warm_hf(part)
++        _state["current"] = None
++        if outcome == "quota":
++            _state["quota_hits"] += 1
++            backoff = min(max(_state["backoff_s"] * 2, BACKOFF_START_S), BACKOFF_MAX_S)
++            _state["backoff_s"] = backoff
++            _state["resume_at"] = time.time() + backoff
++            logger.info("hf warm: ZeroGPU quota spent at %s; backing off %.0f s", pid, backoff)
++            continue
++        _pop(pid)
++        _record(pid, outcome, time.monotonic() - t0)
++        _state["backoff_s"] = 0.0
++        logger.info(
++            "hf warm: %s %s in %.1f s (%d queued)", pid, outcome, time.monotonic() - t0, len(_queue)
++        )
++        await asyncio.sleep(PAUSE_S)
++
++
++def _pop(pid: str) -> None:
++    if _queue and _queue[0] == pid:
++        _queue.popleft()
++    elif pid in _queue:
++        _queue.remove(pid)
++    _queued.discard(pid)
++
++
++def status() -> dict:
++    """The queue for GET /assets/hf-warm: what's queued and running, counts, the backoff, and
++    the last ZeroGPU quota messages the Space sent."""
++    return {
++        "enabled": enabled(),
++        "queued": list(_queue),
++        "current": _state["current"],
++        "made": _state["made"],
++        "mismatch": _state["mismatch"],
++        "failed": _state["failed"],
++        "no_photo": _state["no_photo"],
++        "quota_hits": _state["quota_hits"],
++        "backoff_s": _state["backoff_s"],
++        "resume_in_s": max(0.0, round(_state["resume_at"] - time.time(), 1)),
++        "recent": list(_state["recent"]),
++        "last_ai_mesh": dict(assets.AI_MESH_LAST),
++        "quota_messages": list(assets.HF_QUOTA_SEEN),
++        "hf_keys_cooling_s": round(assets.HF_KEYS.cooling_s(), 1),
++    }
++
++
++async def drain(timeout_s: float = 10.0) -> None:
++    """Wait for the queue to empty (tests)."""
++    t0 = time.monotonic()
++    while (
++        _queue or (_worker is not None and not _worker.done())
++    ) and time.monotonic() - t0 < timeout_s:
++        await asyncio.sleep(0.01)
+diff --git a/server/jobs.py b/server/jobs.py
+index dcd8a59..3bb0bf8 100644
+--- a/server/jobs.py
++++ b/server/jobs.py
+@@ -82,7 +82,7 @@ async def _run_search(job: Job, req: SearchRequest) -> None:
+         _done_events[job.id].set()
+ 
+     if job.status == "done" and job.candidates:
+-        asyncio.create_task(_resolve_assets(job.candidates))
++        asyncio.create_task(_resolve_assets(job.candidates, req.asset_mode))
+ 
+ 
+ def start_task(stage: str, work: Awaitable[dict], result: dict | None = None) -> Job:
+@@ -110,17 +110,26 @@ async def _run_task(job: Job, work: Awaitable[dict]) -> None:
+         _done_events[job.id].set()
+ 
+ 
+-async def _resolve_assets(candidates: list[Part]) -> None:
++async def _resolve_assets(candidates: list[Part], mode: str = "auto") -> None:
+     """One sequential worker per job -- assets.py rate-limits the AI-mesh tier globally
+-    (anon HF ZeroGPU quota), but this also keeps disk/CPU work off the request path in order."""
++    (anon HF ZeroGPU quota), but this also keeps disk/CPU work off the request path in order.
++    asset-mode: the search's `asset_mode` picks the generator; afterwards every candidate's
++    Hunyuan mesh is queued on the HF warm queue (made ahead of need, within the quota)."""
++    mode = assets.normalize_mode(mode)
+     for part in candidates:
+         try:
+-            await assets.resolve_shared(part)  # the replace job may be awaiting this one too
++            if mode == "auto":
++                await assets.resolve_shared(part)  # the replace job may be awaiting this one too
++            else:
++                await assets.resolve_shared(part, mode=mode)
+         except Exception:
+             logger.exception("asset resolution failed for part %s", part.id)
+             failed = load_part(part.id) or part
+             failed.asset.status = "failed"
+             save_part(failed)
++    from server import hf_warm  # asset-mode (hf_warm imports jobs)
++
++    hf_warm.enqueue_many(candidates)
+ 
+ 
+ def get(job_id: str) -> Job | None:
+diff --git a/server/keys.py b/server/keys.py
+index 80726c9..30bc39a 100644
+--- a/server/keys.py
++++ b/server/keys.py
+@@ -73,6 +73,19 @@ class KeyPool:
+             else f"{self.env_name}: no keys configured"
+         )
+ 
++    def exhausted(self) -> bool:
++        """asset-mode: every key (and anonymous, when this pool uses it) is cooling down right now
++        -- the next `call` would raise KeysExhausted without trying anything."""
++        now = time.monotonic()
++        keys = self.keys()
++        return bool(keys) and all(self._cool_until.get(k, 0.0) > now for k in keys)
++
++    def cooling_s(self) -> float:
++        """asset-mode: seconds until the first key comes off cooldown (0 when one is usable)."""
++        now = time.monotonic()
++        waits = [self._cool_until.get(k, 0.0) - now for k in self.keys()]
++        return max(0.0, min(waits)) if waits else 0.0
++
+     def reset(self) -> None:
+         self._cool_until.clear()
+ 
+diff --git a/server/models.py b/server/models.py
+index cf7ed54..725a481 100644
+--- a/server/models.py
++++ b/server/models.py
+@@ -64,6 +64,11 @@ class Asset(BaseModel):
+     template: str | None = None
+     retried: bool | None = None
+     seconds: float | None = None
++    # asset-mode: the generator preference that made this model ("auto" | "hf" | "llm_scad"), and
++    # why the preferred tier didn't make it when it didn't (no OpenSCAD on the server, the HF
++    # ZeroGPU quota spent, no product photo). None from older servers.
++    mode: str | None = None
++    note: str | None = None
+ 
+ 
+ class Fit(BaseModel):
+@@ -158,6 +163,9 @@ class SearchRequest(BaseModel):
+     # assetgen: a taped opening (a window's width x height): candidates are fitted to it and the
+     # ones made for that size come first (search.fit_to_opening).
+     opening: Opening | None = None
++    # asset-mode: which generator makes the candidates' 3D models ("auto" | "hf" | "llm_scad",
++    # server/assets.py); anything else is "auto".
++    asset_mode: str = "auto"
+ 
+ 
+ class Job(BaseModel):
+diff --git a/server/replace_job.py b/server/replace_job.py
+index e1e4c6e..6aacc40 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -227,6 +227,7 @@ class State:
+     part: Part | None = None
+     fit: Fit | None = None
+     others: list[asyncio.Task] = field(default_factory=list)
++    mode: str = "auto"  # asset-mode: the session's generator preference (its context asset_mode)
+ 
+ 
+ def start(session: Any, site: str, want: Want, context: dict[str, Any]) -> runjob.Run:
+@@ -235,6 +236,7 @@ def start(session: Any, site: str, want: Want, context: dict[str, Any]) -> runjo
+     title = f"Replace the {label}"
+     run = runjob.register(session, site, want.query, context, list(STEPS), kind=KIND, title=title)
+     state = State(want=want, kind=replace.component_kind(want.component), label=label)
++    state.mode = assets.normalize_mode(getattr(session, "asset_mode", "auto"))  # asset-mode
+     asyncio.create_task(_chain(run, session, state))
+     return run
+ 
+@@ -412,13 +414,15 @@ async def _search(run: runjob.Run, step: dict[str, Any], session: Any, st: State
+     plain = replace._norm(st.label)
+     query = st.want.query or plain
+     what = _plural(query)
+-    searches = [jobs.start_search(SearchRequest(query=query, cavity=cav))]
++    searches = [jobs.start_search(SearchRequest(query=query, cavity=cav, asset_mode=st.mode))]
+     fallback_ok = replace._norm(query) != plain  # "range" for "30 inch induction range"
+ 
+     def fallback(elapsed: float = FALLBACK_AFTER_S) -> None:
+         """The plain kind, started only once the named search is slow (SerpApi quota is tight)."""
+         if fallback_ok and len(searches) == 1 and elapsed >= FALLBACK_AFTER_S:
+-            searches.append(jobs.start_search(SearchRequest(query=plain, cavity=cav)))
++            searches.append(
++                jobs.start_search(SearchRequest(query=plain, cavity=cav, asset_mode=st.mode))
++            )
+ 
+     t0 = time.monotonic()
+     _progress(run, step, f"Searching for {what} that fit {_gap_words(cav)}.")
+@@ -434,7 +438,7 @@ async def _search(run: runjob.Run, step: dict[str, Any], session: Any, st: State
+         sized = replace.sized_query(st.kind, plain, cav)
+         if replace._norm(sized) != replace._norm(query):
+             _progress(run, step, f"None of those fit; searching for {_plural(sized)}.")
+-            retry = jobs.start_search(SearchRequest(query=sized, cavity=cav))
++            retry = jobs.start_search(SearchRequest(query=sized, cavity=cav, asset_mode=st.mode))
+             t1 = time.monotonic()
+             again = await _await_search(run, step, retry, _plural(sized), t1, SEARCH_CAP_S)
+             if again.status == "done" and again.candidates and _fitting(again, cav):
+@@ -509,10 +513,12 @@ _TIER_WORDS = {
+ }
+ 
+ 
+-async def _ensure(part: Part) -> Part:
++async def _ensure(part: Part, mode: str = "auto") -> Part:
+     """The part's GLB, built (or awaited) once: resolve_shared; a proxy box then gets one more
+     try at a generated model (assets.upgrade_proxy, once per part per run)."""
+-    part = await assets.resolve_shared(part)
++    part = await (
++        assets.resolve_shared(part, mode=mode) if mode != "auto" else assets.resolve_shared(part)
++    )
+     if part.asset.tier == "proxy" and not get_settings().OFFLINE:
+         part = await assets.upgrade_proxy(part)
+     return part
+@@ -525,7 +531,12 @@ async def _model(st: State):
+     parts: list[Part] = st.job.candidates
+     t0 = time.monotonic()
+     try:
+-        part = await asyncio.wait_for(assets.resolve_shared(st.part), MODEL_CAP_S)
++        shared = (  # asset-mode: the session's generator
++            assets.resolve_shared(st.part, mode=st.mode)
++            if st.mode != "auto"
++            else assets.resolve_shared(st.part)
++        )
++        part = await asyncio.wait_for(shared, MODEL_CAP_S)
+     except TimeoutError as exc:
+         raise runjob.Stop(
+             "Its 3D model didn't finish in time; say put it in to try again."
+@@ -542,7 +553,7 @@ async def _model(st: State):
+     st.part = part
+     n = len(parts)
+     nxt = [parts[(st.index + k) % n] for k in (1, 2) if n > k]
+-    st.others = [asyncio.create_task(_ensure(p)) for p in nxt]
++    st.others = [asyncio.create_task(_ensure(p, st.mode)) for p in nxt]
+     took = time.monotonic() - t0
+     spoken = f"3D model ready: {_TIER_WORDS.get(part.asset.tier, part.asset.tier)}{upgraded}."
+     if took >= 1:
+diff --git a/server/warm.py b/server/warm.py
+index d111e29..7b96734 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -3,6 +3,7 @@ scripted demo needs is cached locally; only the live search is lost").
+ 
+     uv run python -m server.warm [--queries-file demo.json] [--retry-proxies] [--grok-moulded]
+     uv run python -m server.warm --labels <site> [--every 4]
++    uv run python -m server.warm --hf [--hf-limit N] [--hf-no-wait]
+ 
+ For each `{"query": ..., "measurement": {...}}` entry: runs the same `find_parts` +
+ `resolve_asset` path `jobs.py` runs for a live search (sequential -- `assets.py` rate-limits the
+@@ -21,6 +22,12 @@ every Nth thumb of the scan (~$0.001 each), the labels are lifted onto the colli
+ merged, and `GET /scenes/<site>/labels` serves the result. The frames are cached by hash, so a
+ live `POST /scene/labels` of a warmed thumb is free and works OFFLINE.
+ 
++`--hf` (asset-mode) does only the HF warm instead: every part already on disk (data/parts/*) gets
++its Hunyuan3D image-to-3D model (`model.hf.glb`, `assets.warm_hf`), one at a time; a part that has
++one is skipped (HF meshes are made once and kept, the raw mesh cached by photo hash). When every
++HF token's and the IP's ZeroGPU quota is spent it waits (5 min, doubling to 1 h) and goes on, or
++stops with `--hf-no-wait`. The model each part shows is unchanged.
++
+ Idempotent: `find_parts` (whole-result cache), `resolve_asset` (skips re-resolving a part whose
+ model.glb + "ready" part.json already exist) and `voice.speak` (tts cache) all check their own
+ disk cache first, so re-running this after a successful warm costs nothing.
+@@ -37,6 +44,7 @@ import argparse
+ import asyncio
+ import json
+ import logging
++import time
+ from pathlib import Path
+ 
+ from server import agent, assets, bom, jobs, labels, meshgen, search, voice
+@@ -187,6 +195,60 @@ async def warm_labels(site: str, every: int) -> None:
+     )
+ 
+ 
++HF_BACKOFF_START_S = 300.0
++HF_BACKOFF_MAX_S = 3600.0
++
++
++def cached_parts() -> list[Part]:
++    """Every part on disk (data/parts/<id>/part.json), by id."""
++    root = assets.part_dir("x").parent
++    parts = []
++    for pj in sorted(root.glob("*/part.json")) if root.is_dir() else []:
++        part = jobs.load_part(pj.parent.name)
++        if part is not None:
++            parts.append(part)
++    return parts
++
++
++async def warm_hf(limit: int | None = None, wait: bool = True, sleep=asyncio.sleep) -> dict:
++    """asset-mode: the Hunyuan model for every cached part, sequential, backing off on the ZeroGPU
++    quota. {outcome: count}; prints one row per part (id, outcome, tier, made_by, seconds)."""
++    counts: dict[str, int] = {}
++    backoff = 0.0
++    parts = cached_parts()[: limit or None]
++    print(f"hf: {len(parts)} cached parts")
++    i = 0
++    while i < len(parts):
++        part = parts[i]
++        t0 = time.monotonic()
++        outcome = await assets.warm_hf(part)
++        took = time.monotonic() - t0
++        if outcome == "quota":
++            msg = (
++                assets.HF_QUOTA_SEEN[-1]["message"]
++                if assets.HF_QUOTA_SEEN
++                else "all HF keys cooling"
++            )
++            if not wait:
++                print(f"  {part.id}: ZeroGPU quota spent ({msg}); stopping (--hf-no-wait)")
++                counts["quota"] = counts.get("quota", 0) + 1
++                break
++            backoff = min(max(backoff * 2, HF_BACKOFF_START_S), HF_BACKOFF_MAX_S)
++            print(f"  {part.id}: ZeroGPU quota spent ({msg}); waiting {backoff:.0f} s")
++            await sleep(backoff)
++            assets.HF_KEYS.reset()  # try the tokens again after the wait
++            continue
++        backoff = 0.0
++        counts[outcome] = counts.get(outcome, 0) + 1
++        asset = assets.variant_asset(part.id, "hf")
++        tier = asset.tier if asset else "-"
++        by = (asset.made_by if asset else None) or "-"
++        print(f"  {part.id:<60} {outcome:<9} {tier:<8} {by:<32} {took:6.1f} s")
++        i += 1
++    print(f"hf: {counts}")
++    return counts
++
++
+ async def _run(
+     queries: list[dict], retry_proxies: bool = False, grok_moulded: bool = False
+ ) -> None:
+@@ -225,12 +287,24 @@ def main() -> None:
+         "--labels", metavar="SITE", help="only pre-label SITE's thumbs (spends xAI credit)"
+     )
+     parser.add_argument("--every", type=int, default=4, help="with --labels: every Nth thumb")
++    parser.add_argument(
++        "--hf",
++        action="store_true",
++        help="only pre-generate Hunyuan3D (HF) models for every cached part (ZeroGPU quota)",
++    )
++    parser.add_argument("--hf-limit", type=int, default=None, help="with --hf: the first N parts")
++    parser.add_argument(
++        "--hf-no-wait", action="store_true", help="with --hf: stop when the quota is spent"
++    )
+     args = parser.parse_args()
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry SerpApi api_key
+     if args.labels:
+         asyncio.run(warm_labels(args.labels, max(1, args.every)))
+         return
++    if args.hf:
++        asyncio.run(warm_hf(args.hf_limit, wait=not args.hf_no_wait))
++        return
+     queries = json.loads(args.queries_file.read_text()) if args.queries_file else DEFAULT_QUERIES
+     asyncio.run(_run(queries, args.retry_proxies, args.grok_moulded))
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 5b61af3..609b07f 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -48,6 +48,7 @@ def _no_network_by_default(request, monkeypatch):
+         monkeypatch.setenv(key, "test-dummy-key")
+     for key in _UNSET_KEYS:  # empty beats a real value in .env
+         monkeypatch.setenv(key, "")
++    monkeypatch.setenv("HF_WARM", "false")  # asset-mode: no background Hunyuan queue (tests opt in)
+     get_settings.cache_clear()
+     yield
+     get_settings.cache_clear()
+diff --git a/tests/test_asset_mode.py b/tests/test_asset_mode.py
+new file mode 100644
+index 0000000..70e3f05
+--- /dev/null
++++ b/tests/test_asset_mode.py
+@@ -0,0 +1,502 @@
++"""asset-mode: the headset's 3D-model preference -- "hf" (Hunyuan3D image-to-3D), "llm_scad" (Grok
++writes OpenSCAD) or "auto" -- per request; both variants kept per part; HF meshes made once (raw
++cache by photo hash) and warmed ahead of need within the ZeroGPU quota. HF / LLM / OpenSCAD calls
++are all stubbed."""
++
++import asyncio
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import respx
++import trimesh
++from fastapi.testclient import TestClient
++from httpx import Response
++
++from server import agent, assets, hf_warm, jobs, meshgen, warm
++from server.app import app
++from server.config import get_settings
++from server.models import Asset, Dims, Part
++
++FIXTURES_DIR = Path(__file__).parent / "fixtures" / "assets"
++SOURCE_PHOTO = FIXTURES_DIR / "source_photo_window_ac.jpg"
++AC_DIMS = Dims(w=614.68, d=515.62, h=368.3)
++
++
++@pytest.fixture(autouse=True)
++def _data_dir(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    get_settings.cache_clear()
++    hf_warm.reset()
++    assets._scad_jobs.clear()
++    assets._scad_failed.clear()
++    assets.HF_KEYS.reset()
++    yield tmp_path
++    hf_warm.reset()
++    get_settings.cache_clear()
++
++
++@pytest.fixture(autouse=True)
++def _public_example_com(monkeypatch):
++    import socket
++
++    def fake(host, *args, **kwargs):
++        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
++
++    monkeypatch.setattr(socket, "getaddrinfo", fake)
++
++
++def _part(pid="ac-1", **kw) -> Part:
++    return Part(
++        id=pid,
++        name="Window air conditioner",
++        dims_mm=kw.pop("dims_mm", AC_DIMS),
++        image_url=kw.pop("image_url", "https://example.com/photo.jpg"),
++        **kw,
++    )
++
++
++def _fake_llm(monkeypatch, template="box_appliance", shape="template") -> list:
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append(role)
++        answer = {
++            "template": template,
++            "colors": {"body": "#F0F0F0"},
++            "photo": {"face": "front", "rotate_cw": 0, "single": True},
++            "shape_class": shape,
++        }
++        return SimpleNamespace(
++            model="qwen/qwen3.8-27b",
++            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(answer)))],
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++def _hunyuan_like_ac() -> trimesh.Trimesh:
++    body = trimesh.creation.box(bounds=[[-1.0, -0.62, -0.45], [1.0, 0.62, 0.40]])
++    grille = trimesh.creation.box(bounds=[[-0.9, -0.5, 0.40], [0.9, 0.3, 0.45]])
++    return trimesh.util.concatenate([body, grille])
++
++
++def _fake_hunyuan(monkeypatch, tmp_path, *, mesh=None, outcome=None) -> list:
++    """ai_mesh stub: a Hunyuan-like AC (or `mesh`), or None with AI_MESH_LAST's outcome."""
++    calls = []
++
++    async def fake_ai_mesh(image_path):
++        calls.append(image_path)
++        if outcome is not None:
++            assets._ai_mesh_outcome(outcome, "tencent/Hunyuan3D-2.1", "stub")
++            return None
++        dest = tmp_path / f"hy-{len(calls)}.glb"
++        (mesh or _hunyuan_like_ac()).export(dest)
++        assets._ai_mesh_outcome("ok", "tencent/Hunyuan3D-2.1")
++        return dest
++
++    monkeypatch.setattr("server.assets.ai_mesh", fake_ai_mesh)
++    return calls
++
++
++def _serve_photo(router):
++    router.get("https://example.com/photo.jpg").mock(
++        return_value=Response(
++            200, content=SOURCE_PHOTO.read_bytes(), headers={"content-type": "image/jpeg"}
++        )
++    )
++
++
++def _no_openscad(monkeypatch):
++    monkeypatch.setattr(meshgen, "openscad", lambda: None)
++
++
++# --- modes ----------------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    ("given", "want"),
++    [
++        ("hf", "hf"),
++        ("HF", "hf"),
++        ("hunyuan", "hf"),
++        ("llm_scad", "llm_scad"),
++        ("LLM+CAD", "llm_scad"),
++        ("llm-scad", "llm_scad"),
++        ("scad", "llm_scad"),
++        ("auto", "auto"),
++        ("", "auto"),
++        (None, "auto"),
++        ("banana", "auto"),
++    ],
++)
++def test_normalize_mode(given, want):
++    assert assets.normalize_mode(given) == want
++
++
++# --- hf ---------------------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_hf_mode_makes_a_hunyuan_mesh_for_a_template_part(monkeypatch, tmp_path):
++    """Auto would build this box appliance from the template; "hf" asks Hunyuan for every part."""
++    _fake_llm(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path)
++    part = _part()
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(part, mode="hf")
++    assert len(hy) == 1
++    a = got.asset
++    assert (a.tier, a.mode, a.status, a.note) == ("ai_mesh", "hf", "ready", None)
++    assert a.made_by == "hf:tencent/Hunyuan3D-2.1"
++    pdir = assets.part_dir(part.id)
++    assert (pdir / "model.hf.glb").exists() and (pdir / "asset.hf.json").exists()
++    assert (pdir / "model.glb").read_bytes() == (pdir / "model.hf.glb").read_bytes()
++    assert json.loads((pdir / "part.json").read_text())["asset"]["tier"] == "ai_mesh"
++    scene = trimesh.load(pdir / "model.hf.glb", force="scene")
++    assert scene.extents == pytest.approx([0.61468, 0.3683, 0.51562], abs=1e-4)
++    assert "photo" in scene.geometry  # photo-textured, like auto's ai_mesh
++    raw = list((tmp_path / "cache" / "hunyuan").glob("*.glb"))
++    assert len(raw) == 1 and raw[0].stem == assets.photo_hash(pdir / "image.jpg")
++
++
++@pytest.mark.asyncio
++async def test_hf_mesh_is_never_generated_twice(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path)
++    with respx.mock() as router:
++        _serve_photo(router)
++        await assets.resolve_asset(_part("a"), mode="hf")
++        await assets.resolve_asset(_part("a"), mode="hf")  # the variant
++        await assets.resolve_asset(_part("a"), mode="hf", rebuild=True)  # the raw cache
++        other = await assets.resolve_asset(_part("b"), mode="hf")  # same photo: same raw mesh
++        assert await assets.warm_hf(_part("a")) == "ready"
++    assert len(hy) == 1
++    assert other.asset.tier == "ai_mesh"
++    assert assets.hf_final("a") and assets.hf_final("b")
++
++
++@pytest.mark.asyncio
++async def test_hf_quota_falls_back_to_the_template_with_a_note(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _fake_hunyuan(monkeypatch, tmp_path, outcome="quota")
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(_part(), mode="hf")
++        assert await assets.warm_hf(_part()) == "quota"
++    a = got.asset
++    assert (a.tier, a.mode) == ("llm", "hf")
++    assert a.note == "Hunyuan's ZeroGPU quota is spent for now: the LLM template instead"
++    assert a.made_by == "groq:qwen/qwen3.8-27b"
++    assert not assets.hf_final("ac-1")  # the warm queue tries it again later
++
++
++@pytest.mark.asyncio
++async def test_hf_quota_then_warm_replaces_the_stand_in_without_selecting_it(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _fake_hunyuan(monkeypatch, tmp_path, outcome="quota")
++    with respx.mock() as router:
++        _serve_photo(router)
++        await assets.resolve_asset(_part(), mode="hf")
++        await assets.resolve_asset(_part(), mode="auto")  # the headset switched back to auto
++        hy = _fake_hunyuan(monkeypatch, tmp_path)  # the quota reset
++        assert await assets.warm_hf(_part()) == "ready"
++    assert len(hy) == 1
++    assert assets.variant_asset("ac-1", "hf").tier == "ai_mesh"
++    shown = json.loads((assets.part_dir("ac-1") / "part.json").read_text())["asset"]
++    assert (shown["tier"], shown["mode"]) == ("llm", "auto")  # the warm didn't change the model
++
++
++@pytest.mark.asyncio
++async def test_hf_shape_mismatch_is_settled_and_noted(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path, mesh=trimesh.creation.box(extents=(1, 1, 1)))
++    part = _part("thin", dims_mm=Dims(w=13, d=305, h=241))
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(part, mode="hf")
++        assert await assets.warm_hf(part) == "mismatch"
++    assert got.asset.tier == "llm"
++    assert "didn't match the listed size" in got.asset.note
++    assert assets.hf_final("thin") and len(hy) == 1
++
++
++@pytest.mark.asyncio
++async def test_hf_without_a_photo_says_so(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path)
++    got = await assets.resolve_asset(_part(image_url=None), mode="hf")
++    assert not hy
++    assert got.asset.tier == "llm"
++    assert got.asset.note.startswith("No product photo for image-to-3D")
++
++
++# --- llm_scad ---------------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_llm_scad_without_openscad_is_the_labelled_template(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _no_openscad(monkeypatch)
++    _fake_hunyuan(monkeypatch, tmp_path, outcome="failed")
++
++    async def no_scad(*a, **kw):
++        raise AssertionError("no openscad: grok_scad must not run")
++
++    monkeypatch.setattr(meshgen, "grok_scad", no_scad)
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(_part(), mode="llm_scad")
++    a = got.asset
++    assert (a.tier, a.mode, a.template) == ("llm", "llm_scad", "box_appliance")
++    assert a.note == "OpenSCAD isn't installed on the server: the LLM template instead"
++    assert a.made_by == "groq:qwen/qwen3.8-27b"
++    assert (assets.part_dir("ac-1") / "model.scad.glb").exists()
++
++
++@pytest.mark.asyncio
++async def test_llm_scad_uses_the_cached_openscad_model(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _no_openscad(monkeypatch)
++    part = _part("hanger", dims_mm=Dims(w=127, d=38, h=45))
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True)
++    box = trimesh.creation.box(bounds=[[-0.0635, 0, 0], [0.0635, 0.045, 0.038]])
++    box.export(pdir / "scad.glb")
++    with respx.mock() as router:
++        _serve_photo(router)
++        got = await assets.resolve_asset(part, mode="llm_scad")
++    assert (got.asset.tier, got.asset.note) == ("scad", None)
++    assert got.asset.made_by == "xai:grok-4.7 + openscad"
++
++
++@pytest.mark.asyncio
++async def test_llm_scad_with_openscad_writes_it_in_the_background(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    release = asyncio.Event()
++    calls = []
++
++    async def fake_grok_scad(part, photo, out):
++        calls.append(part.id)
++        await release.wait()
++        trimesh.creation.box(bounds=[[-0.3, 0, 0], [0.3, 0.37, 0.52]]).export(out)
++        return True
++
++    monkeypatch.setattr(meshgen, "grok_scad", fake_grok_scad)
++    with respx.mock() as router:
++        _serve_photo(router)
++        first = await assets.resolve_asset(_part(), mode="llm_scad")
++        assert first.asset.tier == "llm"
++        assert first.asset.note.startswith("Grok is still writing the OpenSCAD model")
++        assert assets.scad_pending("ac-1")
++        release.set()
++        await assets._scad_jobs["ac-1"]
++    assert calls == ["ac-1"]
++    assert assets.variant_asset("ac-1", "llm_scad").tier == "scad"
++
++
++# --- both variants, select, legacy ------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_both_variants_coexist_and_model_glb_follows_the_last_mode(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _no_openscad(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path)
++    pdir = assets.part_dir("ac-1")
++    with respx.mock() as router:
++        _serve_photo(router)
++        await assets.resolve_asset(_part(), mode="hf")
++        await assets.resolve_asset(_part(), mode="llm_scad")
++        assert (pdir / "model.glb").read_bytes() == (pdir / "model.scad.glb").read_bytes()
++        again = await assets.resolve_shared(_part(), mode="hf")  # back: no new call
++    assert len(hy) == 1
++    assert again.asset.tier == "ai_mesh"
++    assert (pdir / "model.glb").read_bytes() == (pdir / "model.hf.glb").read_bytes()
++    assert assets.ready("ac-1", "llm_scad").asset.tier == "llm"
++    assert assets.ready("ac-1", "hf").asset.tier == "ai_mesh"
++    assert assets.ready("ac-1", "auto") is None  # not asked for yet
++
++
++def test_a_legacy_hunyuan_model_is_adopted_not_regenerated(tmp_path):
++    part = _part("old")
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True)
++    trimesh.creation.box(extents=(0.6, 0.37, 0.52)).export(pdir / "model.glb")
++    part.asset = Asset(tier="ai_mesh", status="ready", made_by="groq:qwen/qwen3.8-27b")
++    (pdir / "part.json").write_text(part.model_dump_json())
++    hf = assets.ready("old", "hf")
++    assert hf is not None and (hf.asset.tier, hf.asset.mode) == ("ai_mesh", "hf")
++    assert assets.ready("old", "auto").asset.mode == "auto"
++    assert assets.hf_final("old")
++    assert jobs.load_part("old").asset.mode == "auto"
++
++
++# --- the warm queue ---------------------------------------------------------------------------
++
++
++def _save(part: Part) -> Part:
++    jobs.save_part(part)
++    return part
++
++
++@pytest.mark.asyncio
++async def test_warm_queue_is_sequential_and_backs_off_on_the_quota(monkeypatch):
++    monkeypatch.setenv("HF_WARM", "true")
++    get_settings.cache_clear()
++    monkeypatch.setattr(hf_warm, "PAUSE_S", 0.0)
++    monkeypatch.setattr(hf_warm, "BACKOFF_START_S", 0.05)
++    for pid in ("p1", "p2", "p3"):
++        _save(_part(pid))
++    outcomes = {"p1": ["quota", "ready"], "p2": ["mismatch"], "p3": ["ready"]}
++    running, seen = [], []
++
++    async def fake_warm(part):
++        running.append(part.id)
++        assert len(running) == 1, "one generation at a time"
++        await asyncio.sleep(0.01)
++        running.remove(part.id)
++        seen.append(part.id)
++        return outcomes[part.id].pop(0)
++
++    monkeypatch.setattr(assets, "warm_hf", fake_warm)
++    monkeypatch.setattr(assets, "hf_final", lambda pid: False)
++    assert hf_warm.enqueue_many([_part("p1"), _part("p2")]) == 2
++    assert hf_warm.enqueue(_part("p3"), front=True)  # an on-demand hf request jumps the line
++    assert not hf_warm.enqueue(_part("p9", image_url=None))  # no photo: nothing to make it from
++    await hf_warm.drain(5)
++    assert seen == ["p3", "p1", "p1", "p2"]
++    st = hf_warm.status()
++    assert (st["made"], st["mismatch"], st["quota_hits"], st["queued"]) == (2, 1, 1, [])
++    assert st["backoff_s"] == 0.0  # reset by the success
++
++
++def test_warm_queue_is_off_offline_and_when_disabled(monkeypatch):
++    assert not hf_warm.enqueue(_part())  # conftest: HF_WARM=false
++    monkeypatch.setenv("HF_WARM", "true")
++    monkeypatch.setenv("OFFLINE", "true")
++    get_settings.cache_clear()
++    assert not hf_warm.enqueue(_part())
++
++
++@pytest.mark.asyncio
++async def test_search_resolves_in_the_requested_mode_then_warms_hf(monkeypatch):
++    seen = []
++
++    async def fake_shared(part, *, allow_ai=True, mode=None):
++        seen.append((part.id, mode))
++        return part
++
++    queued = []
++    monkeypatch.setattr(assets, "resolve_shared", fake_shared)
++    monkeypatch.setattr(hf_warm, "enqueue_many", lambda parts: queued.extend(p.id for p in parts))
++    await jobs._resolve_assets([_part("a"), _part("b")], "llm_scad")
++    await jobs._resolve_assets([_part("c")])
++    assert seen == [("a", "llm_scad"), ("b", "llm_scad"), ("c", None)]
++    assert queued == ["a", "b", "c"]
++
++
++@pytest.mark.asyncio
++async def test_warm_cli_hf_backs_off_then_goes_on(monkeypatch, capsys):
++    for pid in ("w1", "w2"):
++        _save(_part(pid))
++    outcomes = ["quota", "ready", "no_photo"]
++
++    async def fake_warm(part):
++        return outcomes.pop(0)
++
++    slept = []
++
++    async def fake_sleep(s):
++        slept.append(s)
++
++    monkeypatch.setattr(assets, "warm_hf", fake_warm)
++    counts = await warm.warm_hf(sleep=fake_sleep)
++    assert counts == {"ready": 1, "no_photo": 1}
++    assert slept == [warm.HF_BACKOFF_START_S]
++    assert "ZeroGPU quota spent" in capsys.readouterr().out
++
++
++# --- the session context ----------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_the_context_asset_mode_rides_on_the_sessions_searches(monkeypatch):
++    started = []
++
++    def fake_start(req):
++        started.append(req)
++        return SimpleNamespace(id="job1")
++
++    monkeypatch.setattr(jobs, "start_search", fake_start)
++    session = agent._get_session("s-mode")
++    agent._apply_context(session, {"asset_mode": "LLM+CAD"})
++    assert session.asset_mode == "llm_scad"
++    await agent._run_tool(session, "find_part", {"query": "window air conditioner"}, {})
++    assert started[-1].asset_mode == "llm_scad"
++    agent._apply_context(session, {})  # absent: the last one stays
++    assert session.asset_mode == "llm_scad"
++
++
++# --- endpoints --------------------------------------------------------------------------------
++
++
++def test_endpoints_serve_each_mode_and_report_the_tier(monkeypatch, tmp_path):
++    _fake_llm(monkeypatch)
++    _no_openscad(monkeypatch)
++    hy = _fake_hunyuan(monkeypatch, tmp_path)
++    _save(_part())
++    with respx.mock() as router:
++        _serve_photo(router)
++        with TestClient(app) as client:
++            r = client.post("/parts/ac-1/model?mode=hf&wait_s=30")
++            assert r.status_code == 200, r.text
++            body = r.json()
++            assert (body["status"], body["mode"], body["asset"]["tier"]) == (
++                "ready",
++                "hf",
++                "ai_mesh",
++            )
++            assert body["model_url"] == "/parts/ac-1/model.glb?mode=hf"
++
++            r = client.get("/parts/ac-1/model.glb?mode=hf")
++            assert r.status_code == 200
++            assert r.headers["x-asset-tier"] == "ai_mesh"
++            assert r.headers["x-asset-made-by"] == "hf:tencent/Hunyuan3D-2.1"
++            hf_bytes = r.content
++
++            r = client.get("/parts/ac-1/model.glb?mode=llm_scad")
++            assert r.status_code == 200 and r.headers["x-asset-tier"] == "llm"
++            assert r.content != hf_bytes
++
++            j = client.get("/parts/ac-1/part.json?mode=hf").json()
++            assert (j["asset"]["tier"], j["asset"]["status"]) == ("ai_mesh", "ready")
++            assert client.get("/parts/ac-1/model.glb").content == hf_bytes  # the last mode
++
++            j = client.get("/parts/ac-1/part.json").json()  # no mode: the file as before
++            assert j["asset"]["mode"] == "hf"
++
++            st = client.get("/assets/hf-warm").json()
++            assert {"queued", "made", "quota_messages", "last_ai_mesh"} <= set(st)
++    assert len(hy) == 1
++
++
++def test_part_json_with_a_mode_is_pending_until_made(monkeypatch):
++    _save(_part())
++    gate = asyncio.Event()
++
++    async def slow_resolve(part, *, allow_ai=True, mode="auto", **kw):
++        await gate.wait()
++        return part
++
++    monkeypatch.setattr(assets, "resolve_asset", slow_resolve)
++    with TestClient(app) as client:
++        j = client.get("/parts/ac-1/part.json?mode=llm_scad").json()
++        assert (j["asset"]["status"], j["asset"]["mode"]) == ("pending", "llm_scad")
++        r = client.post("/parts/ac-1/model", json={"mode": "llm_scad"})
++        assert r.json()["status"] == "pending"
++        assert client.get("/parts/nope/part.json?mode=hf").status_code == 404
+-- 
+2.50.1 (Apple Git-155)
+

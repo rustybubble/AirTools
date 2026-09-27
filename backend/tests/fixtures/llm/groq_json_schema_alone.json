@@ -1,0 +1,46 @@
+{
+  "id": "chatcmpl-343d62e5-057f-43e2-b2a9-e5a960dda3aa",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "content": "{\"name\":\"5 inch K-style hidden hanger bracket\",\"needs_measurement_tool\":false,\"width_mm\":127}",
+        "refusal": null,
+        "role": "assistant",
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "tool_calls": null,
+        "reasoning": "User wants JSON according to schema part_candidate: fields name (string), needs_measurement_tool (boolean), width_mm (number). Provide name likely \"5 inch K-style hidden hanger bracket\". needs_measurement_tool false. width_mm 127. Provide compact JSON. Ensure valid."
+      }
+    }
+  ],
+  "created": 1790232835,
+  "model": "openai/gpt-oss-120b",
+  "object": "chat.completion",
+  "service_tier": "on_demand",
+  "system_fingerprint": "fp_e5b4e54fbb",
+  "usage": {
+    "completion_tokens": 93,
+    "prompt_tokens": 217,
+    "total_tokens": 310,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": null,
+      "reasoning_tokens": 57,
+      "rejected_prediction_tokens": null
+    },
+    "prompt_tokens_details": null,
+    "queue_time": 0.075573922,
+    "prompt_time": 0.010602362,
+    "completion_time": 0.193339521,
+    "total_time": 0.203941883
+  },
+  "usage_breakdown": null,
+  "x_groq": {
+    "id": "req_01m3932daqey4tpeche1x2076n",
+    "seed": 1054166626
+  }
+}

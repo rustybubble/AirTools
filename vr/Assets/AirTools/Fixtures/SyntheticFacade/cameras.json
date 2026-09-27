@@ -1,0 +1,17 @@
+{
+  "frame": "unity",
+  "cameras": [
+    {"id": 0, "position": [-5.73407, 1.5, 4.01504], "rotation": [-0.05642, 0.88037, 0.10838, 0.45829], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0000.jpg"},
+    {"id": 1, "position": [-4.94975, 2.05, 4.94975], "rotation": [-0.03245, 0.92055, 0.07833, 0.38131], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0001.jpg"},
+    {"id": 2, "position": [-4.01504, 2.6, 5.73407], "rotation": [-0.01392, 0.9527, 0.04414, 0.30038], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0002.jpg"},
+    {"id": 3, "position": [-2.95833, 1.5, 6.34415], "rotation": [-0.02645, 0.96898, 0.11929, 0.21482], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0003.jpg"},
+    {"id": 4, "position": [-1.81173, 2.05, 6.76148], "rotation": [-0.01107, 0.98787, 0.08406, 0.13006], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0004.jpg"},
+    {"id": 5, "position": [-0.61009, 2.6, 6.97336], "rotation": [-0.00202, 0.99798, 0.04624, 0.04357], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0005.jpg"},
+    {"id": 6, "position": [0.61009, 1.5, 6.97336], "rotation": [0.00533, 0.99156, 0.12207, -0.04329], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0006.jpg"},
+    {"id": 7, "position": [1.81173, 2.05, 6.76148], "rotation": [0.01107, 0.98787, 0.08406, -0.13006], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0007.jpg"},
+    {"id": 8, "position": [2.95833, 2.6, 6.34415], "rotation": [0.01002, 0.97525, 0.04518, -0.21621], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0008.jpg"},
+    {"id": 9, "position": [4.01504, 1.5, 5.73407], "rotation": [0.03674, 0.94657, 0.11653, -0.29845], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0009.jpg"},
+    {"id": 10, "position": [4.94975, 2.05, 4.94975], "rotation": [0.03245, 0.92055, 0.07833, -0.38131], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0010.jpg"},
+    {"id": 11, "position": [5.73407, 2.6, 4.01504], "rotation": [0.02137, 0.88606, 0.04105, -0.46125], "vfov_deg": 60, "width": 320, "height": 240, "thumb": "thumbs/0011.jpg"}
+  ]
+}

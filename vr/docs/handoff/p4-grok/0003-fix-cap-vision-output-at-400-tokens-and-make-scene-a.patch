@@ -1,0 +1,163 @@
+From c475a15333a5cc71802e9bd146ee66d207ff11c8 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:44:32 -0400
+Subject: [PATCH 03/11] fix: cap vision output at 400 tokens and make
+ /scene/ask insist on a frame_id + box
+
+Integration finding #12 (real kitchen, real server): "What is this?" at the dishwasher answered
+in 22 and 9 completion tokens with no frame_id/box either time, so the headset had nothing to
+pin; a second ask within the minute got Groq 429 ("output tokens per minute limit 1000,
+requested 1707").
+
+- llm.ROLE_MAX_TOKENS = {"vision": 400}: chat() sends max_tokens for that role unless the caller
+  set one (covers ask_scene, identify_part and extract's retry)
+- ask_scene's prompt: the frames are the photos nearest the asked spot, nearest first; the
+  headset pins the box centre, so frame_id + box are required whenever the thing is visible
+  ("a rough box beats none"); dropped "leave ... null if you're not sure"
+
+Rebased onto integration/grok-all (c706f13): chat() now pops a per-call `max_retries`; the
+vision cap sits next to it (the old `client = _client(provider)` line is gone upstream).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/llm.py        |  8 ++++++++
+ server/vision.py     | 14 +++++++++-----
+ tests/test_llm.py    | 21 +++++++++++++++++++++
+ tests/test_vision.py | 35 +++++++++++++++++++++++++++++++++++
+ 4 files changed, 73 insertions(+), 5 deletions(-)
+
+diff --git a/server/llm.py b/server/llm.py
+index 8d44739..595f073 100644
+--- a/server/llm.py
++++ b/server/llm.py
+@@ -85,6 +85,12 @@ ROLE_DEFAULTS = {
+ # schema-in-prompt + validate/retry treatment `extract()` already gives DeepSeek.
+ NO_STRICT_SCHEMA_MODELS = {"qwen/qwen3.8-27b"}
+ 
++# Output cap per role (a caller's own max_tokens wins). Groq's free tier gives the vision model
++# only 1000 output tokens/min; uncapped, the second "what is this?" within a minute got a 429
++# (seen live 2026-09-25: "limit 1000, requested 1707"). Its JSON answers are ~10-60 tokens, so
++# 400 leaves room for a box and a part_query while two calls still fit in a minute.
++ROLE_MAX_TOKENS = {"vision": 400}
++
+ 
+ class Source(pydantic.BaseModel):
+     title: str
+@@ -170,6 +176,8 @@ async def chat(
+         raise cache.OfflineMiss(f"offline: chat() unavailable (role={role!r})")
+     provider, model = resolve_role(role)
+     retries = kw.pop("max_retries", 4)
++    if role in ROLE_MAX_TOKENS:
++        kw.setdefault("max_tokens", ROLE_MAX_TOKENS[role])
+     kwargs: dict[str, Any] = dict(model=model, messages=messages, **kw)
+     if tools is not None:
+         kwargs["tools"] = tools
+diff --git a/server/vision.py b/server/vision.py
+index d859fe9..282dbf9 100644
+--- a/server/vision.py
++++ b/server/vision.py
+@@ -90,14 +90,18 @@ def _frame_content(frame: Frame) -> list[dict[str, Any]]:
+ async def ask_scene(question: str, frames: list[Frame]) -> SceneAnswer:
+     """Send `question` + up to `MAX_FRAMES` nearest thumbnails to the vision model."""
+     frames = _validate_frames(frames)
++    # Live, "Leave ... null if you're not sure" got no frame_id/box at all (2 of 2 asks), so the
++    # headset had nothing to pin: insist on a box whenever the thing is in view.
+     prompt = (
+         f"Question: {question}\n"
+-        f"Frame ids, in order: {', '.join(f.id for f in frames)}. "
+-        "If you can point to the answer in one of the images, set frame_id to that frame's id "
+-        "and box to [x0,y0,x1,y1], normalized 0..1 within that image (top-left origin). If the "
++        f"Frame ids, in order: {', '.join(f.id for f in frames)} -- the headset's photos nearest "
++        "the spot the user is asking about, nearest first. The headset drops a pin at the centre "
++        "of your box, so always point when you can: if the thing the question is about is "
++        "visible in any frame, you MUST set frame_id to that frame's id and box to its bounding "
++        "box [x0,y0,x1,y1], normalized 0..1 within that image (top-left origin). A rough box "
++        "beats none; leave frame_id and box null only if it isn't visible in any frame. If the "
+         "question is about identifying a part, also set part_query to a short shopping search "
+-        "query for it (profile, material, colour, approximate size cues). Leave frame_id, box, "
+-        "or part_query null if you're not sure."
++        "query for it (profile, material, colour, approximate size cues), else null."
+     )
+     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+     for frame in frames:
+diff --git a/tests/test_llm.py b/tests/test_llm.py
+index 2ee98e9..36003b5 100644
+--- a/tests/test_llm.py
++++ b/tests/test_llm.py
+@@ -63,6 +63,27 @@ async def test_chat_rejects_tools_with_response_format():
+         )
+ 
+ 
++# --- per-role output cap (vision: Groq free tier is 1000 output tokens/min) -------------------
++
++
++@pytest.mark.asyncio
++async def test_chat_caps_vision_output_tokens_only():
++    fixture = _load("groq_json_schema_alone.json")
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(GROQ_URL).mock(return_value=httpx.Response(200, json=fixture))
++        msgs = [{"role": "user", "content": "hi"}]
++        await chat("vision", msgs)
++        vision_body = json.loads(route.calls.last.request.content)
++        await chat("vision", msgs, max_tokens=50)
++        override_body = json.loads(route.calls.last.request.content)
++        await chat("agent", msgs)
++        agent_body = json.loads(route.calls.last.request.content)
++
++    assert vision_body["max_tokens"] == 400
++    assert override_body["max_tokens"] == 50  # a caller's own cap wins
++    assert "max_tokens" not in agent_body
++
++
+ # --- extract: groq strict json_schema happy path ----------------------------
+ 
+ 
+diff --git a/tests/test_vision.py b/tests/test_vision.py
+index 0c43ccb..fa06b89 100644
+--- a/tests/test_vision.py
++++ b/tests/test_vision.py
+@@ -181,6 +181,41 @@ async def test_ask_scene_groq_request_uses_json_object_not_json_schema():
+     assert "schema" in req_body["messages"][0]["content"].lower()
+ 
+ 
++@pytest.mark.asyncio
++async def test_ask_scene_request_caps_output_and_insists_on_a_box():
++    """Integration finding #12: live, the vision model answered with no frame_id/box, and a
++    second ask within the minute hit Groq's 1000 output-tokens/min limit."""
++    body = {
++        "id": "x",
++        "object": "chat.completion",
++        "created": 1,
++        "model": "qwen/qwen3.8-27b",
++        "choices": [
++            {
++                "index": 0,
++                "finish_reason": "stop",
++                "message": {
++                    "role": "assistant",
++                    "content": json.dumps(
++                        {"answer": "A dishwasher.", "frame_id": "0316", "box": [0.2, 0.3, 0.6, 0.9]}
++                    ),
++                },
++            }
++        ],
++    }
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(GROQ_URL).mock(return_value=httpx.Response(200, json=body))
++        result = await vision.ask_scene("What is this?", [_frame("0316"), _frame("0321")])
++
++    assert (result.frame_id, result.box) == ("0316", [0.2, 0.3, 0.6, 0.9])
++    req_body = json.loads(route.calls.last.request.content)
++    assert req_body["max_tokens"] == llm.ROLE_MAX_TOKENS["vision"] == 400
++    prompt = req_body["messages"][1]["content"][0]["text"]
++    assert "MUST set frame_id" in prompt
++    assert "only if it isn't visible in any frame" in prompt
++    assert "if you're not sure" not in prompt  # the old escape hatch the model took
++
++
+ # --- identify_part -------------------------------------------------------------------------
+ 
+ 
+-- 
+2.50.1 (Apple Git-155)
+

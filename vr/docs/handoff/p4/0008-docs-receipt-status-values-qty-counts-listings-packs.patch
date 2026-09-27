@@ -1,0 +1,75 @@
+From 590a16d8dc5a8b1df03c5801cafbe101ccad6a86 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:54:52 -0400
+Subject: [PATCH 8/8] docs: receipt status values, qty counts listings (packs),
+ spawn pos is the eye point
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Integration findings #1, #2, #4 -- documents what the server already does:
+- /checkout `status`: "AUTHORIZED" (sandbox) or "OFFLINE_RECEIPT" (offline, approval_code null);
+  both are recorded orders, show `label`; the section 7 table gains the status column
+- `qty` counts listings as sold (a "(50-Pack)" at qty 1 is 50 pieces); line = price_usd × qty +
+  shipping_usd, receipt unit_price_usd is per pack
+- scene.json recommended_spawn.pos is the eye point (lowest mesh point + 1.6 package units),
+  look is a point to face
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index cbe9435..a080186 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -200,6 +200,10 @@ Serves `scene/<site>/<file>` (plan §1: `scene.json`, `mesh.r<rev>.glb`, `collis
+ - **`GET /scenes/{site}/scene.json`** — the only file the app polls (§1a, every ~5 s). Served
+   with `Cache-Control: no-cache` and an `ETag` (content hash); send `If-None-Match` back and get
+   a bodyless `304` when nothing changed instead of re-downloading it every poll.
++  Its `recommended_spawn.pos` is the **eye** point (lowest mesh point + 1.6 package units, a few
++  units outside the bounding box on the side the cameras shot from), so the feet go 1.6 below it;
++  `look` is a point to face (the bounding-box centre). On a capture whose scale is off, that 1.6
++  is off by the same factor until the scale is corrected.
+ - **Revision-named files** (`*.r<rev>.*`, e.g. `mesh.r2.glb`) never change content once
+   published (§1a) — served with `Cache-Control: public, max-age=31536000, immutable`.
+ - Everything else (`thumbs/*.jpg`, `path.json`) is served as a plain static file.
+@@ -328,6 +332,17 @@ on disk, it never trusts a client-supplied price):
+ `total_usd` is the grand total (part + `bom_lines`); the sandbox call (when configured)
+ authorizes that same grand total. `bom_lines` is `[]` when no `bom_id` was sent.
+ 
++`status` is `"AUTHORIZED"` (`mode: "sandbox"`, `approval_code` set) or `"OFFLINE_RECEIPT"`
++(`mode: "offline"`, `approval_code: null`: no payment was authorized because the Cybersource keys
++are missing or the sandbox call failed). Both are recorded orders — saved to disk and the
++notebook — so show `label` verbatim (section 7) rather than "payment failed"; real failures are
++HTTP errors, never a receipt.
++
++`qty` counts listings as sold, not pieces: a "(50-Pack)" listing (`Seller.pack_qty` 50) at
++`qty: 1` is 50 pieces. The part's line is `price_usd × qty + shipping_usd`, and the receipt's
++`unit_price_usd` is that listing's `price_usd` (per pack). For 8 pieces from a 50-pack send
++`qty = ⌈8 / 50⌉ = 1`.
++
+ Errors: `400` invalid part id, bad qty (1–500), bad seller_idx, seller has no price, invalid
+ `bom_id` format, unknown `bom_lines` index. `404` unknown part, unknown `bom_id`.
+ 
+@@ -489,11 +504,11 @@ Session state is in-memory; it resets on server restart. Keep `session_id` consi
+ 
+ Always display `receipt.label` verbatim in purchase confirmation UI.
+ 
+-| `mode` | `label` |
+-|---|---|
+-| `"sandbox"` | `"Sandbox authorization — Visa Acceptance / Cybersource test environment, no real charge"` |
+-| `"offline"` (keys missing) | `"Offline receipt — no payment was authorized (sandbox not configured)"` |
+-| `"offline"` (sandbox failed) | `"Offline receipt — no payment was authorized (sandbox authorization failed)"` |
++| `mode` | `status` | `label` |
++|---|---|---|
++| `"sandbox"` | `"AUTHORIZED"` | `"Sandbox authorization — Visa Acceptance / Cybersource test environment, no real charge"` |
++| `"offline"` (keys missing) | `"OFFLINE_RECEIPT"` | `"Offline receipt — no payment was authorized (sandbox not configured)"` |
++| `"offline"` (sandbox failed) | `"OFFLINE_RECEIPT"` | `"Offline receipt — no payment was authorized (sandbox authorization failed)"` |
+ 
+ Offline mode activates automatically when Cybersource keys are absent or the sandbox call fails. Receipt is still persisted to disk and the notebook.
+ 
+-- 
+2.50.1 (Apple Git-155)
+

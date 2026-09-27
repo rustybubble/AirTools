@@ -1,0 +1,453 @@
+From 9ef4731607decca4a5d99fe9d7bfb83ff5c792ce Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 00:46:47 -0400
+Subject: [PATCH] job-cancel: POST /job/run/{run_id}/cancel stops a run now and
+ frees its session
+
+The headset stops following a run when the user switches to another scanned model mid-run (the
+app's switchclean lane). Until now the server's run went on for minutes (a replace's search cap is
+150 s, its model waits 60 s more), and every new job for that session got "a job is already
+running; give it a moment".
+
+- runjob.Run keeps its chain task (and a replace run's next-model builds) in `tasks`.
+- runjob.cancel(run, reason): marks the run `cancelled`, every unfinished step `cancelled`, closes
+  its actions with job_done {run_id, status: "cancelled", kind, reason?}, and cancels its tasks
+  at the await they are in (a search / model / LLM wait). The session may start a new job at once
+  (register's Busy check only counts running runs). Idempotent: an ended run is left alone.
+- Both chains write nothing after a cancel (a step that swallowed the cancel adds no job_step, no
+  actions, no second job_done); the replace chain cancels its next-model builds (st.others).
+  Background jobs a step started (a search in the jobs table) finish on their own (shared cache).
+- POST /job/run/{run_id}/cancel {session_id?, reason?} (async: task.cancel() on the loop):
+  404 unknown run, 403 another session's run, else {run_id, status, cancelled, next}.
+- tests/test_job_cancel.py: a replace waiting on its search (the session starts a new job at
+  once; no place_part; one job_done), its next-model builds, idempotence + 404, 403, and a whole
+  job run.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/app.py            |  21 +++++
+ server/replace_job.py    |  19 +++-
+ server/runjob.py         |  56 ++++++++++-
+ tests/test_job_cancel.py | 198 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 290 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_job_cancel.py
+
+diff --git a/server/app.py b/server/app.py
+index 25bb489..13fcc30 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -1403,6 +1403,27 @@ def job_run_status(run_id: str, after: int = 0) -> dict:
+     return runjob.body(run, after)
+ 
+ 
++class JobCancelRequest(BaseModel):
++    session_id: str | None = None  # when sent, it must be the run's own session
++    reason: str | None = None  # "switched to zabel-gymnasium" (logged, and in job_done)
++
++
++@app.post("/job/run/{run_id}/cancel")
++async def job_run_cancel(run_id: str, body: JobCancelRequest | None = None) -> dict:
++    """job-cancel: stop a running run ("do the whole job" or a replace) now: its chain task is
++    cancelled, it ends `cancelled`, and its session can start a new job at once (the headset calls
++    this when the user switches to another model mid-run). Idempotent: a run that already ended
++    answers with its status and `cancelled: false`. async: task.cancel() must run on the loop."""
++    run = runjob.get(run_id)
++    if run is None:
++        raise HTTPException(404, "unknown run")
++    sid = body.session_id if body is not None else None
++    if sid and run.session_id not in (sid, sid[:128]):
++        raise HTTPException(403, "not this session's run")
++    done = runjob.cancel(run, body.reason if body is not None else None)
++    return {"run_id": run.id, "status": run.status, "cancelled": done, "next": len(run.actions)}
++
++
+ # --- live labels (docs/research/grok-ideas/g6-round5.md pick 1) ----------------------------
+ 
+ 
+diff --git a/server/replace_job.py b/server/replace_job.py
+index 6aacc40..8e44e56 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -227,6 +227,7 @@ class State:
+     part: Part | None = None
+     fit: Fit | None = None
+     others: list[asyncio.Task] = field(default_factory=list)
++    run: Any = None  # job-cancel: the run (its tasks list)
+     mode: str = "auto"  # asset-mode: the session's generator preference (its context asset_mode)
+ 
+ 
+@@ -237,7 +238,8 @@ def start(session: Any, site: str, want: Want, context: dict[str, Any]) -> runjo
+     run = runjob.register(session, site, want.query, context, list(STEPS), kind=KIND, title=title)
+     state = State(want=want, kind=replace.component_kind(want.component), label=label)
+     state.mode = assets.normalize_mode(getattr(session, "asset_mode", "auto"))  # asset-mode
+-    asyncio.create_task(_chain(run, session, state))
++    state.run = run  # job-cancel: the next models' builds join run.tasks
++    run.tasks.append(asyncio.create_task(_chain(run, session, state)))
+     return run
+ 
+ 
+@@ -256,6 +258,8 @@ async def _chain(run: runjob.Run, session: Any, st: State) -> None:
+         for name in STEPS:
+             make, cap = work[name]
+             await runjob._step(run, by[name], make(), cap_s=cap)
++            if runjob.cancelled(run):  # job-cancel: a step that swallowed the cancel
++                return
+             if by[name]["status"] == "stopped" or (
+                 name in ("search", "pick", "model") and by[name]["status"] != "done"
+             ):
+@@ -263,9 +267,16 @@ async def _chain(run: runjob.Run, session: Any, st: State) -> None:
+                 break
+         if run.status != "stopped" and st.others:
+             await asyncio.wait(st.others, timeout=MORE_MODELS_CAP_S)
++    except asyncio.CancelledError:
++        for task in st.others:  # job-cancel: the next models' builds stop too
++            task.cancel()
++        raise
+     except Exception:
+         logger.exception("replace job %s crashed", run.id)
+-        run.status = "stopped"
++        if not runjob.cancelled(run):
++            run.status = "stopped"
++    if runjob.cancelled(run):  # job-cancel: cancel() already closed the run
++        return
+     if run.status != "stopped":
+         run.status = "done"
+     run.actions.append({"name": "job_done", "args": _done_args(run, st, by)})
+@@ -280,6 +291,8 @@ async def _chain(run: runjob.Run, session: Any, st: State) -> None:
+ 
+ def _progress(run: runjob.Run, step: dict[str, Any], spoken: str) -> None:
+     """A long step's progress line: job_step {status: "running"} (the rail's caption)."""
++    if runjob.cancelled(run):  # job-cancel
++        return
+     step.update(status="running", spoken=spoken)
+     run.actions.append({"name": "job_step", "args": dict(step)})
+ 
+@@ -554,6 +567,8 @@ async def _model(st: State):
+     n = len(parts)
+     nxt = [parts[(st.index + k) % n] for k in (1, 2) if n > k]
+     st.others = [asyncio.create_task(_ensure(p, st.mode)) for p in nxt]
++    if st.run is not None:
++        st.run.tasks.extend(st.others)  # job-cancel
+     took = time.monotonic() - t0
+     spoken = f"3D model ready: {_TIER_WORDS.get(part.asset.tier, part.asset.tier)}{upgraded}."
+     if took >= 1:
+diff --git a/server/runjob.py b/server/runjob.py
+index 704d85d..1a526ae 100644
+--- a/server/runjob.py
++++ b/server/runjob.py
+@@ -16,6 +16,13 @@ nothing to work on is skipped with a spoken note, and the chain goes on.
+ Each finished step appends `job_step {i, name, status, spoken, seconds, cost_usd}` and then the
+ step's own actions (`show_survey`, `select_candidate`, `show_safety`, ...) to the run, which
+ `GET /job/run/{run_id}?after=n` pages through. Runs live in memory, like jobs.
++
++`POST /job/run/{run_id}/cancel` (`cancel`): the headset stopped following the run (the user
++switched to another scanned model mid-run). The run's chain task is cancelled at the await it is
++in (a step's wait on a search, a model or an LLM call; a replace run's extra model builds too),
++the run is marked `cancelled` and ends with `job_done {status: "cancelled"}`, and the session is
++free for a new job at once. Background jobs a step started (a search in the jobs table) finish on
++their own: other runs and the cache may use them.
+ """
+ 
+ import asyncio
+@@ -56,7 +63,7 @@ class Run:
+     site: str | None
+     goal: str | None
+     context: dict[str, Any]
+-    status: str = "running"  # running | done | stopped
++    status: str = "running"  # running | done | stopped | cancelled
+     # "job" (this chain) or "replace" (server/replace_job.py); title = the rail's heading
+     kind: str = "job"
+     title: str | None = None
+@@ -69,10 +76,15 @@ class Run:
+     recalled: bool = False
+     rebates_usd: float = 0.0
+     packet_url: str | None = None
++    # job-cancel: the chain's task and any it spawned (a replace run's next models): cancel() stops them
++    tasks: list[asyncio.Task] = field(default_factory=list, repr=False)
++    cancel_reason: str | None = None
+ 
+ 
+ _runs: OrderedDict[str, Run] = OrderedDict()
+ 
++CANCELLED = "cancelled"
++
+ 
+ class Busy(Exception):
+     """A run is already going for this session (HTTP 409)."""
+@@ -106,7 +118,7 @@ def start(session: Any, site: str | None, goal: str | None, context: dict[str, A
+     if not goal and not site:
+         raise ValueError("name what to fix, or load a scanned scene")
+     run = register(session, site, goal, context, plan_steps(site, goal))
+-    asyncio.create_task(_chain(run, session))
++    run.tasks.append(asyncio.create_task(_chain(run, session)))
+     return run
+ 
+ 
+@@ -138,6 +150,41 @@ def register(
+     return run
+ 
+ 
++def cancel(run: Run, reason: str | None = None) -> bool:
++    """Stop a running run now (`POST /job/run/{run_id}/cancel`): its tasks are cancelled, every
++    step not finished yet is `cancelled`, `job_done {status: "cancelled"}` closes its actions, and
++    the session may start another job at once. False (and nothing changes) when it had already
++    ended: done, stopped or cancelled."""
++    if run.status != "running":
++        return False
++    run.status = CANCELLED
++    run.cancel_reason = (reason or "").strip()[:200] or None
++    for step in run.steps:
++        if step.get("status") in ("pending", "running"):
++            step["status"] = CANCELLED
++    args: dict[str, Any] = {"run_id": run.id, "status": CANCELLED, "kind": run.kind}
++    if run.cancel_reason:
++        args["reason"] = run.cancel_reason
++    run.actions.append({"name": "job_done", "args": args})
++    current = asyncio.current_task()
++    for task in run.tasks:
++        if task is not current and not task.done():
++            task.cancel()
++    logger.info(
++        "run %s (%s) cancelled after %.1f s%s",
++        run.id,
++        run.kind,
++        time.monotonic() - run.started,
++        f": {run.cancel_reason}" if run.cancel_reason else "",
++    )
++    return True
++
++
++def cancelled(run: Run) -> bool:
++    """The run was cancelled: its chain writes nothing more."""
++    return run.status == CANCELLED
++
++
+ # --- the chain -----------------------------------------------------------------------------
+ 
+ 
+@@ -156,6 +203,8 @@ async def _chain(run: Run, session: Any) -> None:
+         await _step(run, by_name["checkout"], _checkout(run))
+     except Exception:
+         logger.exception("run_job %s crashed", run.id)
++    if cancelled(run):  # job-cancel: cancel() already closed the run
++        return
+     run.status = "stopped" if run.recalled else "done"
+     cost = round(sum(s.get("cost_usd") or 0 for s in run.steps), 4)
+     total = _part_total(run.part)
+@@ -206,6 +255,9 @@ async def _step(
+     except Exception as exc:  # noqa: BLE001 -- any failure skips the step, the chain goes on
+         logger.warning("run_job %s: %s failed: %s", run.id, step["name"], exc)
+         status, spoken = "skipped", f"The {step['name']} step failed; skipped it."
++    # job-cancel: a step that finished anyway (it swallowed the cancel) adds nothing
++    if cancelled(run):
++        return
+     step.update(
+         status=status,
+         spoken=spoken,
+diff --git a/tests/test_job_cancel.py b/tests/test_job_cancel.py
+new file mode 100644
+index 0000000..004f359
+--- /dev/null
++++ b/tests/test_job_cancel.py
+@@ -0,0 +1,198 @@
++"""job-cancel: `POST /job/run/{run_id}/cancel` (runjob.cancel). The headset stops following a run
++when the user switches to another scanned model mid-run; the server stops the run's chain at the
++await it is in (a search or model wait), marks it `cancelled`, closes its actions with
++`job_done {status: "cancelled"}`, and frees the session for a new job at once. Both kinds: "do the
++whole job" (runjob) and the autonomous replace (replace_job). Everything is faked; no network."""
++
++import asyncio
++import uuid
++from collections import OrderedDict
++
++import pytest
++from httpx import ASGITransport, AsyncClient
++
++from server import agent, assets, jobs, runjob
++from server.config import get_settings
++from server.models import Job
++from tests import test_replace_job as rj
++
++# test_replace_job's fixtures: the kitchen-test scene with fresh run / job tables (autouse), and the
++# faked search + model builds.
++_scene = rj._scene
++shop = rj.shop
++_no_llm_chat, _run_id, _say = rj._no_llm_chat, rj._run_id, rj._say
++
++
++def _never_search(started: list):
++    """jobs.start_search -> a search that never finishes (the step waits on it until its cap)."""
++
++    def never(req):
++        job = Job(id=uuid.uuid4().hex[:12], status="running", stage="charting the candidates")
++        jobs._jobs[job.id] = job
++        jobs._done_events[job.id] = asyncio.Event()
++        started.append(job)
++        return job
++
++    return never
++
++
++async def _until(check, tries=300):
++    for _ in range(tries):
++        if check():
++            return True
++        await asyncio.sleep(0.01)
++    return False
++
++
++def _client():
++    from server.app import app
++
++    return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
++
++
++# --- the replace run --------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_cancel_stops_a_replace_waiting_on_its_search_and_frees_the_session(
++    monkeypatch, shop
++):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    started: list = []
++    monkeypatch.setattr(jobs, "start_search", _never_search(started))
++    r = await _say("replace the dishwasher", session="hs1")
++    run = runjob.get(_run_id(r))
++    assert await _until(lambda: started and run.steps[3]["status"] == "running"), runjob.body(run)
++    chain = run.tasks[0]
++    assert not chain.done()
++
++    async with _client() as client:
++        res = await client.post(
++            f"/job/run/{run.id}/cancel",
++            json={"session_id": "hs1", "reason": "switched to zabel-gymnasium"},
++        )
++        assert res.status_code == 200
++        assert res.json() == {
++            "run_id": run.id,
++            "status": "cancelled",
++            "cancelled": True,
++            "next": len(run.actions),
++        }
++        # the session is free now: a new job starts at once (no 409 / "a job is already running")
++        again = await _say("replace the fridge", session="hs1")
++        assert [a["name"] for a in again["actions"]][-1] == "job_started", again
++        second = runjob.get(_run_id(again))
++        assert second.id != run.id and second.status == "running"
++
++        await asyncio.sleep(0.05)
++        assert chain.cancelled(), "the chain's task is cancelled at its search wait"
++        polled = (await client.get(f"/job/run/{run.id}")).json()
++    assert polled["status"] == "cancelled"
++    done = polled["actions"][-1]
++    assert done == {
++        "name": "job_done",
++        "args": {
++            "run_id": run.id,
++            "status": "cancelled",
++            "kind": "replace",
++            "reason": "switched to zabel-gymnasium",
++        },
++    }
++    by = {s["name"]: s["status"] for s in polled["steps"]}
++    assert by["remove"] == "done" and by["measure"] == "done"
++    assert {by[n] for n in ("search", "pick", "model", "place")} == {"cancelled"}
++    names = [a["name"] for a in polled["actions"]]
++    assert "place_part" not in names and names.count("job_done") == 1, names
++    runjob.cancel(second)
++
++
++@pytest.mark.asyncio
++async def test_cancel_stops_the_next_models_builds(monkeypatch, shop):
++    """After the pick goes in, the replace run builds the next two candidates' models (st.others):
++    a cancel stops those builds too."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    gate = asyncio.Event()
++    real = assets.resolve_asset
++    building: list = []
++
++    async def slow_after_first(part, **kw):
++        if building:  # the pick's own model is fast; the others hang until cancelled
++            building.append(part.id)
++            await gate.wait()
++        building.append(part.id)
++        return await real(part, **kw)
++
++    monkeypatch.setattr(assets, "resolve_asset", slow_after_first)
++    r = await _say("replace the dishwasher", session="hs2")
++    run = runjob.get(_run_id(r))
++    assert await _until(lambda: len(run.tasks) > 1), runjob.body(run)
++    others = run.tasks[1:]
++    assert runjob.cancel(run, "switched to hospital-bg")
++    await asyncio.sleep(0.05)
++    assert all(t.cancelled() for t in others), "the next models' builds were cancelled"
++    assert run.status == "cancelled"
++    assert [a["name"] for a in run.actions].count("job_done") == 1
++
++
++@pytest.mark.asyncio
++async def test_cancel_is_idempotent_and_leaves_a_finished_run_alone(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("replace the dishwasher", session="hs3")
++    run = runjob.get(_run_id(r))
++    assert await _until(lambda: run.status != "running")
++    assert run.status == "done"
++    n = len(run.actions)
++    async with _client() as client:
++        res = (await client.post(f"/job/run/{run.id}/cancel")).json()
++        assert res == {"run_id": run.id, "status": "done", "cancelled": False, "next": n}
++        assert len(run.actions) == n, "a finished run gets no second job_done"
++        assert (await client.post("/job/run/nope/cancel")).status_code == 404
++
++
++@pytest.mark.asyncio
++async def test_only_the_runs_session_may_cancel_it(monkeypatch, shop):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    monkeypatch.setattr(jobs, "start_search", _never_search([]))
++    r = await _say("replace the dishwasher", session="hs4")
++    run = runjob.get(_run_id(r))
++    async with _client() as client:
++        other = await client.post(f"/job/run/{run.id}/cancel", json={"session_id": "someone-else"})
++        assert other.status_code == 403
++        assert run.status == "running"
++        mine = await client.post(f"/job/run/{run.id}/cancel", json={"session_id": "hs4"})
++        assert mine.json()["cancelled"] is True
++
++
++# --- "do the whole job" --------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_cancel_stops_a_whole_job_run(monkeypatch, tmp_path):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
++    get_settings.cache_clear()
++    monkeypatch.setattr(jobs, "_jobs", OrderedDict())
++    monkeypatch.setattr(runjob, "_runs", OrderedDict())
++    started: list = []
++    monkeypatch.setattr(jobs, "start_search", _never_search(started))
++    session = agent.Session(id="hs5")
++    run = runjob.start(session, None, "ductless mini-split", {})
++    assert await _until(lambda: started)
++    assert run.steps[0]["name"] == "part" and run.steps[0]["status"] == "pending"
++    assert runjob.cancel(run, "switched")
++    await asyncio.sleep(0.05)
++    assert run.tasks[0].cancelled()
++    assert run.status == "cancelled"
++    assert {s["status"] for s in run.steps} == {"cancelled"}
++    assert [a["name"] for a in run.actions] == ["job_started", "job_done"]
++    assert run.actions[-1]["args"] == {
++        "run_id": run.id,
++        "status": "cancelled",
++        "kind": "job",
++        "reason": "switched",
++    }
++    # the session may start a new one at once
++    nxt = runjob.start(session, None, "a new faucet", {})
++    assert nxt.status == "running"
++    runjob.cancel(nxt)
++    await asyncio.sleep(0.01)
++    get_settings.cache_clear()
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,182 @@
+From c09ce65fe0bc2dcebd153db0b7996992e2061124 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 21:35:01 -0400
+Subject: [PATCH 5/5] feat(search): a Grok retry when the cheap model reads a
+ page but finds no complete size
+
+_extract_dims (role cheap, Groq gpt-oss-20b) gave up on window listings that publish W x H and the
+jamb depth only in prose. When its answer is incomplete (or it fails), one more try on role
+`extract_retry` (LLM_EXTRACT_RETRY, default xai:grok-4.20-0309-non-reasoning; "" = off, and tests
+blank it like LLM_FALLBACK). Documented in api.md and the README.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md             |  1 +
+ docs/api.md           |  4 ++-
+ server/config.py      |  3 ++
+ server/search.py      | 64 +++++++++++++++++++++++++++----------------
+ tests/conftest.py     |  1 +
+ tests/test_opening.py | 21 ++++++++++++++
+ 6 files changed, 69 insertions(+), 25 deletions(-)
+
+diff --git a/README.md b/README.md
+index c767cc4..9f16e78 100644
+--- a/README.md
++++ b/README.md
+@@ -91,6 +91,7 @@ Each role is independently overridable via environment variable:
+ | `LLM_ASSET` | `groq:qwen/qwen3.8-27b` | Part 3D asset: template, params, colours, photo face (one vision call per part; `xai:grok-4.20-0309-non-reasoning` works too) |
+ | `LLM_ASSET_SCAD` | `xai:grok-4.7` | Offline OpenSCAD models for moulded parts (`warm --grok-moulded` only) |
+ | `LLM_ASSET_RETRY` | `xai:grok-4.20-0309-non-reasoning` | A poor `asset` answer (none, or a known shape such as a window answered with another template) is asked once more here; `""` = off. `asset.made_by` in part.json says who made each model |
++| `LLM_EXTRACT_RETRY` | `xai:grok-4.20-0309-non-reasoning` | The search's page-text dims extraction (`cheap`) found no complete size: one more try here; `""` = off |
+ | `LLM_SURVEY` | `xai:grok-4.20-0309-non-reasoning` | Drone condition survey (`POST /scene/survey`): one vision call over up to 6 capture frames |
+ | `LLM_SURVEY_CAREFUL` | `xai:grok-4.7` | The same survey with `model: "careful"` (low reasoning effort) |
+ | `LLM_REPORT` | `xai:grok-4.3` | Site-walk report summary (`GET /report/{session_id}`); falls back to the `agent` role if xAI fails |
+diff --git a/docs/api.md b/docs/api.md
+index 48c94bf..f7f41b5 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -53,7 +53,9 @@ template call (`"groq:qwen/qwen3.8-27b"`; `"xai:grok-4.20-0309-non-reasoning"` w
+ `llm.chat` re-sent the call to xAI, or when Groq's answer was poor and the Grok retry won), `asset.template` (the
+ `llm` template, e.g. `"window"`), `asset.retried` (the Grok retry made it) and `asset.seconds` (start to GLB). A poor
+ answer is none at all, or not the template a known shape needs (a "... Vinyl Window" as a flat panel or a box); the
+-retry runs on role `asset_retry` (`LLM_ASSET_RETRY`, default `xai:grok-4.20-0309-non-reasoning`, `""` = off).
++retry runs on role `asset_retry` (`LLM_ASSET_RETRY`, default `xai:grok-4.20-0309-non-reasoning`, `""` = off). Likewise
++a search candidate whose page text the `cheap` model read without finding a complete size gets one more try on
++`extract_retry` (`LLM_EXTRACT_RETRY`, same default).
+ 
+ ---
+ 
+diff --git a/server/config.py b/server/config.py
+index 27bf297..5998dd8 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -50,6 +50,9 @@ class Settings(BaseSettings):
+     # assetgen: a poor `asset` answer (none, or a known shape -- a window -- answered with another
+     # template) is asked once more here (server/meshgen.py ask). "" turns the retry off.
+     LLM_ASSET_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
++    # assetgen: the search's page-text dims extraction (role `cheap`) found no complete size: one
++    # more try here (server/search.py _extract_dims). "" turns it off.
++    LLM_EXTRACT_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
+     LLM_REPORT: str | None = None  # site-walk report summary (server/report.py)
+     LLM_PLAN: str | None = None
+     LLM_SURVEY: str | None = None
+diff --git a/server/search.py b/server/search.py
+index 4f6120a..d90071c 100644
+--- a/server/search.py
++++ b/server/search.py
+@@ -429,31 +429,47 @@ async def _dims_from_home_depot(candidate: Candidate) -> tuple[Dims | None, dict
+     return None, None
+ 
+ 
+-async def _extract_dims(candidate: Candidate, text: str) -> Dims | None:
++def _retry_role_ready(role: str, first: str) -> bool:
++    """assetgen: `role` resolves (its LLM_<ROLE> setting is on) to a provider with a key, other
++    than `first`'s provider:model."""
+     try:
+-        page_dims = await llm.extract(
+-            "cheap",
+-            [
+-                {
+-                    "role": "system",
+-                    "content": "Extract only this product's published width, depth and height in "
+-                    "millimetres from the text below. Convert inches to mm. Null any "
+-                    "dimension that isn't explicitly published for this exact product -- never "
+-                    "guess.",
+-                },
+-                {
+-                    "role": "user",
+-                    "content": f"Product: {candidate.name}\n\nText:\n{text[:_PAGE_FETCH_CHARS]}",
+-                },
+-            ],
+-            DimsMm,
+-        )
+-    except Exception as exc:  # noqa: BLE001 -- bad/unparseable text, fall through to "drop"
+-        logger.info("find_parts: dims extract failed for %r: %s", candidate.name, exc)
+-        return None
+-    if page_dims.w is None or page_dims.d is None or page_dims.h is None:
+-        return None
+-    return Dims(w=page_dims.w, d=page_dims.d, h=page_dims.h)
++        retry, primary = llm.resolve_role(role), llm.resolve_role(first)
++    except ValueError:
++        return False
++    key = llm.PROVIDERS[retry[0]]["api_key_field"]
++    return retry != primary and bool(getattr(get_settings(), key, None))
++
++
++async def _extract_dims(candidate: Candidate, text: str) -> Dims | None:
++    messages = [
++        {
++            "role": "system",
++            "content": "Extract only this product's published width, depth and height in "
++            "millimetres from the text below. Convert inches to mm. Null any "
++            "dimension that isn't explicitly published for this exact product -- never "
++            "guess.",
++        },
++        {
++            "role": "user",
++            "content": f"Product: {candidate.name}\n\nText:\n{text[:_PAGE_FETCH_CHARS]}",
++        },
++    ]
++    # assetgen: the cheap model first; when it finds no complete size (or fails), one retry on
++    # `extract_retry` (LLM_EXTRACT_RETRY, default Grok 4.20 non-reasoning).
++    roles = ["cheap"] + (["extract_retry"] if _retry_role_ready("extract_retry", "cheap") else [])
++    for role in roles:
++        try:
++            page_dims = await llm.extract(role, messages, DimsMm)
++        except Exception as exc:  # noqa: BLE001 -- bad/unparseable text, fall through to "drop"
++            logger.info(
++                "find_parts: dims extract (%s) failed for %r: %s", role, candidate.name, exc
++            )
++            continue
++        if page_dims.w is not None and page_dims.d is not None and page_dims.h is not None:
++            if role != "cheap":
++                logger.info("find_parts: %r dims from the %s retry", candidate.name, role)
++            return Dims(w=page_dims.w, d=page_dims.d, h=page_dims.h)
++    return None
+ 
+ 
+ async def _dims_from_page(candidate: Candidate, cand_listings: list[dict]) -> Dims | None:
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1dfad8e..5b61af3 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -29,6 +29,7 @@ _UNSET_KEYS = [
+     "X_REFRESH_TOKEN",
+     "LLM_FALLBACK",  # a Groq failure a test simulates stays a failure (tests opt in)
+     "LLM_ASSET_RETRY",  # assetgen: no Grok retry of a poor asset answer (tests opt in)
++    "LLM_EXTRACT_RETRY",  # assetgen: nor of an incomplete dims extraction
+ ]
+ 
+ 
+diff --git a/tests/test_opening.py b/tests/test_opening.py
+index adfc723..2eff359 100644
+--- a/tests/test_opening.py
++++ b/tests/test_opening.py
+@@ -205,3 +205,24 @@ def test_a_window_sold_by_its_size_gets_the_typical_depth():
+     assert (d.w, d.h, d.d) == pytest.approx((1511.3, 1206.5, 82.55))
+     screen = cand.model_copy(update={"name": "5/16 in. x 84 in. Aluminum Screen Frame"})
+     assert search._window_dims_from_title(screen, [], None) is None
++
++
++@pytest.mark.asyncio
++async def test_no_dims_from_the_cheap_model_gets_a_grok_retry(monkeypatch):
++    calls = []
++
++    async def extract(role, messages, cls):
++        calls.append(role)
++        if role == "cheap":  # gpt-oss-20b read the page but found only W x H
++            return cls(w=1511.3, h=1206.5, d=None)
++        return cls(w=1511.3, h=1206.5, d=82.55)
++
++    monkeypatch.setattr(search.llm, "extract", extract)
++    cand = search.Candidate(name="59.5 in. x 47.5 in. V-2500 Series Sliding Window")
++    assert await search._extract_dims(cand, "Jamb depth 3-1/4 in.") is None  # retry off (conftest)
++    assert calls == ["cheap"]
++    monkeypatch.setenv("LLM_EXTRACT_RETRY", "xai:grok-4.20-0309-non-reasoning")
++    get_settings.cache_clear()
++    calls.clear()
++    d = await search._extract_dims(cand, "Jamb depth 3-1/4 in.")
++    assert calls == ["cheap", "extract_retry"] and d.d == pytest.approx(82.55)
+-- 
+2.50.1 (Apple Git-155)
+

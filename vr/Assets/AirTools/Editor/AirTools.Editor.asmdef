@@ -1,0 +1,28 @@
+{
+    "name": "AirTools.Editor",
+    "rootNamespace": "AirTools.Editor",
+    "references": [
+        "AirTools.Runtime",
+        "Oculus.VR",
+        "Oculus.Interaction",
+        "Oculus.Interaction.OVR",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime",
+        "Unity.TextMeshPro",
+        "glTFast",
+        "glTFast.Export",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

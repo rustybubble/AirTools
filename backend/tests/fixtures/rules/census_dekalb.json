@@ -1,0 +1,26 @@
+{
+  "result": {
+    "addressMatches": [
+      {
+        "matchedAddress": "4380 MEMORIAL DR, DECATUR, GA, 30032",
+        "geographies": {
+          "States": [
+            {
+              "NAME": "Georgia",
+              "BASENAME": "Georgia",
+              "GEOID": "13",
+              "STUSAB": "GA"
+            }
+          ],
+          "Counties": [
+            {
+              "NAME": "DeKalb County",
+              "BASENAME": "DeKalb",
+              "GEOID": "13089"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

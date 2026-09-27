@@ -1,0 +1,69 @@
+From 32ee2c33a95ad234f4f5613e4e9b7baa177b2330 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:54:29 -0400
+Subject: [PATCH 07/11] feat: scene_pin carries the vision answer as its label
+
+Integration finding #6: scene_pin had only {frame_id, box}, so the app labelled the pin with the
+agent's spoken reply. The action now also carries `label` (the vision model's answer); additive,
+clients that ignore it are unaffected.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md         | 2 +-
+ server/agent.py     | 6 +++++-
+ tests/test_agent.py | 9 ++++++++-
+ 3 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index cafa174..658d068 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1601,7 +1601,7 @@ running coach there too.
+ | `start_checkout` | `{seller_index}` | Open hold-to-pay panel — do NOT call `/checkout` yet. Index into the selected part's `sellers[]`: the one named in the command ("buy it from Home Depot"), else the cheapest/fastest if asked, else `recommended_seller`. "buy/purchase/order it", "check out", "pay for it" never start a search. On a part whose cached safety verdict is `recalled`, the reply speaks the recall first (once per part per session); the panel still opens |
+ | `equip_tool` | `{tool}` | Swap hand tool: `tape`/`level`/`protractor`/`plumb`/`area`/`notebook`/`part` |
+ | `add_note` | `{text}` | Append text to wrist notebook |
+-| `scene_pin` | `{frame_id, box}` | Project box centre onto mesh, drop a pin |
++| `scene_pin` | `{frame_id, box, label}` | Project box centre onto mesh, drop a pin; `label` is the vision answer to show on it |
+ | `show_bom` | `{bom_id, lines, total_usd}` | Open the "what else do I need?" panel; `lines[]` are `BomLine` objects, ready to render without a second call |
+ | `show_reimagined` | `{image_url, frame_id, camera, label, step, can_undo, drift}` | Show the AI edit on a quad at `camera`'s pose ~1.5 m out (recipe under `POST /scene/reimagine`); a pinch toggles before (the `thumb` of `frame_id`) and after; always show `label`. `step` is the refine stack depth: 1 = the reimagine, 2+ = refinements, 0 = the original frame again (`image_url` is then the thumb). Show an "undo" hint when `can_undo`. `drift` (median /255 change outside the first edit, null on steps 0-1) is for debugging; no need to show it |
+ | `show_installers` | `{installers, summary}` | Open the "who installs this near me?" panel; `installers[]` are the `/intel/installers` objects. Show each one's `evidence_urls` as links. The agent tool `find_installer(trade, location)` produces it; `location` comes from the tool call, else `context.location`, else the server default. The call blocks the command for ~15 s unless cached |
+diff --git a/server/agent.py b/server/agent.py
+index 77461e2..a07a212 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -966,7 +966,11 @@ async def _run_tool(
+         if scene_answer.box is not None:
+             action = {
+                 "name": "scene_pin",
+-                "args": {"frame_id": scene_answer.frame_id, "box": scene_answer.box},
++                "args": {
++                    "frame_id": scene_answer.frame_id,
++                    "box": scene_answer.box,
++                    "label": scene_answer.answer,  # the pin's own text, not the spoken reply
++                },
+             }
+         return result, action, None
+ 
+diff --git a/tests/test_agent.py b/tests/test_agent.py
+index 9091eda..9634c0e 100644
+--- a/tests/test_agent.py
++++ b/tests/test_agent.py
+@@ -161,7 +161,14 @@ async def test_ask_scene_tool_returns_scene_pin_and_spoken_answer(monkeypatch):
+ 
+     assert result["reply"] == "It's a gutter hanger."
+     assert result["actions"] == [
+-        {"name": "scene_pin", "args": {"frame_id": "f0", "box": [0.1, 0.1, 0.5, 0.5]}}
++        {
++            "name": "scene_pin",
++            "args": {
++                "frame_id": "f0",
++                "box": [0.1, 0.1, 0.5, 0.5],
++                "label": "It's a gutter hanger.",  # integration finding #6: the pin's text
++            },
++        }
+     ]
+     assert result["job_id"] is None
+ 
+-- 
+2.50.1 (Apple Git-155)
+

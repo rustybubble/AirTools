@@ -1,0 +1,267 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "facade",
+ "title": "Facade",
+ "focus": "ground",
+ "foci": [
+  "roof",
+  "wall",
+  "ground",
+  "ceiling",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "pavers",
+   "title": "Pavers",
+   "icon": "grid-four",
+   "query": "concrete patio paver",
+   "items": [
+    {
+     "part_id": "pavestone-71200-c56b01",
+     "name": "12 in. x 12 in. x 1.5 in. Pewter Square Concrete Step Stone",
+     "price_usd": 2.25,
+     "dims_mm": {
+      "w": 304.8,
+      "h": 304.8,
+      "d": 39.88
+     },
+     "image_url": "/parts/pavestone-71200-c56b01/image.jpg",
+     "model_url": "/parts/pavestone-71200-c56b01/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "pavestone-71251-72fee4",
+     "name": "12 in. x 12 in. x 1.5 in. River Red Square Concrete Step Stone",
+     "price_usd": 2.25,
+     "dims_mm": {
+      "w": 304.8,
+      "h": 304.8,
+      "d": 39.88
+     },
+     "image_url": "/parts/pavestone-71251-72fee4/image.jpg",
+     "model_url": "/parts/pavestone-71251-72fee4/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "pavestone-72600-f46c6b",
+     "name": "16 in. x 16 in. x 1.77 in. Pewter Square Concrete Step Stone",
+     "price_usd": 5.97,
+     "dims_mm": {
+      "w": 406.4,
+      "h": 406.4,
+      "d": 44.96
+     },
+     "image_url": "/parts/pavestone-72600-f46c6b/image.jpg",
+     "model_url": "/parts/pavestone-72600-f46c6b/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "planters",
+   "title": "Planters",
+   "icon": "potted-plant",
+   "query": "large outdoor planter",
+   "items": [
+    {
+     "part_id": "vigoro-hd1313-037-30bd0a",
+     "name": "Reedley Large Kentucky Walnut Brown Resin Wine Barrel Lightweight Round Planter (20 in. L x 20 in. W x 14.5 in. H)",
+     "price_usd": 18.97,
+     "dims_mm": {
+      "w": 508.0,
+      "h": 508.0,
+      "d": 368.3
+     },
+     "image_url": "/parts/vigoro-hd1313-037-30bd0a/image.jpg",
+     "model_url": "/parts/vigoro-hd1313-037-30bd0a/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "vigoro-hd1114-089-a90548",
+     "name": "Eden Large White Resin Lightweight Square Planter (20 in. L x 20 in. W x 20 in. H)",
+     "price_usd": 39.97,
+     "dims_mm": {
+      "w": 508.0,
+      "h": 508.0,
+      "d": 508.0
+     },
+     "image_url": "/parts/vigoro-hd1114-089-a90548/image.jpg",
+     "model_url": "/parts/vigoro-hd1114-089-a90548/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "vigoro-hl6642-5b3df0",
+     "name": "Jackson Extra Large Dark Brown Wood Barrel Planter with Drainage Hole (26 in. L x 26 in. W x 16.5 in. H)",
+     "price_usd": 49.97,
+     "dims_mm": {
+      "w": 659.89,
+      "h": 659.89,
+      "d": 420.12
+     },
+     "image_url": "/parts/vigoro-hl6642-5b3df0/image.jpg",
+     "model_url": "/parts/vigoro-hl6642-5b3df0/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "benches",
+   "title": "Benches",
+   "icon": "chair",
+   "query": "outdoor bench",
+   "items": [
+    {
+     "part_id": "cottage-48-bench-navy-8f8de7",
+     "name": "Cottage 48\" Bench Navy",
+     "price_usd": 509.0,
+     "dims_mm": {
+      "w": 1219.2,
+      "h": 431.8,
+      "d": 279.4
+     },
+     "image_url": "/parts/cottage-48-bench-navy-8f8de7/image.jpg",
+     "model_url": "/parts/cottage-48-bench-navy-8f8de7/model.glb",
+     "model_ready": true,
+     "seller": "Longstreet Living"
+    }
+   ]
+  },
+  {
+   "id": "drainage",
+   "title": "Drainage",
+   "icon": "drop",
+   "query": "channel drain",
+   "items": [
+    {
+     "part_id": "nds-764-f91be8",
+     "name": "Pro Series 3 in. x 40 in. Plastic Channel Drain Kit with Grate",
+     "price_usd": 60.48,
+     "dims_mm": {
+      "w": 152.4,
+      "h": 1219.2,
+      "d": 133.35
+     },
+     "image_url": "/parts/nds-764-f91be8/image.jpg",
+     "model_url": "/parts/nds-764-f91be8/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "nds-864gmtl-818024",
+     "name": "Pro Series 5 in. x 40 in. Channel Drain Kit with Metal Grate",
+     "price_usd": 87.97,
+     "dims_mm": {
+      "w": 1009.65,
+      "h": 1016.0,
+      "d": 139.7
+     },
+     "image_url": "/parts/nds-864gmtl-818024/image.jpg",
+     "model_url": "/parts/nds-864gmtl-818024/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "reln-003108-bf4cc4",
+     "name": "Storm Drain Heavy Duty 5 in. x 40 in. Channel Drain with Class C Ductile Iron Black Grate",
+     "price_usd": 148.49,
+     "dims_mm": {
+      "w": 137.16,
+      "h": 1016.0,
+      "d": 127.0
+     },
+     "image_url": "/parts/reln-003108-bf4cc4/image.jpg",
+     "model_url": "/parts/reln-003108-bf4cc4/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "picnic-tables",
+   "title": "Picnic tables",
+   "icon": "picnic-table",
+   "query": "picnic table",
+   "items": [
+    {
+     "part_id": "style-selections-163355-7ff2ed",
+     "name": "Style Selections 72-in Brown Southern Yellow Pine Rectangle Picnic Table",
+     "price_usd": 129.0,
+     "dims_mm": {
+      "w": 1829.0,
+      "h": 724.0,
+      "d": 724.0
+     },
+     "image_url": "/parts/style-selections-163355-7ff2ed/image.jpg",
+     "model_url": "/parts/style-selections-163355-7ff2ed/model.glb",
+     "model_ready": true,
+     "seller": "Lowe's"
+    },
+    {
+     "part_id": "prowood-406723-9a804b",
+     "name": "72 in. x 28.5 in. x 28.5 in. Wood Picnic Table Kit with Pressure Treated Legs",
+     "price_usd": 129.0,
+     "dims_mm": {
+      "w": 1498.6,
+      "h": 736.6,
+      "d": 1803.4
+     },
+     "image_url": "/parts/prowood-406723-9a804b/image.jpg",
+     "model_url": "/parts/prowood-406723-9a804b/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "lifetime-6-foot-classic-folding-picnic-table-e8ced0",
+     "name": "Lifetime 6-Foot Classic Folding Picnic Table",
+     "price_usd": 188.74,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 737.0,
+      "d": 1829.0
+     },
+     "image_url": "/parts/lifetime-6-foot-classic-folding-picnic-table-e8ced0/image.jpg",
+     "model_url": "/parts/lifetime-6-foot-classic-folding-picnic-table-e8ced0/model.glb",
+     "model_ready": true,
+     "seller": "Walmart"
+    }
+   ]
+  },
+  {
+   "id": "hvac",
+   "title": "HVAC units",
+   "icon": "fan",
+   "query": "central air conditioner condenser",
+   "items": [
+    {
+     "part_id": "13-4-seer2-trane-air-conditioner-condenser-227148",
+     "name": "13.4 SEER2 Trane Air Conditioner Condenser",
+     "price_usd": 1560.0,
+     "dims_mm": {
+      "w": 660.0,
+      "h": 686.0,
+      "d": 660.0
+     },
+     "image_url": "/parts/13-4-seer2-trane-air-conditioner-condenser-227148/image.jpg",
+     "model_url": "/parts/13-4-seer2-trane-air-conditioner-condenser-227148/model.glb",
+     "model_ready": true,
+     "seller": "HVACDirect.com"
+    }
+   ]
+  },
+  {
+   "id": "outdoor-lighting",
+   "title": "Outdoor lighting",
+   "icon": "lightbulb",
+   "query": "outdoor string lights",
+   "items": []
+  }
+ ]
+}

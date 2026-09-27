@@ -1,0 +1,395 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "facade",
+ "title": "Facade",
+ "focus": "roof",
+ "foci": [
+  "roof",
+  "wall",
+  "ground",
+  "ceiling",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "solar-panels",
+   "title": "Solar panels",
+   "icon": "solar-panel",
+   "query": "400W solar panel",
+   "items": [
+    {
+     "part_id": "renogy-rsp400lsc-hd-a543ab",
+     "name": "400-Watt Monocrystalline Portable Solar Panel Foldable for Power Station Generator, ETFE, IP67 Waterproof, Lightweight",
+     "price_usd": 539.99,
+     "dims_mm": {
+      "w": 855.98,
+      "h": 2839.72,
+      "d": 20.32
+     },
+     "image_url": "/parts/renogy-rsp400lsc-hd-a543ab/image.jpg",
+     "model_url": "/parts/renogy-rsp400lsc-hd-a543ab/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "windynation-mspk-400w-p30l-19c8be",
+     "name": "400-Watt Monocrystalline Solar Panel Kit with 30 Amp Solar Charge Controller",
+     "price_usd": 558.87,
+     "dims_mm": {
+      "w": 541.02,
+      "h": 995.68,
+      "d": 25.4
+     },
+     "image_url": "/parts/windynation-mspk-400w-p30l-19c8be/image.jpg",
+     "model_url": "/parts/windynation-mspk-400w-p30l-19c8be/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "windynation-mspk-400w-15-dee69c",
+     "name": "400-Watt Monocrystalline Solar Panel Kit with 30 Amp Solar Charge Controller Plus 1500-Watt Power Inverter",
+     "price_usd": 799.33,
+     "dims_mm": {
+      "w": 541.02,
+      "h": 995.68,
+      "d": 25.4
+     },
+     "image_url": "/parts/windynation-mspk-400w-15-dee69c/image.jpg",
+     "model_url": "/parts/windynation-mspk-400w-15-dee69c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "gutters",
+   "title": "Gutters & hangers",
+   "icon": "cloud-rain",
+   "query": "gutter hanger",
+   "items": [
+    {
+     "part_id": "amerimax-home-products-21812-846830",
+     "name": "5 in. Aluminum Hidden Gutter Hanger with Screw",
+     "price_usd": 2.74,
+     "dims_mm": {
+      "w": 19.05,
+      "h": 25.4,
+      "d": 127.0
+     },
+     "image_url": "/parts/amerimax-home-products-21812-846830/image.jpg",
+     "model_url": "/parts/amerimax-home-products-21812-846830/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "amerimax-home-products-47814-e9a830",
+     "name": "6 in. Aluminum Hidden Gutter Hanger with Screw",
+     "price_usd": 4.18,
+     "dims_mm": {
+      "w": 152.4,
+      "h": 50.8,
+      "d": 152.4
+     },
+     "image_url": "/parts/amerimax-home-products-47814-e9a830/image.jpg",
+     "model_url": "/parts/amerimax-home-products-47814-e9a830/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "amerimax-home-products-m0722b-d6dfa5",
+     "name": "5 in. White Vinyl K-Style Hidden Gutter Hanger",
+     "price_usd": 2.98,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 69.85,
+      "d": 114.3
+     },
+     "image_url": "/parts/amerimax-home-products-m0722b-d6dfa5/image.jpg",
+     "model_url": "/parts/amerimax-home-products-m0722b-d6dfa5/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "roof-vents",
+   "title": "Roof vents",
+   "icon": "wind",
+   "query": "roof vent",
+   "items": [
+    {
+     "part_id": "master-flow-ssb960abl-fc88fb",
+     "name": "60 sq. in. NFA Aluminum Slant Back Roof Louver Static Vent in Black",
+     "price_usd": 21.78,
+     "dims_mm": {
+      "w": 406.4,
+      "h": 139.7,
+      "d": 520.7
+     },
+     "image_url": "/parts/master-flow-ssb960abl-fc88fb/image.jpg",
+     "model_url": "/parts/master-flow-ssb960abl-fc88fb/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "gaf-ssb960ab-85a7f3",
+     "name": "GAF Master Flow Slant Back Roof Louver SSB960AB",
+     "price_usd": 21.78,
+     "dims_mm": {
+      "w": 406.4,
+      "h": 139.7,
+      "d": 520.7
+     },
+     "image_url": "/parts/gaf-ssb960ab-85a7f3/image.jpg",
+     "model_url": "/parts/gaf-ssb960ab-85a7f3/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "master-flow-gnv4bl-0ae322",
+     "name": "4 in. Goose Neck Vent Roof Cap in Black",
+     "price_usd": 45.98,
+     "dims_mm": {
+      "w": 228.6,
+      "h": 304.8,
+      "d": 152.4
+     },
+     "image_url": "/parts/master-flow-gnv4bl-0ae322/image.jpg",
+     "model_url": "/parts/master-flow-gnv4bl-0ae322/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "hvac",
+   "title": "HVAC units",
+   "icon": "fan",
+   "query": "central air conditioner condenser",
+   "items": [
+    {
+     "part_id": "13-4-seer2-trane-air-conditioner-condenser-227148",
+     "name": "13.4 SEER2 Trane Air Conditioner Condenser",
+     "price_usd": 1560.0,
+     "dims_mm": {
+      "w": 660.0,
+      "h": 686.0,
+      "d": 660.0
+     },
+     "image_url": "/parts/13-4-seer2-trane-air-conditioner-condenser-227148/image.jpg",
+     "model_url": "/parts/13-4-seer2-trane-air-conditioner-condenser-227148/model.glb",
+     "model_ready": true,
+     "seller": "HVACDirect.com"
+    }
+   ]
+  },
+  {
+   "id": "skylights",
+   "title": "Skylights",
+   "icon": "sun",
+   "query": "skylight",
+   "items": [
+    {
+     "part_id": "velux-fcm-2246-2004s-bbd9b6",
+     "name": "22-1/2 in. x 46-1/2 in. Fixed Curb Mount Skylight with Laminated Low-E3 Glass, White Solar Powered Room Darkening Shade",
+     "price_usd": 521.14,
+     "dims_mm": {
+      "w": 691.13,
+      "h": 1300.73,
+      "d": 76.2
+     },
+     "image_url": "/parts/velux-fcm-2246-2004s-bbd9b6/image.jpg",
+     "model_url": "/parts/velux-fcm-2246-2004s-bbd9b6/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "velux-fs-c06-2004s-623643",
+     "name": "21 in. x 45-3/4 in. Fixed Deck Mount Skylight with Laminated Low-E3 Glass, White Solar Powered Room Darkening Shade",
+     "price_usd": 639.0,
+     "dims_mm": {
+      "w": 577.85,
+      "h": 1206.5,
+      "d": 114.3
+     },
+     "image_url": "/parts/velux-fs-c06-2004s-623643/image.jpg",
+     "model_url": "/parts/velux-fs-c06-2004s-623643/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "velux-vcm-2246-2004s-d4690e",
+     "name": "22-1/2 x 46-1/2 in. Manual Venting Curb Mount Skylight with Laminated Low-E3 Glass, Solar Powered Room Darkening Shade",
+     "price_usd": 1041.33,
+     "dims_mm": {
+      "w": 571.5,
+      "h": 1300.73,
+      "d": 143.0
+     },
+     "image_url": "/parts/velux-vcm-2246-2004s-d4690e/image.jpg",
+     "model_url": "/parts/velux-vcm-2246-2004s-d4690e/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "chimney-caps",
+   "title": "Chimney caps",
+   "icon": "fire",
+   "query": "chimney cap",
+   "items": [
+    {
+     "part_id": "the-forever-cap-stainless-steel-slip-in-round-chimney-cap-ccss7r-592cad",
+     "name": "The Forever Cap Stainless Steel Slip in Round Chimney Cap ccss7r",
+     "price_usd": 41.67,
+     "dims_mm": {
+      "w": 355.6,
+      "h": 228.6,
+      "d": 355.6
+     },
+     "image_url": "/parts/the-forever-cap-stainless-steel-slip-in-round-chimney-cap-ccss7r-592cad/image.jpg",
+     "model_url": "/parts/the-forever-cap-stainless-steel-slip-in-round-chimney-cap-ccss7r-592cad/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "master-flow-cc913-18a053",
+     "name": "9 in. x 13 in. Galvanized Steel Fixed Chimney Cap in Black",
+     "price_usd": 54.48,
+     "dims_mm": {
+      "w": 228.6,
+      "h": 349.25,
+      "d": 203.2
+     },
+     "image_url": "/parts/master-flow-cc913-18a053/image.jpg",
+     "model_url": "/parts/master-flow-cc913-18a053/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "master-flow-cc1313-5d492d",
+     "name": "13 in. x 13 in. Galvanized Steel Fixed Chimney Cap in Black",
+     "price_usd": 54.98,
+     "dims_mm": {
+      "w": 342.9,
+      "h": 342.9,
+      "d": 342.9
+     },
+     "image_url": "/parts/master-flow-cc1313-5d492d/image.jpg",
+     "model_url": "/parts/master-flow-cc1313-5d492d/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "x-red-tile-roofs",
+   "title": "Red Tile Roofs",
+   "icon": "solar-roof",
+   "query": "roof tiles",
+   "items": [
+    {
+     "part_id": "quarrix-building-products-hip-ridge-rake-tile-f1557a",
+     "name": "Quarrix Building Products Hip Ridge Rake Tile",
+     "price_usd": 16.99,
+     "dims_mm": {
+      "w": 206.0,
+      "h": 98.0,
+      "d": 438.0
+     },
+     "image_url": "/parts/quarrix-building-products-hip-ridge-rake-tile-f1557a/image.jpg",
+     "model_url": "/parts/quarrix-building-products-hip-ridge-rake-tile-f1557a/model.glb",
+     "model_ready": true,
+     "seller": "Best Materials"
+    },
+    {
+     "part_id": "ecostar-traditional-cedar-shake-accessory-tiles-d89d52",
+     "name": "EcoStar, Traditional Cedar Shake, Accessory Tiles",
+     "price_usd": 69.85,
+     "dims_mm": {
+      "w": 305.0,
+      "h": 6.0,
+      "d": 457.0
+     },
+     "image_url": "/parts/ecostar-traditional-cedar-shake-accessory-tiles-d89d52/image.jpg",
+     "model_url": "/parts/ecostar-traditional-cedar-shake-accessory-tiles-d89d52/model.glb",
+     "model_ready": true,
+     "seller": "Green Building Supply"
+    }
+   ]
+  },
+  {
+   "id": "windows",
+   "title": "Windows & frames",
+   "icon": "squares-four",
+   "query": "vinyl window",
+   "items": [
+    {
+     "part_id": "jeld-wen-thdjw235100032-d0809e",
+     "name": "V-2500 Series 59.5 in. W x 47.5 in. H Left-Handed White Vinyl Low-E Sliding Window w/Brickmould Nail Fin Frame and Grids",
+     "price_usd": 415.6,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw235100032-d0809e/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw235100032-d0809e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw140400129-e52d6c",
+     "name": "59.5 in. x 47.5 in. V-4500 Series White Vinyl Right-Handed Sliding Window with Fiberglass Mesh Screen",
+     "price_usd": 597.42,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw140400129-e52d6c/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw140400129-e52d6c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "jeld-wen-thdjw138500119-d5f663",
+     "name": "59.5 in. x 47.5 in. V-2500 Series Desert Sand Vinyl Right-Handed Sliding Window with Colonial Grids/Grilles",
+     "price_usd": 640.45,
+     "dims_mm": {
+      "w": 1511.3,
+      "h": 1206.5,
+      "d": 82.55
+     },
+     "image_url": "/parts/jeld-wen-thdjw138500119-d5f663/image.jpg",
+     "model_url": "/parts/jeld-wen-thdjw138500119-d5f663/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "flashing",
+   "title": "Flashing",
+   "icon": "house-line",
+   "query": "roof flashing",
+   "items": []
+  },
+  {
+   "id": "snow-guards",
+   "title": "Snow guards",
+   "icon": "snowflake",
+   "query": "roof snow guard",
+   "items": []
+  },
+  {
+   "id": "satellite-mounts",
+   "title": "Satellite mounts",
+   "icon": "house-line",
+   "query": "satellite dish roof mount",
+   "items": []
+  }
+ ]
+}

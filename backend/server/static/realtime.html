@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Realtime Quartermaster</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem 1.5rem 3rem;
+         background: #f4f5f7; color: #1b1f24; max-width: 60rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  .muted { color: #666; font-size: .85rem; }
+  section { background: #fff; border: 1px solid #d9dce1; border-radius: 8px;
+            padding: 1rem; margin: 1rem 0; }
+  .row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+  input, textarea, button { font: inherit; padding: .4rem .55rem;
+                            border: 1px solid #c4c9d0; border-radius: 6px; }
+  textarea { width: 100%; font-family: ui-monospace, monospace; font-size: .8rem; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #ptt { font-size: 1.1rem; padding: .8rem 1.6rem; user-select: none; touch-action: none; }
+  #ptt.on { background: #dc2626; border-color: #dc2626; }
+  #log { font-family: ui-monospace, monospace; font-size: .8rem; white-space: pre-wrap;
+         max-height: 28rem; overflow-y: auto; }
+  .user { color: #1d4ed8; } .assistant { color: #047857; } .action { color: #7c3aed; }
+  .error { color: #b91c1c; } .info { color: #666; }
+</style>
+</head>
+<body>
+<h1>Realtime Quartermaster</h1>
+<p class="muted">Browser stand-in for the headset on <code>WS /voice/realtime</code>: hold the
+button (or Space) to talk, release to send. Reply audio plays here; actions are the JSON Unity
+would execute. Chrome recommended (needs a 24 kHz AudioContext).</p>
+
+<section class="row">
+  <label>session_id <input id="sid" value="browser-test" size="14" /></label>
+  <label>voice server <input id="host" size="22" /></label>
+  <button id="connect">Connect</button>
+  <button id="disconnect" disabled>Disconnect</button>
+  <span id="status" class="muted">disconnected</span>
+</section>
+
+<section>
+  <div class="row">
+    <button id="ptt" disabled>Hold to talk</button>
+    <input id="text" placeholder="…or type a turn" size="36" />
+    <button id="send" disabled>Send text</button>
+    <button id="cancel" disabled>Cancel reply</button>
+  </div>
+  <p class="muted">Context (docs/api.md §6), sent on connect and on click:</p>
+  <textarea id="ctx" rows="3">{"measurement": {"label": "gutter run", "value_m": 3.66, "axis": "length"}}</textarea>
+  <button id="sendctx" disabled>Send context</button>
+</section>
+
+<section><div id="log"></div></section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+$("host").value = location.host;
+let ws = null, ctx = null, mic = null, node = null, talking = false, playAt = 0, sources = [];
+let tRelease = 0, firstAudio = false, assistantLine = null, userLine = null;
+
+function log(cls, text) {
+  const div = document.createElement("div");
+  div.className = cls; div.textContent = text;
+  $("log").appendChild(div); $("log").scrollTop = 1e9;
+  return div;
+}
+
+// Mic -> PCM16 LE at the context rate (24 kHz), posted in ~40 ms chunks.
+const WORKLET = `class Pcm extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = []; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) { for (const s of ch) this.buf.push(s);
+      if (this.buf.length >= 960) {
+        const out = new Int16Array(this.buf.length);
+        this.buf.forEach((s, i) => out[i] = Math.max(-1, Math.min(1, s)) * 0x7fff);
+        this.port.postMessage(out.buffer, [out.buffer]); this.buf = []; } }
+    return true; } }
+registerProcessor("pcm", Pcm);`;
+
+async function setupAudio() {
+  ctx = new AudioContext({ sampleRate: 24000 });
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  mic = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  node = new AudioWorkletNode(ctx, "pcm");
+  node.port.onmessage = (e) => { if (talking && ws?.readyState === 1) ws.send(e.data); };
+  ctx.createMediaStreamSource(mic).connect(node);
+}
+
+function play(buf) {
+  const pcm = new Int16Array(buf);
+  const audio = ctx.createBuffer(1, pcm.length, 24000);
+  const ch = audio.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 0x8000;
+  const src = ctx.createBufferSource();
+  src.buffer = audio; src.connect(ctx.destination);
+  playAt = Math.max(playAt, ctx.currentTime + 0.05);
+  src.start(playAt); playAt += audio.duration;
+  sources.push(src); src.onended = () => { sources = sources.filter((s) => s !== src); };
+  if (!firstAudio && tRelease) { firstAudio = true;
+    log("info", `first reply audio ${(performance.now() - tRelease).toFixed(0)} ms after release`); }
+}
+
+function flushPlayback() { sources.forEach((s) => s.stop()); sources = []; playAt = 0; }
+
+function sendContext() {
+  try { ws.send(JSON.stringify({ type: "context", context: JSON.parse($("ctx").value || "{}") })); }
+  catch (e) { log("error", "context is not valid JSON"); }
+}
+
+function onMessage(e) {
+  if (e.data instanceof ArrayBuffer) return play(e.data);
+  const m = JSON.parse(e.data);
+  if (m.type === "ready") { $("status").textContent = "ready"; sendContext(); }
+  else if (m.type === "transcript" && m.role === "assistant") {
+    assistantLine ??= log("assistant", ""); assistantLine.textContent = "QM: " + m.text;
+    if (m.final) assistantLine = null;
+  } else if (m.type === "transcript") {
+    userLine ??= log("user", ""); userLine.textContent = "you: " + m.text;
+  } else if (m.type === "action") log("action", "action " + JSON.stringify(m.action));
+  else if (m.type === "error") log("error", `error${m.fatal ? " (fatal)" : ""}: ${m.message}`);
+  else if (m.type === "response_done") { assistantLine = null; userLine = null; }
+  else log("info", JSON.stringify(m));
+}
+
+$("connect").onclick = async () => {
+  if (!ctx) await setupAudio();
+  await ctx.resume();
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${$("host").value}/voice/realtime?session_id=${encodeURIComponent($("sid").value)}`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = onMessage;
+  ws.onopen = () => { $("status").textContent = "connecting to xAI…";
+    for (const id of ["ptt", "send", "cancel", "sendctx", "disconnect"]) $(id).disabled = false;
+    $("connect").disabled = true; };
+  ws.onclose = () => { $("status").textContent = "disconnected";
+    for (const id of ["ptt", "send", "cancel", "sendctx", "disconnect"]) $(id).disabled = true;
+    $("connect").disabled = false; };
+};
+$("disconnect").onclick = () => ws?.close();
+
+function down() {
+  if (talking || !ws) return; talking = true; $("ptt").classList.add("on");
+  flushPlayback(); ws.send(JSON.stringify({ type: "cancel" }));  // barge-in
+}
+function up() {
+  if (!talking) return; talking = false; $("ptt").classList.remove("on");
+  tRelease = performance.now(); firstAudio = false;
+  ws.send(JSON.stringify({ type: "commit" }));
+}
+$("ptt").onpointerdown = down; $("ptt").onpointerup = up; $("ptt").onpointerleave = up;
+addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") { e.preventDefault(); down(); } });
+addEventListener("keyup", (e) => { if (e.code === "Space") up(); });
+$("send").onclick = () => {
+  const text = $("text").value.trim(); if (!text) return;
+  flushPlayback(); tRelease = performance.now(); firstAudio = false;
+  ws.send(JSON.stringify({ type: "text", text })); $("text").value = "";
+};
+$("text").onkeydown = (e) => { if (e.key === "Enter") $("send").click(); };
+$("cancel").onclick = () => { flushPlayback(); ws.send(JSON.stringify({ type: "cancel" })); };
+$("sendctx").onclick = sendContext;
+</script>
+</body>
+</html>

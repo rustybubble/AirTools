@@ -1,0 +1,149 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 19e5b501cdeea461783546674053763c, type: 3}
+  m_Name: AirToolsTheme
+  m_EditorClassIdentifier: AirTools.Runtime::AirTools.UI.UiTheme
+  colors:
+    background: {r: 0.04, g: 0.045, b: 0.06, a: 1}
+    surface: {r: 0.1, g: 0.11, b: 0.14, a: 1}
+    glassRegular: {r: 0.078, g: 0.086, b: 0.106, a: 0.94}
+    glassClear: {r: 0.165, g: 0.18, b: 0.22, a: 0.55}
+    elevatedSolid: {r: 0.133, g: 0.145, b: 0.176, a: 0.95}
+    textPrimary: {r: 0.929, g: 0.933, b: 0.949, a: 1}
+    textSecondary: {r: 0.929, g: 0.933, b: 0.949, a: 0.68}
+    textDisabled: {r: 0.929, g: 0.933, b: 0.949, a: 0.4}
+    primary: {r: 0.9608, g: 0.9647, b: 0.9725, a: 1}
+    primaryHover: {r: 1, g: 1, b: 1, a: 1}
+    primaryPressed: {r: 0.8353, g: 0.851, b: 0.8784, a: 1}
+    onPrimary: {r: 0.0588, g: 0.0667, b: 0.0824, a: 1}
+    ink: {r: 1, g: 0.8235, b: 0.2471, a: 1}
+    inkHover: {r: 1, g: 0.8588, b: 0.4, a: 1}
+    inkPressed: {r: 0.9098, g: 0.7255, b: 0.1373, a: 1}
+    onInk: {r: 0.0902, g: 0.0784, b: 0.0392, a: 1}
+    inkWash: {r: 1, g: 0.8235, b: 0.2471, a: 0.2}
+    info: {r: 0.4863, g: 0.7686, b: 1, a: 1}
+    onDanger: {r: 1, g: 1, b: 1, a: 1}
+    dangerFill: {r: 0.7765, g: 0.1569, b: 0.1569, a: 1}
+    danger: {r: 1, g: 0.36, b: 0.33, a: 1}
+    success: {r: 0.25, g: 0.82, b: 0.52, a: 1}
+    warning: {r: 1, g: 0.6235, b: 0.2627, a: 1}
+    separator: {r: 1, g: 1, b: 1, a: 0.12}
+    control: {r: 1, g: 1, b: 1, a: 0.06}
+    controlHover: {r: 1, g: 1, b: 1, a: 0.07}
+    controlPressed: {r: 1, g: 1, b: 1, a: 0.11}
+    controlDisabled: {r: 1, g: 1, b: 1, a: 0.05}
+    handle: {r: 1, g: 1, b: 1, a: 0.35}
+    iconShade: {r: 0.8, g: 0.87, b: 0.97, a: 1}
+  shape:
+    radiusSmall: 0.006
+    radiusMedium: 0.009
+    radiusLarge: 0.013
+    rimWidth: 0.0009
+    rimStrength: 0.22
+    gradient: 0.035
+  spacing:
+    xxs: 0.004
+    xs: 0.008
+    s: 0.012
+    m: 0.016
+    l: 0.024
+    xl: 0.032
+  motion:
+    fast: 0.1
+    standard: 0.16
+    modal: 0.22
+    hoverScale: 1.02
+    pressDepth: 0.003
+    pressScale: 0.97
+  type:
+    font: {fileID: 11400000, guid: 5ca98512e2c784f00ac4b55fb4cc021f, type: 2}
+    fontMedium: {fileID: 11400000, guid: 9c5b73492cfa4474eb7ead978b728280, type: 2}
+    fontSemibold: {fileID: 11400000, guid: bca64c71b756f4b75b16d081141a7178, type: 2}
+    regular: {fileID: 2100000, guid: c6d8a61b171b44305808bb0d45a1475e, type: 2}
+    medium: {fileID: 2100000, guid: 799713df7f5fa4ce78ba41bd6baf3646, type: 2}
+    semibold: {fileID: 2100000, guid: a23b53b147d17428c8e64c68d46e9399, type: 2}
+    annotation: {fileID: 2100000, guid: e7376cbb40bd147c49e1cd1daa83dcbb, type: 2}
+    display: 32
+    heading: 26
+    title: 22
+    body: 20
+    label: 18
+    caption: 16
+    numeric: 22
+    hud: {fileID: 2100000, guid: ae067e8aa3b9644e2a196405b9100070, type: 2}
+    halo: {fileID: 2100000, guid: 1da7b2e97e2bc4d728802f268fd4f8b3, type: 2}
+  materials:
+    glassRegular: {fileID: 2100000, guid: 6fe318a671f064f46b09648ec66832f4, type: 2}
+    glassClear: {fileID: 2100000, guid: 892c4f537603349d79573d4d89d34007, type: 2}
+    elevatedSolid: {fileID: 2100000, guid: 951c7cae859694d96b2f0af8ace38367, type: 2}
+    shadow: {fileID: 2100000, guid: 3a8315e8b554a44e095ac3c8c666d756, type: 2}
+    hudGlass: {fileID: 2100000, guid: 34f74e55c6f3047d1889fd2dec11b041, type: 2}
+    labelGlass: {fileID: 2100000, guid: dd0359409d44a423ba6064b9817ef941, type: 2}
+    liquidGlass: {fileID: 2100000, guid: 95cbac8bfc8c2466a989768c5a02be17, type: 2}
+  icons:
+    regular: {fileID: 11400000, guid: ecc262ed93ba445de9e2f991d60ff0cf, type: 2}
+    fill: {fileID: 11400000, guid: 16b3a274eb43f4f46bade7934e52c011, type: 2}
+    regularMaterial: {fileID: 2100000, guid: 54c7db755781b40f5a1e743d73449f3a, type: 2}
+    fillMaterial: {fileID: 2100000, guid: 6c6529d5d47ef459fb282d482fa6e15e, type: 2}
+  glass:
+    window:
+      bezel: 0.0065
+      bezelFraction: 0.25
+      highlight: 0.8
+      edgeClear: 0.45
+      sheen: 0
+      frost: 0.006
+      gradient: 0.008
+    card:
+      bezel: 0.004
+      bezelFraction: 0.3
+      highlight: 0.4
+      edgeClear: 0.15
+      sheen: 0
+      frost: 0.004
+      gradient: 0.008
+    control:
+      bezel: 0.0055
+      bezelFraction: 0.45
+      highlight: 1
+      edgeClear: 0.35
+      sheen: 0.012
+      frost: 0.004
+      gradient: 0.012
+    hud:
+      bezel: 0.0045
+      bezelFraction: 0.3
+      highlight: 0.6
+      edgeClear: 0.25
+      sheen: 0
+      frost: 0.004
+      gradient: 0.005
+    label:
+      bezel: 1000
+      bezelFraction: 0.3
+      highlight: 0.5
+      edgeClear: 0.2
+      sheen: 0
+      frost: 0.004
+      gradient: 0.02
+    highContrast:
+      bezel: 0.004
+      bezelFraction: 0.25
+      highlight: 0.3
+      edgeClear: 0
+      sheen: 0
+      frost: 0
+      gradient: 0
+    envTop: {r: 0.92, g: 0.96, b: 1, a: 1}
+    envBottom: {r: 0.2, g: 0.22, b: 0.26, a: 1}
+    specPower: 20
+    keyLift: 0.55

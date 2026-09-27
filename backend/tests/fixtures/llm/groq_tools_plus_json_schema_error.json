@@ -1,0 +1,5 @@
+{
+  "label": "tools_plus_json_schema_single_call",
+  "status": "error",
+  "error": "Error code: 400 - {'error': {'message': 'json mode cannot be combined with tool/function calling', 'type': 'invalid_request_error', 'param': 'response_format'}}"
+}

@@ -1,0 +1,165 @@
+From 646eea5d4c93efb641bab684b5e180eb8ad9e991 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 19:33:31 -0400
+Subject: [PATCH 04/12] fix(llm): reasoning parameters per model, so every Grok
+ model works in every role
+
+grok-4.20 (reasoning and non-reasoning) answer HTTP 400 "does not support parameter
+reasoningEffort"; grok-4.3/4.5/4.6/4.7 take it (live-checked 2026-09-26). chat() drops
+reasoning_effort for the models that don't take it, and a model that 400s on it is retried
+once without it and remembered. LLM_AGENT=xai:grok-4.20-0309-non-reasoning works now.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/llm.py     | 52 +++++++++++++++++++++++++++++++++------
+ tests/test_llm.py | 62 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 107 insertions(+), 7 deletions(-)
+
+diff --git a/server/llm.py b/server/llm.py
+index 595f073..cd2ed96 100644
+--- a/server/llm.py
++++ b/server/llm.py
+@@ -85,6 +85,30 @@ ROLE_DEFAULTS = {
+ # schema-in-prompt + validate/retry treatment `extract()` already gives DeepSeek.
+ NO_STRICT_SCHEMA_MODELS = {"qwen/qwen3.8-27b"}
+ 
++# Reasoning parameters are per model, not per provider (live-checked 2026-09-26 on our xAI key):
++# grok-4.3 / 4.5 / 4.6 / 4.7 take `reasoning_effort`; both grok-4.20 models (reasoning and
++# non-reasoning) answer HTTP 400 "does not support parameter reasoningEffort". `chat()` drops the
++# parameter for these, and learns any other model that 400s on it (retried once without it).
++NO_REASONING_EFFORT_PREFIXES = ("grok-4.20", "grok-3", "grok-4-0709", "grok-4-fast", "grok-code")
++_REASONING_PARAMS = ("reasoning_effort", "reasoning")
++_no_reasoning_models: set[tuple[str, str]] = set()
++
++
++def takes_reasoning_effort(provider: str, model: str) -> bool:
++    """Whether `provider:model` accepts `reasoning_effort` (see NO_REASONING_EFFORT_PREFIXES)."""
++    if (provider, model) in _no_reasoning_models:
++        return False
++    if provider == "xai":
++        return "non-reasoning" not in model and not model.startswith(NO_REASONING_EFFORT_PREFIXES)
++    return True
++
++
++def _rejects_reasoning(exc: Exception) -> bool:
++    """A 400 about the reasoning parameter ("does not support parameter reasoningEffort")."""
++    text = str(exc).lower()
++    return isinstance(exc, openai.BadRequestError) and "reasoning" in text and "support" in text
++
++
+ # Output cap per role (a caller's own max_tokens wins). Groq's free tier gives the vision model
+ # only 1000 output tokens/min; uncapped, the second "what is this?" within a minute got a 429
+ # (seen live 2026-09-25: "limit 1000, requested 1707"). Its JSON answers are ~10-60 tokens, so
+@@ -178,18 +202,32 @@ async def chat(
+     retries = kw.pop("max_retries", 4)
+     if role in ROLE_MAX_TOKENS:
+         kw.setdefault("max_tokens", ROLE_MAX_TOKENS[role])
++    if not takes_reasoning_effort(provider, model):
++        for key in _REASONING_PARAMS:
++            kw.pop(key, None)
+     kwargs: dict[str, Any] = dict(model=model, messages=messages, **kw)
+     if tools is not None:
+         kwargs["tools"] = tools
+ 
++    async def call() -> ChatCompletion:
++        pool = groq_pool(model) if provider == "groq" else None
++        if pool and pool.keys():
++            return await pool.call(
++                lambda key: _client(provider, key, retries).chat.completions.create(**kwargs)
++            )
++        return await _client(provider, None, retries).chat.completions.create(**kwargs)
++
+     start = time.monotonic()
+-    pool = groq_pool(model) if provider == "groq" else None
+-    if pool and pool.keys():
+-        resp = await pool.call(
+-            lambda key: _client(provider, key, retries).chat.completions.create(**kwargs)
+-        )
+-    else:
+-        resp = await _client(provider, None, retries).chat.completions.create(**kwargs)
++    try:
++        resp = await call()
++    except openai.BadRequestError as exc:
++        if not (_rejects_reasoning(exc) and any(k in kwargs for k in _REASONING_PARAMS)):
++            raise
++        logger.warning("llm %s:%s rejects reasoning parameters; retrying without", provider, model)
++        _no_reasoning_models.add((provider, model))
++        for key in _REASONING_PARAMS:
++            kwargs.pop(key, None)
++        resp = await call()
+     latency_ms = (time.monotonic() - start) * 1000
+     usage = resp.usage
+     cost = cost_usd(usage)
+diff --git a/tests/test_llm.py b/tests/test_llm.py
+index 36003b5..1778e73 100644
+--- a/tests/test_llm.py
++++ b/tests/test_llm.py
+@@ -305,3 +305,65 @@ async def test_asset_role_on_xai_sends_the_image(monkeypatch):
+     assert sent["model"] == "grok-4.20-0309-non-reasoning"
+     assert sent["messages"][0]["content"][1] == {"type": "image_url", "image_url": {"url": url}}
+     assert "max_retries" not in sent
++
++
++# --- reasoning parameters are per model (xAI's grok-4.20 models 400 on reasoning_effort) --------
++
++XAI_URL = "https://api.x.ai/v1/chat/completions"
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "model,kept",
++    [
++        ("grok-4.20-0309-non-reasoning", False),
++        ("grok-4.20-0309-reasoning", False),
++        ("grok-4.7", True),
++        ("grok-4.5", True),
++    ],
++)
++async def test_reasoning_effort_only_for_models_that_take_it(monkeypatch, model, kept):
++    monkeypatch.setenv("LLM_AGENT", f"xai:{model}")
++    get_settings.cache_clear()
++    body = _load("groq_json_schema_alone.json")
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(XAI_URL).mock(return_value=httpx.Response(200, json=body))
++        await chat("agent", [{"role": "user", "content": "hi"}], reasoning_effort="low")
++    sent = json.loads(route.calls.last.request.content)
++    assert ("reasoning_effort" in sent) is kept
++    assert sent["model"] == model
++
++
++@pytest.mark.asyncio
++async def test_a_model_that_rejects_reasoning_effort_is_retried_without_and_remembered(
++    monkeypatch,
++):
++    from server import llm
++
++    monkeypatch.setattr(llm, "_no_reasoning_models", set())
++    monkeypatch.setenv("LLM_AGENT", "xai:grok-9-new")
++    get_settings.cache_clear()
++    body = _load("groq_json_schema_alone.json")
++    refusal = {"code": "Client specified an invalid argument",
++               "error": "Model grok-9-new does not support parameter reasoningEffort."}  # fmt: skip
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(XAI_URL).mock(
++            side_effect=[httpx.Response(400, json=refusal), httpx.Response(200, json=body)]
++        )
++        await chat("agent", [{"role": "user", "content": "hi"}], reasoning_effort="low")
++        first, second = (json.loads(c.request.content) for c in route.calls)
++    assert first["reasoning_effort"] == "low"
++    assert "reasoning_effort" not in second
++    assert not llm.takes_reasoning_effort("xai", "grok-9-new")  # the next call skips it
++
++
++@pytest.mark.asyncio
++async def test_other_bad_requests_still_raise(monkeypatch):
++    import openai
++
++    monkeypatch.setenv("LLM_AGENT", "xai:grok-4.7")
++    get_settings.cache_clear()
++    with respx.mock(assert_all_called=True) as router:
++        router.post(XAI_URL).mock(return_value=httpx.Response(400, json={"error": "bad tools"}))
++        with pytest.raises(openai.BadRequestError):
++            await chat("agent", [{"role": "user", "content": "hi"}], reasoning_effort="low")
+-- 
+2.50.1 (Apple Git-155)
+

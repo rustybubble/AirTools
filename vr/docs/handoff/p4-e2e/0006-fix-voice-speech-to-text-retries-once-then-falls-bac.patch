@@ -1,0 +1,253 @@
+From ca14bb43f2a2f121c649a6f281f5bac8790283d9 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:00:26 -0400
+Subject: [PATCH 06/12] fix(voice): speech-to-text retries once, then falls
+ back to xAI grok-transcribe
+
+The voice test's p11 got httpx.ConnectError from Groq Whisper. transcribe() retries a dropped
+connection or a 5xx once; when Groq still can't (every key limited, down), the audio goes to
+xAI's grok-transcribe over one short realtime session (xAI has no REST transcription endpoint:
+/v1/audio/transcriptions is a 404, checked 2026-09-26): PCM16 24 kHz, commit, the newest
+transcript, closed before the voice model's reply (~3 s live). /voice/command answers 503, never
+500, when both fail (KeysExhausted and httpx errors included).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/app.py       |   5 +-
+ server/voice.py     | 113 ++++++++++++++++++++++++++++++++++++++++++--
+ tests/test_voice.py |  63 ++++++++++++++++++++++++
+ 3 files changed, 176 insertions(+), 5 deletions(-)
+
+diff --git a/server/app.py b/server/app.py
+index ed9b8b8..96c664e 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -61,6 +61,7 @@ from server import (
+     voice,
+ )
+ from server.config import get_settings
++from server.keys import KeysExhausted
+ from server.models import SearchRequest
+ 
+ logging.basicConfig(level=logging.INFO)
+@@ -722,8 +723,8 @@ async def voice_command(
+     audio_bytes = await _read_capped(_iter_upload(audio), voice.STT_MAX_BYTES)
+     try:
+         transcript = await voice.transcribe(audio_bytes, filename=audio.filename or "audio.wav")
+-    except voice.VoiceError as exc:
+-        raise HTTPException(503, str(exc)) from exc
++    except (voice.VoiceError, KeysExhausted, httpx.HTTPError) as exc:
++        raise HTTPException(503, f"speech-to-text unavailable: {exc}") from exc
+     except ValueError as exc:
+         raise HTTPException(400, str(exc)) from exc
+     try:
+diff --git a/server/voice.py b/server/voice.py
+index cb986ec..6a4503d 100644
+--- a/server/voice.py
++++ b/server/voice.py
+@@ -14,11 +14,18 @@ is also `OFFLINE`'s enforcement point here: a cache hit still speaks offline, a
+ `transcribe()` has no cache to fall back on, so it checks `OFFLINE` directly.
+ """
+ 
++import asyncio
+ import base64
++import io
++import json
+ import logging
++import time
++import wave
+ 
+ import edge_tts
+ import httpx
++import numpy as np
++import websockets
+ 
+ from server import cache
+ from server.config import get_settings
+@@ -122,9 +129,109 @@ async def transcribe(audio: bytes, filename: str = "audio.wav", prompt: str | No
+                 files={"file": (filename, audio)},
+             )
+ 
+-    resp = await _groq_post(settings.STT_MODEL, post)
+-    resp.raise_for_status()
+-    return resp.json()["text"]
++    groq_error: Exception | None = None
++    for attempt in range(2):  # one retry: a dropped connection (the voice test's p11)
++        try:
++            resp = await _groq_post(settings.STT_MODEL, post)
++            resp.raise_for_status()
++            return resp.json()["text"]
++        except (httpx.TransportError, httpx.HTTPStatusError, VoiceError) as exc:
++            groq_error = exc
++            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
++            if isinstance(exc, VoiceError) or (status is not None and status < 500):
++                break  # every key limited / a bad request: retrying Groq won't help
++            logger.warning("groq stt attempt %d failed: %s", attempt + 1, exc)
++    if not settings.GROK_API_KEY:
++        raise VoiceError(f"speech-to-text failed: {groq_error}")
++    logger.warning("groq stt unavailable (%s); transcribing with xAI grok-transcribe", groq_error)
++    try:
++        return await transcribe_xai(audio)
++    except (VoiceError, OSError, TimeoutError, websockets.WebSocketException) as exc:
++        raise VoiceError(f"speech-to-text failed: groq {groq_error}; xai {exc}") from exc
++
++
++XAI_REALTIME_WS = "wss://api.x.ai/v1/realtime"
++XAI_STT_TIMEOUT_S = 12.0
++XAI_STT_SETTLE_S = 1.5  # after a transcript, how long a longer one for the same audio may take
++
++
++def pcm24k(audio: bytes) -> bytes:
++    """A PCM16 WAV (any rate, mono or stereo) as the realtime API's input: PCM16 24 kHz mono."""
++    try:
++        with wave.open(io.BytesIO(audio)) as w:
++            rate, channels, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
++            frames = w.readframes(w.getnframes())
++    except (wave.Error, EOFError) as exc:
++        raise VoiceError(f"not a WAV: {exc}") from exc
++    if width != 2:
++        raise VoiceError(f"{width * 8}-bit WAV; want 16-bit")
++    pcm = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
++    if channels > 1:
++        pcm = pcm.reshape(-1, channels).mean(axis=1)
++    if rate != 24_000 and len(pcm):
++        n = max(1, int(len(pcm) * 24_000 / rate))
++        pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm)
++    return np.clip(pcm, -32768, 32767).astype(np.int16).tobytes()
++
++
++async def transcribe_xai(audio: bytes) -> str:
++    """Speech-to-text on xAI when Groq can't: xAI has no REST transcription endpoint (checked
++    2026-09-26: /v1/audio/transcriptions is a 404), so one short realtime session with
++    grok-transcribe (the realtime relay's input transcription): the audio as PCM16 24 kHz,
++    commit, and the newest transcript of the item. Closed before the voice model's own reply
++    plays (~$0.08 per minute of audio)."""
++    settings = get_settings()
++    pcm = pcm24k(audio)
++    session = {
++        "turn_detection": None,
++        "audio": {
++            "input": {
++                "format": {"type": "audio/pcm", "rate": 24_000},
++                "transport": "binary",
++                "transcription": {"model": "grok-transcribe", "language_hint": "en"},
++            }
++        },
++    }
++    t0 = time.monotonic()
++    async with websockets.connect(
++        f"{XAI_REALTIME_WS}?model={settings.XAI_REALTIME_MODEL}",
++        additional_headers={"Authorization": f"Bearer {settings.GROK_API_KEY}"},
++        open_timeout=10,
++        max_size=2**22,
++    ) as ws:
++        await ws.send(json.dumps({"type": "session.update", "session": session}))
++        for i in range(0, len(pcm), 48_000):
++            await ws.send(pcm[i : i + 48_000])
++        await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
++        texts: dict[str, str] = {}  # item id -> its newest transcript, in order
++        settle_until = None
++        while True:
++            now = time.monotonic()
++            left = t0 + XAI_STT_TIMEOUT_S - now
++            if settle_until is not None:
++                left = min(left, settle_until - now)
++            if left <= 0:
++                break
++            try:
++                raw = await asyncio.wait_for(ws.recv(), left)
++            except TimeoutError:
++                break
++            if isinstance(raw, bytes):
++                continue
++            event = json.loads(raw)
++            kind = event.get("type", "")
++            if kind == "conversation.item.input_audio_transcription.completed":
++                texts[str(event.get("item_id"))] = str(event.get("transcript") or "")
++                settle_until = time.monotonic() + XAI_STT_SETTLE_S
++            elif kind == "response.created" and texts:
++                break  # the voice model starts its own reply: the transcript is final
++            elif kind == "error":
++                raise VoiceError(f"xai realtime: {event.get('error')}")
++    text = " ".join(t.strip() for t in texts.values() if t.strip())
++    if not text:
++        raise VoiceError("xai realtime: no transcript")
++    logger.info("xai stt: %d chars in %.1f s", len(text), time.monotonic() - t0)
++    return text
+ 
+ 
+ async def speak(text: str) -> tuple[bytes, str]:
+diff --git a/tests/test_voice.py b/tests/test_voice.py
+index 0b865a2..40bb411 100644
+--- a/tests/test_voice.py
++++ b/tests/test_voice.py
+@@ -241,3 +241,66 @@ async def test_live_transcribe_short_tone():
+     audio = _tiny_test_tone_wav()
+     text = await transcribe(audio, filename="tone.wav")
+     assert isinstance(text, str)
++
++
++# --- Groq STT can't answer: one retry, then xAI's grok-transcribe (realtime socket) -------------
++
++
++@pytest.mark.asyncio
++async def test_transcribe_retries_a_dropped_connection_once():
++    with respx.mock(assert_all_called=True) as router:
++        route = router.post(TRANSCRIPTIONS_URL).mock(
++            side_effect=[httpx.ConnectError("reset"), httpx.Response(200, json={"text": "ok"})]
++        )
++        assert await transcribe(b"fake-wav-bytes") == "ok"
++    assert route.call_count == 2
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("failure", ["connect", "503", "429"])
++async def test_transcribe_falls_back_to_xai_when_groq_cant(monkeypatch, failure):
++    from server import voice
++
++    sent = {}
++
++    async def fake_xai(audio):
++        sent["audio"] = audio
++        return "the opening is thirty-four and a half inches tall"
++
++    monkeypatch.setattr(voice, "transcribe_xai", fake_xai)
++    effect = {
++        "connect": httpx.ConnectError("down"),
++        "503": httpx.Response(503, json={"error": "busy"}),
++        "429": httpx.Response(429, json={"error": "limit"}),
++    }[failure]
++    with respx.mock() as router:
++        router.post(TRANSCRIPTIONS_URL).mock(side_effect=[effect, effect])
++        text = await transcribe(b"wav")
++    assert text.startswith("the opening is")
++    assert sent["audio"] == b"wav"
++
++
++@pytest.mark.asyncio
++async def test_transcribe_without_a_grok_key_is_a_voice_error(monkeypatch):
++    monkeypatch.setenv("GROK_API_KEY", "")
++    get_settings.cache_clear()
++    with respx.mock() as router:
++        router.post(TRANSCRIPTIONS_URL).mock(return_value=httpx.Response(503))
++        with pytest.raises(VoiceError):
++            await transcribe(b"wav")
++
++
++def test_pcm24k_resamples_a_16k_mono_wav():
++    from server.voice import pcm24k
++
++    buf = io.BytesIO()
++    with wave.open(buf, "wb") as w:
++        w.setnchannels(1)
++        w.setsampwidth(2)
++        w.setframerate(16_000)
++        w.writeframes(struct.pack("<1600h", *([1000] * 1600)))  # 0.1 s
++    out = pcm24k(buf.getvalue())
++    assert len(out) == 2400 * 2  # 0.1 s at 24 kHz, 16-bit
++    assert struct.unpack("<h", out[:2])[0] == 1000
++    with pytest.raises(VoiceError):
++        pcm24k(b"not a wav")
+-- 
+2.50.1 (Apple Git-155)
+

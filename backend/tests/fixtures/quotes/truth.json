@@ -1,0 +1,410 @@
+{
+ "clean": {
+  "contractor": {
+   "value": "Totally Fake HVAC Co. (fictional)",
+   "source": "printed_text"
+  },
+  "lines": [
+   {
+    "description": "LG 12,000 BTU 20 SEER2 ductless mini-split indoor unit",
+    "kind": "equipment",
+    "brand": {
+     "value": "LG",
+     "source": "printed_text"
+    },
+    "model_no": {
+     "value": "KNSAH121B",
+     "source": "printed_text"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 1150.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 1150.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "LG 12,000 BTU mini-split outdoor unit (heat pump)",
+    "kind": "equipment",
+    "brand": {
+     "value": "LG",
+     "source": "printed_text"
+    },
+    "model_no": {
+     "value": "KUSAH121B",
+     "source": "printed_text"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 1650.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 1650.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Line set 3/8 x 1/4 in, 25 ft, insulated",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 189.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 189.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Condensate pump and drain line",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 95.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 95.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Outdoor unit ground pad",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 65.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 65.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "240 V 20 A breaker, disconnect and whip",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 145.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 145.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Installation labor (2 techs, 1 day)",
+    "kind": "labor",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": null,
+     "source": "inferred"
+    },
+    "unit_price": {
+     "value": null,
+     "source": "inferred"
+    },
+    "line_total": {
+     "value": 1400.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "City mechanical + electrical permit fees",
+    "kind": "permit",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 185.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 185.0,
+     "source": "printed_text"
+    }
+   }
+  ],
+  "subtotal": {
+   "value": 4879.0,
+   "source": "printed_text"
+  },
+  "tax_rate_pct": {
+   "value": 8.9,
+   "source": "printed_text"
+  },
+  "tax": {
+   "value": 293.17,
+   "source": "printed_text"
+  },
+  "total": {
+   "value": 5172.17,
+   "source": "printed_text"
+  }
+ },
+ "bad": {
+  "contractor": {
+   "value": "Sample Bros. Heating & Air (fake)",
+   "source": "printed_text"
+  },
+  "lines": [
+   {
+    "description": "LG 12,000 BTU ductless mini-split indoor unit",
+    "kind": "equipment",
+    "brand": {
+     "value": "LG",
+     "source": "printed_text"
+    },
+    "model_no": {
+     "value": "KNSAH121B",
+     "source": "printed_text"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 1195.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 1195.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "LG mini-split outdoor unit",
+    "kind": "equipment",
+    "brand": {
+     "value": "LG",
+     "source": "printed_text"
+    },
+    "model_no": {
+     "value": "KUSAH121B",
+     "source": "printed_text"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 1695.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 1695.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Midea 8,000 BTU U+ window air conditioner (bedroom)",
+    "kind": "equipment",
+    "brand": {
+     "value": "Midea",
+     "source": "printed_text"
+    },
+    "model_no": {
+     "value": "MAW08U1QWT",
+     "source": "printed_text"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 429.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 429.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Line set 25 ft, insulated",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 175.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 175.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Wall sleeve / line hide cover",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 2,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 45.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 100.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "240 V circuit, breaker and disconnect",
+    "kind": "material",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 1,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 160.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 160.0,
+     "source": "printed_text"
+    }
+   },
+   {
+    "description": "Labor: mini-split install + window unit setup (hrs)",
+    "kind": "labor",
+    "brand": {
+     "value": null,
+     "source": "inferred"
+    },
+    "model_no": {
+     "value": null,
+     "source": "inferred"
+    },
+    "qty": {
+     "value": 8,
+     "source": "printed_text"
+    },
+    "unit_price": {
+     "value": 165.0,
+     "source": "printed_text"
+    },
+    "line_total": {
+     "value": 1320.0,
+     "source": "printed_text"
+    }
+   }
+  ],
+  "subtotal": {
+   "value": 5074.0,
+   "source": "printed_text"
+  },
+  "tax_rate_pct": {
+   "value": 8.9,
+   "source": "printed_text"
+  },
+  "tax": {
+   "value": 334.11,
+   "source": "printed_text"
+  },
+  "total": {
+   "value": 5408.11,
+   "source": "printed_text"
+  }
+ }
+}

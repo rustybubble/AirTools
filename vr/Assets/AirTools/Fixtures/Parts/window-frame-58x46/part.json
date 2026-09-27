@@ -1,0 +1,83 @@
+{
+  "id": "window-frame-58x46",
+  "name": "58.5 in. x 46.5 in. White Vinyl Sliding Replacement Window with Grids",
+  "manufacturer": "Northfield (mock)",
+  "model_no": "NF-SL5846",
+  "dims_mm": {
+    "w": 1486,
+    "d": 83,
+    "h": 1181
+  },
+  "dims_source": "title_typical_depth",
+  "weight_g": 21000,
+  "color_hex": "#F2F2F0",
+  "finish": "white",
+  "material": "vinyl",
+  "finishes": [
+    {
+      "name": "white",
+      "hex": "#F2F2F0",
+      "part_id": "window-frame-58x46"
+    },
+    {
+      "name": "desert sand",
+      "hex": "#D2C3A5",
+      "part_id": "window-frame-58x46"
+    },
+    {
+      "name": "bronze",
+      "hex": "#5B4636",
+      "part_id": "window-frame-58x46"
+    }
+  ],
+  "mount": {
+    "face": "-z",
+    "surface": "window opening"
+  },
+  "clearance_mm": {
+    "front": 0,
+    "back": 0,
+    "top": 0,
+    "bottom": 0,
+    "left": 0,
+    "right": 0
+  },
+  "spacing_mm": null,
+  "asset": {
+    "tier": "llm",
+    "source_url": "mock://fixtures",
+    "license": "CC0",
+    "scale_residual_pct": 0.0,
+    "status": "ready",
+    "made_by": "fixture: the p4-asset window template, built offline",
+    "template": "window"
+  },
+  "spec_url": "https://example.com/specs/nf-sl5846",
+  "citations": [
+    "mock fixture (assetgen): the backend's window template at 1486 x 1181 x 83 mm, made for a 59 x 47 1/4 in. opening"
+  ],
+  "sellers": [
+    {
+      "name": "Home Depot (mock)",
+      "price_usd": 389.0,
+      "shipping": "free",
+      "eta": "Fri",
+      "rating": 4.5,
+      "in_stock": true,
+      "url": "https://example.com/hd/nf-sl5846"
+    },
+    {
+      "name": "Lowe's (mock)",
+      "price_usd": 412.0,
+      "shipping": "free",
+      "eta": "Tue",
+      "rating": 4.3,
+      "in_stock": true,
+      "url": "https://example.com/lowes/nf-sl5846"
+    }
+  ],
+  "recommended_seller": 0,
+  "recommendation_reason": "cheapest in stock",
+  "fetched_at": "2026-09-26T00:00:00-04:00",
+  "cached": true
+}

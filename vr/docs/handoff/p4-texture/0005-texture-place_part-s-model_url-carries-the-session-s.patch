@@ -1,0 +1,90 @@
+From 90c5f0280be4f4edfce9805f2d94dd10e2ad3b9b Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:15:59 -0400
+Subject: [PATCH 5/6] texture: place_part's model_url carries the session's
+ generator (?mode=llm_scad / hf)
+
+The replace job and the agent's put-it-in placed /parts/{id}/model.glb, which is whichever mode
+was selected last for that part; with ?mode= the placement always loads the session's own
+generator's model (the app's AssetModes replaces a mode already on the URL). assets.model_url.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/agent.py       |  2 +-
+ server/assets.py      |  7 +++++++
+ server/replace_job.py |  2 +-
+ tests/test_texture.py | 17 +++++++++++++++++
+ 4 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/server/agent.py b/server/agent.py
+index cd25a53..64187bf 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -1532,7 +1532,7 @@ def _place_action(
+         return f, {"name": "cycle_model", "args": args}
+     args = {
+         "part_id": part.id,
+-        "model_url": f"/parts/{part.id}/model.glb",
++        "model_url": assets.model_url(part.id, session.asset_mode),  # texture: its generator
+         "name": part.name,
+         "component_id": c["id"],
+         "fits": replace.fits_word(f) if cavity is not None else f.status,
+diff --git a/server/assets.py b/server/assets.py
+index 6648744..3a88661 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -426,6 +426,13 @@ def normalize_mode(value: object) -> str:
+     return _MODE_ALIASES.get(key, "auto")
+ 
+ 
++def model_url(part_id: str, mode: str | None = None) -> str:
++    """texture: the part's model URL for a generator preference: `?mode=` for hf / llm_scad, so a
++    placement loads that mode's model even if another client selected another one since."""
++    m = normalize_mode(mode)
++    return f"/parts/{part_id}/model.glb" + (f"?mode={m}" if m != "auto" else "")
++
++
+ def variant_paths(part_id: str, mode: str) -> tuple[Path, Path]:
+     """(model.<stem>.glb, asset.<stem>.json) for the mode's model of the part."""
+     stem = _STEM[normalize_mode(mode)]
+diff --git a/server/replace_job.py b/server/replace_job.py
+index 8e44e56..1b6c5cf 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -582,7 +582,7 @@ async def _place(session: Any, st: State):
+     f = st.fit
+     args = {
+         "part_id": part.id,
+-        "model_url": f"/parts/{part.id}/model.glb",
++        "model_url": assets.model_url(part.id, st.mode),  # texture: the session's generator
+         "name": part.name,
+         "component_id": c["id"],
+         "fits": replace.fits_word(f),
+diff --git a/tests/test_texture.py b/tests/test_texture.py
+index 44bd86c..b0f5a6f 100644
+--- a/tests/test_texture.py
++++ b/tests/test_texture.py
+@@ -466,3 +466,20 @@ async def test_warm_retexture_rows_and_totals(tmp_path, no_model, monkeypatch, c
+     assert "$0" in capsys.readouterr().out
+     served = trimesh.load(assets.part_dir("a") / "model.glb", force="scene")
+     assert "photo" in served.geometry  # the proxy box: the photo on its front, sides painted
++
++
++# --- placement: the session's generator on place_part's model URL ------------------------------
++
++
++def test_place_part_model_url_carries_the_generator():
++    from server import agent
++
++    assert assets.model_url("p") == "/parts/p/model.glb"
++    assert assets.model_url("p", "LLM+CAD") == "/parts/p/model.glb?mode=llm_scad"
++    assert assets.model_url("p", "hunyuan") == "/parts/p/model.glb?mode=hf"
++    session = agent._get_session("texture-place")
++    session.asset_mode = "llm_scad"
++    part = _part(id="dw-cad")
++    _, action = agent._place_action(session, {"id": "dw1"}, None, 0, 1, part)
++    assert action["name"] == "place_part"
++    assert action["args"]["model_url"] == "/parts/dw-cad/model.glb?mode=llm_scad"
+-- 
+2.50.1 (Apple Git-155)
+

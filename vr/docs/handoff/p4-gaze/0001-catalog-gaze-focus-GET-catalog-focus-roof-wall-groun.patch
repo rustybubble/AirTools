@@ -1,0 +1,1029 @@
+From 5600117fcd16a044e1890d3fe5c0a378b3a9f261 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 00:12:36 -0400
+Subject: [PATCH] catalog: gaze focus (GET
+ /catalog?focus=roof|wall|ground|ceiling|counter|opening)
+
+The app sends what the wearer looks at; per setting (exterior / kitchen / room)
+and focus a curated table leads (catalog_tables.FOCUS_TABLES): on a roof solar
+panels, gutters, roof vents...; on a wall wall-mounted HVAC, windows, window AC...
+Grok's site extras follow where their words put them (Zabel's Red Tile Roofs on
+the roof). Stocked categories first; only the first 6 thin ones are searched in
+the background. No focus / an unknown one: today's list. Response: focus, foci.
+
+New categories: wall-hvac, wall-vents, downspouts (gutters no longer take the
+word), snow-guards, satellite-mounts, pavers, drainage, backsplash.
+warm --catalog also fills each site's focus variants (--no-focus,
+--max-searches N).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/app.py               |  10 +-
+ server/catalog.py           | 183 +++++++++++-----
+ server/catalog_tables.py    | 152 +++++++++++++-
+ server/warm.py              |  18 +-
+ tests/test_catalog.py       |  15 +-
+ tests/test_catalog_focus.py | 408 ++++++++++++++++++++++++++++++++++++
+ 6 files changed, 723 insertions(+), 63 deletions(-)
+ create mode 100644 tests/test_catalog_focus.py
+
+diff --git a/server/app.py b/server/app.py
+index 25bb489..17682a7 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -178,11 +178,15 @@ def get_job(job_id: str) -> dict:
+ 
+ 
+ @app.get("/catalog")
+-async def get_catalog(site: str | None = None, session_id: str | None = None) -> dict:
++async def get_catalog(
++    site: str | None = None, session_id: str | None = None, focus: str | None = None
++) -> dict:
+     """The site's environment and up to 8 known parts per category for it; categories still
+-    being searched say `pending` (poll again). No site: the generic catalog."""
++    being searched say `pending` (poll again). No site: the generic catalog. `focus` (what the
++    wearer looks at: roof, wall, ground, ceiling, counter, opening) orders and filters the
++    categories; `foci` says which ones the site answers."""
+     try:
+-        return await catalog.build(site or None, session_id)
++        return await catalog.build(site or None, session_id, focus)
+     except LookupError as exc:
+         raise HTTPException(404, "unknown site") from exc
+ 
+diff --git a/server/catalog.py b/server/catalog.py
+index 3e03458..53b6cb3 100644
+--- a/server/catalog.py
++++ b/server/catalog.py
+@@ -52,6 +52,7 @@ VERSION = 3  # bump when detection rules change: stored detections are then reco
+ MAX_ITEMS = 8
+ MIN_ITEMS = 3  # fewer -> the category's query is searched in the background
+ MODELS_PER_CATEGORY = 3
++FOCUS_SEARCH_LEAD = 6  # a focused list searches only its first thin categories (SerpApi credit)
+ GROK_WAIT_S = 8.0
+ RETRY_S = 600.0  # a failed background search may run again after this
+ EMPTY_S = 86400.0  # a search that found nothing is not repeated for a day (kept on disk)
+@@ -474,15 +475,13 @@ async def detect(site: str | None, wait_s: float | None = GROK_WAIT_S) -> dict:
+ # --- categories -----------------------------------------------------------------------------------
+ 
+ 
+-def categories_for(det: dict) -> list[tuple[tables.Category, dict]]:
+-    """The environment's categories, each with its evidence ({"components", "seen"} from the
+-    scene; "also": True for a runner-up's): what the scene shows first, then up to ALSO_MAX of
+-    the runner-up environment's, then Grok's extras. A listed category Grok names counts as seen;
+-    a known one it names from elsewhere is used as is; supplies and decor are dropped."""
+-    env = tables.ENVIRONMENTS[det["environment"]]
++def _evidence_and_extras(
++    det: dict, ids: set[str]
++) -> tuple[dict, list[tuple[tables.Category, str]]]:
++    """(category id -> evidence, Grok's extras as (category, the extra's own words) not in
++    `ids`). A listed category Grok names counts as seen; a known one it names from elsewhere is
++    used as is; supplies and decor are dropped."""
+     seen = {k: dict(v) for k, v in (det.get("in_scene") or {}).items()}
+-    listed = [tables.CATEGORIES[c] for c in env.categories]
+-    ids = {c.id for c in listed}
+     named = []  # Grok's extras, as categories
+     for x in (det.get("extras") or [])[:2]:
+         title, query = str(x.get("title") or ""), str(x.get("query") or "")
+@@ -498,7 +497,23 @@ def categories_for(det: dict) -> list[tuple[tables.Category, dict]]:
+             if known
+             else tables.extra_category(title, query, str(x.get("icon") or ""))
+         )
+-        named.append(cat)
++        named.append((cat, f"{title} {query}"))
++    return seen, named
++
++
++def categories_for(det: dict, focus: str | None = None) -> list[tuple[tables.Category, dict]]:
++    """The environment's categories, each with its evidence ({"components", "seen"} from the
++    scene; "also": True for a runner-up's): what the scene shows first, then up to ALSO_MAX of
++    the runner-up environment's, then Grok's extras. With a `focus` the environment's table has
++    (focus_categories), that list instead."""
++    if focus is not None:
++        focused = focus_categories(det, focus)
++        if focused is not None:
++            return focused
++    env = tables.ENVIRONMENTS[det["environment"]]
++    listed = [tables.CATEGORIES[c] for c in env.categories]
++    ids = {c.id for c in listed}
++    seen, named = _evidence_and_extras(det, ids)
+ 
+     def rank(pair):
+         i, c = pair
+@@ -512,13 +527,37 @@ def categories_for(det: dict) -> list[tuple[tables.Category, dict]]:
+         for _, c in sorted(enumerate(pool), key=rank)[:ALSO_MAX]:
+             ids.add(c.id)
+             out.append((c, {**(seen.get(c.id) or {}), "also": True}))
+-    for cat in named:
++    for cat, _ in named:
+         if cat.id not in ids:
+             ids.add(cat.id)
+             out.append((cat, seen.get(cat.id) or {}))
+     return out
+ 
+ 
++def focus_categories(det: dict, focus: str) -> list[tuple[tables.Category, dict]] | None:
++    """What the wearer looks at (the app's gaze: roof, wall, ground, ceiling, counter, opening)
++    orders and filters the site's catalog: the curated table for the environment's setting and
++    that focus (catalog_tables.FOCUS_TABLES), in its order, then the site's Grok extras whose
++    words put them there ("Red Tile Roofs" on the roof). None: no table for it (the caller shows
++    the unfocused list)."""
++    ids = tables.focus_ids(det.get("environment"), focus, det.get("setting"))
++    if not ids:
++        return None
++    seen, named = _evidence_and_extras(det, set(ids))
++    out = [(tables.CATEGORIES[c], {**(seen.get(c) or {}), "focus": True}) for c in ids]
++    taken = set(ids)
++    for cat, words in named:  # by the extra's own words: "Dormer Windows" is on the roof
++        if cat.id not in taken and focus in tables.foci_of_text(words):
++            taken.add(cat.id)
++            out.append((cat, {**(seen.get(cat.id) or {}), "focus": True}))
++    return out
++
++
++def foci(det: dict) -> list[str]:
++    """The foci the site's catalog answers (empty: it has no focus table)."""
++    return tables.foci_for(det.get("environment"), det.get("setting"))
++
++
+ # --- background work: category searches, models, photos ---------------------------------------
+ 
+ _search_queue: list[str] = []
+@@ -719,11 +758,14 @@ def item(doc: Doc) -> dict:
+     }
+ 
+ 
+-def category_items(cat: tables.Category, background: bool = True) -> tuple[list[dict], bool]:
+-    """(items, pending) for one category; queues its search / models / photos when asked."""
++def category_items(
++    cat: tables.Category, background: bool = True, may_search: bool = True
++) -> tuple[list[dict], bool]:
++    """(items, pending) for one category; queues its search (unless `may_search` is False) / models
++    / photos when asked."""
+     docs = INDEX.in_category(cat)[:MAX_ITEMS]
+     if background:
+-        if len(docs) < MIN_ITEMS:
++        if may_search and len(docs) < MIN_ITEMS:
+             schedule_search(cat.query)
+         for doc in docs:
+             ensure_part_json(doc)
+@@ -733,15 +775,23 @@ def category_items(cat: tables.Category, background: bool = True) -> tuple[list[
+     return [item(d) for d in docs], is_pending(cat.query)
+ 
+ 
+-async def build(site: str | None, session_id: str | None = None) -> dict:
+-    """GET /catalog. LookupError: unknown site."""
++async def build(site: str | None, session_id: str | None = None, focus: str | None = None) -> dict:
++    """GET /catalog. `focus` (the app's gaze: roof, wall, ground, ceiling, counter, opening)
++    orders and filters the categories (focus_categories; categories with items first, and only
++    the first FOCUS_SEARCH_LEAD thin ones are searched in the background); none or one the site
++    has no table for: the unfocused catalog. LookupError: unknown site."""
+     start = time.monotonic()
+     INDEX.maybe_refresh()
+     det = await detect(site)
+     env = tables.ENVIRONMENTS[det["environment"]]
++    wanted = tables.normalize_focus(focus)
++    pairs = focus_categories(det, wanted) if wanted else None
++    applied = wanted if pairs is not None else None
++    if pairs is None:
++        pairs = categories_for(det)
+     cats = []
+-    for cat, evidence in categories_for(det):
+-        items, pending = category_items(cat)
++    for i, (cat, evidence) in enumerate(pairs):
++        items, pending = category_items(cat, may_search=applied is None or i < FOCUS_SEARCH_LEAD)
+         cats.append(
+             {
+                 "id": cat.id,
+@@ -756,6 +806,8 @@ async def build(site: str | None, session_id: str | None = None) -> dict:
+                 "items": items,
+             }
+         )
++    if applied is not None:
++        cats.sort(key=lambda c: not c["items"])  # stable: the table's order among the stocked
+     return {
+         "site": site,
+         "environment": env.id,
+@@ -763,6 +815,8 @@ async def build(site: str | None, session_id: str | None = None) -> dict:
+         "place": det.get("place"),
+         "confidence": det.get("confidence"),
+         "also": det.get("also"),
++        "focus": applied,
++        "foci": foci(det),
+         "generated_at": datetime.now(UTC).isoformat(),
+         "pending": sum(c["pending"] for c in cats),
+         "categories": cats,
+@@ -845,9 +899,18 @@ def _count_files(ns: str) -> int:
+     return sum(1 for _ in d.glob("*.json")) if d.is_dir() else 0
+ 
+ 
+-async def warm(sites: list[str] | None = None, models: bool = True, echo=print) -> dict:
++async def warm(
++    sites: list[str] | None = None,
++    models: bool = True,
++    echo=print,
++    focus: bool = True,
++    max_searches: int | None = None,
++) -> dict:
+     """Fill every site's catalog: detect (Grok once per site), search every category with too
+-    few items, build the first models and fetch every photo. Returns totals."""
++    few items, build the first models and fetch every photo. `focus`: also each focus variant the
++    site answers (roof, wall, ...: only the first FOCUS_SEARCH_LEAD thin categories of each are
++    searched, as GET /catalog?focus= does). `max_searches`: stop searching after that many (the
++    rest stay thin). A category is warmed once per run however many lists show it. Totals."""
+     t_all = time.monotonic()
+     meter = _CostMeter()
+     llm_logger = logging.getLogger("server.llm")
+@@ -856,7 +919,46 @@ async def warm(sites: list[str] | None = None, models: bool = True, echo=print)
+     llm_logger.setLevel(logging.INFO)
+     before = {ns: _count_files(ns) for ns in ("serpapi", "web", "catalog_place", "asset_llm")}
+     INDEX.load()
+-    totals = {"sites": 0, "searches": 0, "models": 0, "grok_place_usd": 0.0}
++    totals = {"sites": 0, "searches": 0, "models": 0, "grok_place_usd": 0.0, "focus_lists": 0}
++    warmed: dict[str, str] = {}  # category id -> what this run did ("searched", "", ...)
++
++    async def warm_one(cat: tables.Category, evidence: dict, may_search: bool) -> str:
++        searched = warmed.get(cat.id)
++        if searched is None:
++            searched = ""
++            if (
++                may_search
++                and len(INDEX.in_category(cat)) < MIN_ITEMS
++                and not get_settings().OFFLINE
++                and not searched_already(cat.query)
++            ):
++                if max_searches is not None and totals["searches"] >= max_searches:
++                    searched = "over budget"
++                else:
++                    try:
++                        await run_search(cat.query, background=False)
++                        searched = "searched"
++                    except Exception as exc:  # noqa: BLE001 -- keep warming the rest
++                        logger.warning("catalog warm: %r failed: %s", cat.query, exc)
++                        searched = "failed"
++                    totals["searches"] += 1
++            docs = INDEX.in_category(cat)[:MAX_ITEMS]
++            for doc in docs:
++                ensure_part_json(doc)
++                if not (_part_dir(doc.part_id) / "image.jpg").is_file() and doc.image_remote:
++                    await assets.fetch_image(doc.image_remote, _part_dir(doc.part_id) / "image.jpg")
++            if models:
++                for doc in docs[:MODELS_PER_CATEGORY]:
++                    if not model_ready(doc.part_id):
++                        totals["models"] += bool(await build_model(doc.part_id))
++            if may_search or searched:
++                warmed[cat.id] = searched
++        docs = INDEX.in_category(cat)[:MAX_ITEMS]
++        ready = sum(model_ready(d.part_id) for d in docs)
++        shown = evidence.get("components") or evidence.get("seen")
++        flag = "*" if shown else ("+" if cat.extra else "~" if evidence.get("also") else " ")
++        return f"   {flag} {cat.title:<24} {len(docs)} items, {ready} 3D  {searched}"
++
+     try:
+         for site in sites or served_sites():
+             t0 = time.monotonic()
+@@ -867,39 +969,16 @@ async def warm(sites: list[str] | None = None, models: bool = True, echo=print)
+                 f"{site}: {det['environment']} ({det['confidence']:.2f}) "
+                 f"place={det.get('place')!r} grok={det['grok']}"
+             )
+-            rows = []
+-            for cat, evidence in categories_for(det):
+-                searched = ""
+-                if (
+-                    len(INDEX.in_category(cat)) < MIN_ITEMS
+-                    and not get_settings().OFFLINE
+-                    and not searched_already(cat.query)
+-                ):
+-                    try:
+-                        await run_search(cat.query, background=False)
+-                        searched = "searched"
+-                    except Exception as exc:  # noqa: BLE001 -- keep warming the rest
+-                        logger.warning("catalog warm: %r failed: %s", cat.query, exc)
+-                        searched = "failed"
+-                    totals["searches"] += 1
+-                docs = INDEX.in_category(cat)[:MAX_ITEMS]
+-                for doc in docs:
+-                    ensure_part_json(doc)
+-                    if not (_part_dir(doc.part_id) / "image.jpg").is_file() and doc.image_remote:
+-                        await assets.fetch_image(
+-                            doc.image_remote, _part_dir(doc.part_id) / "image.jpg"
+-                        )
+-                if models:
+-                    for doc in docs[:MODELS_PER_CATEGORY]:
+-                        if not model_ready(doc.part_id):
+-                            totals["models"] += bool(await build_model(doc.part_id))
+-                ready = sum(model_ready(d.part_id) for d in docs)
+-                shown = evidence.get("components") or evidence.get("seen")
+-                flag = (
+-                    "*" if shown else ("+" if cat.extra else "~" if evidence.get("also") else " ")
+-                )
+-                rows.append(f"   {flag} {cat.title:<24} {len(docs)} items, {ready} 3D  {searched}")
++            rows = [await warm_one(cat, ev, True) for cat, ev in categories_for(det)]
+             echo("\n".join(rows))
++            for f in foci(det) if focus else []:
++                pairs = focus_categories(det, f) or []
++                totals["focus_lists"] += 1
++                rows = [
++                    await warm_one(cat, ev, i < FOCUS_SEARCH_LEAD)
++                    for i, (cat, ev) in enumerate(pairs)
++                ]
++                echo(f"   focus={f}:\n" + "\n".join("  " + r for r in rows))
+             echo(f"   ({time.monotonic() - t0:.0f} s)")
+     finally:
+         llm_logger.removeHandler(meter)
+diff --git a/server/catalog_tables.py b/server/catalog_tables.py
+index 27584ec..aba4a64 100644
+--- a/server/catalog_tables.py
++++ b/server/catalog_tables.py
+@@ -92,7 +92,7 @@ _CATEGORY_LIST = [
+          ["led strip light 12v waterproof under cabinet"]),
+     # --- rooftop ---
+     _cat("gutters", "Gutters & hangers", "cloud-rain", "gutter hanger",
+-         ["gutter", "downspout", "gutter guard", "leaf guard", "gutter hanger"],
++         ["gutter", "gutter guard", "leaf guard", "gutter hanger"],  # downspouts: their own
+          ["gutter cleaning", "gutter scoop", "gutter wand", "ladder", "cleaning tool"],
+          ["gutter", "gutter downspout"]),
+     _cat("hvac", "HVAC units", "fan", "central air conditioner condenser",
+@@ -277,6 +277,35 @@ _CATEGORY_LIST = [
+          ["outlet", "receptacle", "light switch", "dimmer switch", "wall plate", "gfci",
+           "dimmer"],
+          ["power strip", "surge", "timer", "extension", "outdoor outlet cover", "smart plug"]),
++    # --- gaze focus (what the wearer looks at: FOCUS_TABLES below) ---
++    _cat("wall-hvac", "Wall-mounted HVAC", "thermometer-cold", "ductless mini split air conditioner",
++         ["mini split", "ductless mini split", "ductless", "ptac", "packaged terminal",
++          "wall mounted air conditioner", "wall air conditioner", "through the wall air conditioner",
++          "wall mounted hvac"],
++         ["line set", "wall bracket", "mounting bracket", "cover", "filter", "refrigerant",
++          "remote", "condenser pad"]),
++    _cat("wall-vents", "Wall vents", "wind", "exterior wall vent",
++         ["wall vent", "exterior vent", "louvered vent", "louver vent", "wall cap", "vent hood",
++          "exhaust hood"],
++         ["roof", "range hood", "dryer vent kit", "cleaning", "brush"]),
++    _cat("downspouts", "Downspouts", "cloud-rain", "vinyl downspout",
++         ["downspout", "downspout extension", "rain diverter", "downspout elbow"],
++         ["cleaning", "scoop", "wand"]),
++    _cat("snow-guards", "Snow guards", "snowflake", "roof snow guard",
++         ["snow guard", "snow stop", "snow bar", "snow retention"]),
++    _cat("satellite-mounts", "Satellite mounts", "house-line", "satellite dish roof mount",
++         ["satellite mount", "dish mount", "antenna mount", "satellite dish mount", "mast mount"],
++         ["tv wall mount", "tv mount", "monitor"]),
++    _cat("pavers", "Pavers", "grid-four", "concrete patio paver",
++         ["paver", "patio stone", "stepping stone", "patio block", "flagstone"],
++         ["sand", "sealer", "edging", "tool", "base panel"]),
++    _cat("drainage", "Drainage", "drop", "channel drain",
++         ["channel drain", "trench drain", "catch basin", "drain grate", "french drain",
++          "yard drain", "drainage"],
++         ["sink", "tub", "shower", "floor drain cover", "hair", "snake", "auger"]),
++    _cat("backsplash", "Backsplash tile", "squares-four", "kitchen backsplash tile",
++         ["backsplash", "peel and stick tile", "subway tile", "mosaic tile", "wall tile"],
++         ["adhesive", "grout", "trowel", "cutter", "spacer"]),
+ ]
+ # fmt: on
+ 
+@@ -332,6 +361,78 @@ ENVIRONMENTS: dict[str, Environment] = {e.id: e for e in [
+ 
+ GENERIC = "generic"
+ 
++# --- gaze focus: what the wearer is looking at (the app's head ray, classified on the headset) ---
++#
++# The app sends `focus` with GET /catalog: the surface the head ray meets, classified in the
++# scan's own up frame. Per setting (the environment's kind of place) and focus, the categories to
++# lead with, in order. An environment × focus not in the table gets the unfocused list.
++
++FOCI = ("roof", "wall", "ground", "ceiling", "counter", "opening")
++FOCUS_ALIASES = {
++    "floor": "ground", "grass": "ground", "walls": "wall", "facade": "wall", "roofs": "roof",
++    "rooftop": "roof", "window": "opening", "windows": "opening", "door": "opening",
++    "doors": "opening", "countertop": "counter", "backsplash": "counter",
++}
++
++FOCUS_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
++    # Outside a building: a drone scan of it (Zabel, the hospital), a facade, a roof, a pavilion.
++    "exterior": {
++        "roof": ("solar-panels", "gutters", "roof-vents", "hvac", "skylights", "chimney-caps",
++                 "flashing", "snow-guards", "satellite-mounts"),
++        "wall": ("wall-hvac", "windows", "window-ac", "doors", "siding", "exterior-lights",
++                 "wall-vents", "downspouts"),
++        "ground": ("pavers", "planters", "benches", "drainage", "picnic-tables",
++                   "outdoor-lighting", "hvac"),
++        "ceiling": ("exterior-lights", "ceiling-fans", "siding"),
++        "opening": ("windows", "doors", "window-ac", "blinds"),
++    },
++    "kitchen": {
++        "counter": ("microwaves", "sinks-faucets", "cooktops", "backsplash", "lighting",
++                    "cabinet-hardware"),
++        "ground": ("dishwashers", "fridges", "ranges", "cabinet-hardware"),
++        "wall": ("range-hoods", "microwaves", "cabinet-hardware", "lighting", "outlets-switches",
++                 "backsplash", "shelving"),
++        "ceiling": ("ceiling-lights", "smoke-detectors", "range-hoods", "ceiling-fans"),
++        "opening": ("windows", "blinds", "doors"),
++    },
++    # Any other room: its own environment's categories where they belong, and the shared ones
++    # (ROOM_SHARED); another room's (a washer in a bathroom) are dropped (focus_ids).
++    "room": {
++        "ceiling": ("ceiling-lights", "ceiling-fans", "smoke-detectors", "panel-lights",
++                    "high-bay-lights", "bath-fans"),
++        "wall": ("outlets-switches", "window-ac", "mirrors", "shelving", "grab-bars",
++                 "wall-padding", "basketball-hoops", "vanity-lights", "exhaust-fans"),
++        "ground": ("toilets", "vanities", "bathtubs", "showers", "washers", "dryers",
++                   "utility-sinks", "water-heaters", "workbenches", "hospital-beds",
++                   "overbed-tables", "iv-poles", "gym-flooring", "shelving"),
++        "counter": ("bath-faucets", "vanities", "utility-sinks", "workbenches", "overbed-tables"),
++        "opening": ("windows", "blinds", "doors", "window-ac", "privacy-curtains"),
++    },
++}
++ROOM_SHARED = frozenset({"ceiling-lights", "ceiling-fans", "smoke-detectors", "outlets-switches",
++                         "window-ac", "shelving", "mirrors", "grab-bars", "windows", "blinds",
++                         "doors"})
++FOCUS_SETTING = {
++    "kitchen": "kitchen",
++    "rooftop": "exterior", "facade": "exterior", "pavilion": "exterior",
++    "bathroom": "room", "laundry": "room", "garage": "room", "interior": "room", "gym": "room",
++    "hospital": "room",
++}
++
++# Words that put one of Grok's site extras under a focus ("Red Tile Roofs" -> roof). A roof word
++# wins alone (a dormer window is on the roof).
++_FOCUS_WORDS: dict[str, tuple[str, ...]] = {
++    "roof": ("roof", "rooftop", "roofing", "dormer", "chimney", "skylight", "solar", "gutter",
++             "shingle", "ridge", "attic", "flashing", "snow guard", "satellite"),
++    "wall": ("wall", "siding", "facade", "brick", "cladding", "shutter", "sconce", "downspout",
++             "awning", "mural", "trim"),
++    "opening": ("window", "door", "blind", "shade", "shutter"),
++    "ground": ("paver", "planter", "bench", "patio", "deck", "drain", "floor", "lawn", "garden",
++               "path", "fence", "bollard", "playground", "picnic", "bridge", "climbing"),
++    "ceiling": ("ceiling", "pendant", "chandelier", "soffit"),
++    "counter": ("countertop", "counter", "backsplash", "sink", "faucet"),
++}
++
+ # Phosphor 2.1 (the app's icon font) code points for every icon the tables and Grok's extras may
+ # use, read from Phosphor-Regular.ttf's GSUB ligatures (the Fill font shares them).
+ ICON_CODEPOINTS: dict[str, str] = {
+@@ -389,7 +490,6 @@ THING_WORDS: list[tuple[str, float, tuple[str, ...], tuple[str, ...]]] = [
+ ]
+ # fmt: on
+ 
+-
+ # --- matching ---------------------------------------------------------------------------------
+ 
+ 
+@@ -526,3 +626,51 @@ def extra_category(title: str, query: str, icon: str) -> Category:
+         keywords=tuple(dict.fromkeys([query.lower().strip(), " ".join(words[-2:])])),
+         extra=True,
+     )
++
++
++# --- gaze focus -------------------------------------------------------------------------------
++
++_FOCUS_RES = {f: _words_re(words) for f, words in _FOCUS_WORDS.items()}
++
++
++def normalize_focus(text: str | None) -> str | None:
++    """A focus the tables know ("Roof" -> "roof", "floor" -> "ground"); None for none, "all" or
++    anything else (the unfocused catalog)."""
++    f = (text or "").strip().lower()
++    f = FOCUS_ALIASES.get(f, f)
++    return f if f in FOCI else None
++
++
++def focus_setting(environment: str | None, setting: str | None = None) -> str | None:
++    """Which focus table an environment uses: exterior, kitchen or room. The generic place goes
++    by Grok's setting (indoor -> room, outdoor / aerial -> exterior); None when unknown."""
++    if environment in FOCUS_SETTING:
++        return FOCUS_SETTING[environment]
++    if setting == "indoor":
++        return "room"
++    if setting in ("outdoor", "aerial"):
++        return "exterior"
++    return None
++
++
++def focus_ids(environment: str | None, focus: str, setting: str | None = None) -> tuple[str, ...]:
++    """The curated category ids for `focus` in `environment`, in order; () when the table has
++    none. A room keeps its own environment's categories and the shared ones."""
++    key = focus_setting(environment, setting)
++    ids = FOCUS_TABLES.get(key or "", {}).get(focus, ())
++    if key == "room":
++        own = set(ENVIRONMENTS[environment].categories) if environment in ENVIRONMENTS else set()
++        ids = tuple(c for c in ids if c in own or c in ROOM_SHARED)
++    return ids
++
++
++def foci_for(environment: str | None, setting: str | None = None) -> list[str]:
++    """The foci a site's catalog answers (in FOCI order)."""
++    return [f for f in FOCI if focus_ids(environment, f, setting)]
++
++
++def foci_of_text(text: str) -> set[str]:
++    """The foci a site extra belongs to by its words ("Red Tile Roofs" -> {"roof"}); a roof word
++    wins alone."""
++    hits = {f for f, rx in _FOCUS_RES.items() if rx is not None and rx.search(text or "")}
++    return {"roof"} if "roof" in hits else hits
+diff --git a/server/warm.py b/server/warm.py
+index 2866461..56fb811 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -5,6 +5,7 @@ scripted demo needs is cached locally; only the live search is lost").
+     uv run python -m server.warm --labels <site> [--every 4]
+     uv run python -m server.warm --hf [--hf-limit N] [--hf-no-wait]
+     uv run python -m server.warm --catalog [--sites kitchen,zabel-gymnasium] [--no-models]
++                                 [--no-focus] [--max-searches N]
+ 
+ For each `{"query": ..., "measurement": {...}}` entry: runs the same `find_parts` +
+ `resolve_asset` path `jobs.py` runs for a live search (sequential -- `assets.py` rate-limits the
+@@ -32,6 +33,8 @@ stops with `--hf-no-wait`. The model each part shows is unchanged.
+ `--catalog` fills every served site's catalog instead (`catalog.warm`): one cached Grok call per
+ site names the place, every category with fewer than 3 known parts is searched (lite: no store
+ lookups), the first 3 parts per category get their models and every listed part its photo. It
++also fills each focus variant the site answers (GET /catalog?focus=roof|wall|...: the first
++thin categories of each list; `--no-focus` skips them); `--max-searches N` caps the searches. It
+ prints each site's categories and the SerpApi calls, LLM calls and dollars it spent.
+ 
+ Idempotent: `find_parts` (whole-result cache), `resolve_asset` (skips re-resolving a part whose
+@@ -311,6 +314,12 @@ def main() -> None:
+     parser.add_argument(
+         "--no-models", action="store_true", help="with --catalog: skip building models"
+     )
++    parser.add_argument(
++        "--no-focus", action="store_true", help="with --catalog: skip the focus variants"
++    )
++    parser.add_argument(
++        "--max-searches", type=int, default=None, help="with --catalog: search at most N queries"
++    )
+     args = parser.parse_args()
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry SerpApi api_key
+@@ -322,7 +331,14 @@ def main() -> None:
+         return
+     if args.catalog:
+         sites = [s.strip() for s in args.sites.split(",") if s.strip()] if args.sites else None
+-        asyncio.run(catalog.warm(sites, models=not args.no_models))
++        asyncio.run(
++            catalog.warm(
++                sites,
++                models=not args.no_models,
++                focus=not args.no_focus,
++                max_searches=args.max_searches,
++            )
++        )
+         return
+     queries = json.loads(args.queries_file.read_text()) if args.queries_file else DEFAULT_QUERIES
+     asyncio.run(_run(queries, args.retry_proxies, args.grok_moulded))
+diff --git a/tests/test_catalog.py b/tests/test_catalog.py
+index 75c9fc6..9136ca1 100644
+--- a/tests/test_catalog.py
++++ b/tests/test_catalog.py
+@@ -974,22 +974,22 @@ async def test_warm_fills_every_site_and_reports_what_it_spent(monkeypatch, no_g
+     monkeypatch.setattr(assets, "resolve_shared", fake_resolve)
+     monkeypatch.setattr(assets, "fetch_image", fake_fetch)
+     lines = []
+-    totals = await catalog.warm(models=True, echo=lines.append)
++    totals = await catalog.warm(models=True, echo=lines.append, focus=False)
+     assert totals["sites"] == 2
+     # kitchen 9 + facade 6 categories, gutters and window-ac... every one searched once
+     assert totals["searches"] == 15
+     assert totals["models"] == 30  # 2 parts per category, both built
+     assert any(line.startswith("kitchen: kitchen") for line in lines)
+     assert any(line.startswith("synthetic-facade: facade") for line in lines)
+-    again = await catalog.warm(models=True, echo=lines.append)
++    again = await catalog.warm(models=True, echo=lines.append, focus=False)
+     assert again["searches"] == 0 and again["models"] == 0  # idempotent
+ 
+ 
+ def test_warm_cli_runs_the_catalog(monkeypatch):
+     seen = {}
+ 
+-    async def fake_warm(sites, models=True):
+-        seen.update(sites=sites, models=models)
++    async def fake_warm(sites, models=True, focus=True, max_searches=None):
++        seen.update(sites=sites, models=models, focus=focus, max_searches=max_searches)
+         return {}
+ 
+     monkeypatch.setattr(catalog, "warm", fake_warm)
+@@ -997,4 +997,9 @@ def test_warm_cli_runs_the_catalog(monkeypatch):
+         "sys.argv", ["warm", "--catalog", "--sites", "kitchen, gt-lcc-canopy", "--no-models"]
+     )
+     warm.main()
+-    assert seen == {"sites": ["kitchen", "gt-lcc-canopy"], "models": False}
++    assert seen == {
++        "sites": ["kitchen", "gt-lcc-canopy"],
++        "models": False,
++        "focus": True,
++        "max_searches": None,
++    }
+diff --git a/tests/test_catalog_focus.py b/tests/test_catalog_focus.py
+new file mode 100644
+index 0000000..1ea536a
+--- /dev/null
++++ b/tests/test_catalog_focus.py
+@@ -0,0 +1,408 @@
++"""Gaze focus for the catalog (gaze-catalog lane): `GET /catalog?site=&focus=roof|wall|ground|
++ceiling|counter|opening` orders and filters the site's categories by what the wearer looks at
++(catalog_tables.FOCUS_TABLES, catalog.focus_categories); no focus or an unknown one is today's
++list. Offline: detections are written as stored files (the way a warmed server has them), and
++`search.find_parts` / `schedule_search` are faked.
++"""
++
++import json
++import shutil
++import time
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++from server import assets, cache, catalog, catalog_index, search
++from server import catalog_tables as tables
++from server.app import app
++from server.config import get_settings
++from server.models import Dims, Part, Seller
++
++FIX = Path(__file__).parent / "fixtures"
++
++ROOF = set(tables.FOCUS_TABLES["exterior"]["roof"])
++WALL = set(tables.FOCUS_TABLES["exterior"]["wall"])
++
++
++@pytest.fixture(autouse=True)
++def _dirs(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
++    monkeypatch.setenv("SCENE_DIR", str(tmp_path / "scene"))
++    get_settings.cache_clear()
++    catalog.reset()
++    catalog_index.INDEX = catalog_index.Index()
++    monkeypatch.setattr(catalog, "INDEX", catalog_index.INDEX)
++    yield
++    catalog.reset()
++
++
++@pytest.fixture
++def no_background(monkeypatch):
++    """Record what would be searched / built / fetched instead of doing it."""
++    asked = []
++    monkeypatch.setattr(catalog, "schedule_search", lambda q: asked.append(q) or True)
++    monkeypatch.setattr(catalog, "queue_model", lambda pid: False)
++    monkeypatch.setattr(catalog, "queue_image", lambda doc: False)
++    return asked
++
++
++def _scene(name: str, rev: int = 3) -> Path:
++    site = Path(get_settings().SCENE_DIR) / name
++    site.mkdir(parents=True)
++    (site / "scene.json").write_text(json.dumps({"name": name, "revision": rev}))
++    return site
++
++
++def _stored(site: str, rev: int, environment: str, setting: str, extras=(), also=None, **kw):
++    """A detection as a warmed server keeps it (DATA_DIR/catalog/<site>.r<rev>.json)."""
++    det = {
++        "site": site,
++        "rev": rev,
++        "environment": environment,
++        "confidence": 0.6,
++        "also": also,
++        "place": kw.get("place", "a building"),
++        "setting": setting,
++        "signals": [],
++        "extras": list(extras),
++        "in_scene": kw.get("in_scene", {}),
++        "grok": "fresh",
++        "version": catalog.VERSION,
++    }
++    path = Path(get_settings().DATA_DIR) / "catalog" / f"{site}.r{rev}.json"
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(det))
++    return det
++
++
++ZABEL_EXTRAS = [
++    {"title": "Red Tile Roofs", "query": "roof tiles", "icon": "solar-roof"},
++    {"title": "Dormer Windows", "query": "dormer windows", "icon": "app-window"},
++]
++
++
++def _zabel() -> dict:
++    _scene("zabel-gymnasium")
++    return _stored(
++        "zabel-gymnasium",
++        3,
++        "facade",
++        "aerial",
++        ZABEL_EXTRAS,
++        also="rooftop",
++        place="red brick institutional building",
++        in_scene={"windows": {"components": [], "seen": ["window"]}},
++    )
++
++
++def _hospital() -> dict:
++    _scene("hospital-bg")
++    return _stored(
++        "hospital-bg",
++        3,
++        "facade",
++        "aerial",
++        [
++            {"title": "Rooftop HVAC", "query": "rooftop HVAC units", "icon": "fan"},
++            {"title": "Roof Vents", "query": "roof vents", "icon": "cloud-rain"},
++        ],
++        also="rooftop",
++    )
++
++
++def _kitchen() -> dict:
++    site = Path(get_settings().SCENE_DIR) / "kitchen"
++    site.mkdir(parents=True)
++    for f in (FIX / "catalog" / "kitchen").iterdir():
++        shutil.copy(f, site / f.name)
++    return _stored(
++        "kitchen",
++        1,
++        "kitchen",
++        "indoor",
++        [
++            {"title": "Range Hoods", "query": "range hoods", "icon": "fan"},
++            {"title": "Countertops", "query": "kitchen countertops", "icon": "square"},
++        ],
++        in_scene={
++            "dishwashers": {"components": ["dw1"], "seen": ["dishwasher"]},
++            "fridges": {"components": ["fr1"], "seen": ["refrigerator"]},
++            "ranges": {"components": ["rg1"], "seen": ["electric range"]},
++        },
++    )
++
++
++def _part(pid: str, name: str) -> Part:
++    return Part(
++        id=pid,
++        name=name,
++        manufacturer="Acme",
++        model_no=pid.upper(),
++        dims_mm=Dims(w=600, d=650, h=880),
++        image_url=f"https://images.example.com/{pid}.jpg",
++        sellers=[Seller(name="Home Depot", price_usd=99.0, total_usd=99.0)],
++        recommended_seller=0,
++    )
++
++
++def _stock(query: str, n: int = 3) -> list[Part]:
++    """Cached search results for `query` (what the index reads), n parts named after it."""
++    parts = [_part(f"{tables.slug(query)}-{i}", f"{query} {i}") for i in range(n)]
++    dumped = [p.model_dump(mode="json") for p in parts]
++    cache.put("search_by_query", cache.normalize(query), dumped)
++    cache.put("search", {"q": cache.normalize(query), "m": None}, dumped)
++    return parts
++
++
++def _get(client: TestClient, **params) -> dict:
++    r = client.get("/catalog", params=params)
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++# --- the tables -------------------------------------------------------------------------------
++
++
++def test_every_focus_table_names_known_categories_and_foci():
++    for setting, table in tables.FOCUS_TABLES.items():
++        for focus, ids in table.items():
++            assert focus in tables.FOCI, (setting, focus)
++            assert ids and len(ids) == len(set(ids)), (setting, focus)
++            for cid in ids:
++                assert cid in tables.CATEGORIES, (setting, focus, cid)
++    for env in tables.ENVIRONMENTS:
++        if env != tables.GENERIC:
++            assert tables.focus_setting(env) in tables.FOCUS_TABLES, env
++
++
++def test_the_exterior_roof_and_wall_lead_with_what_the_user_asked_for():
++    roof = tables.focus_ids("facade", "roof")
++    wall = tables.focus_ids("facade", "wall")
++    assert roof[:2] == ("solar-panels", "gutters")  # "panels, gutters, etc."
++    assert wall[:2] == ("wall-hvac", "windows")  # "wall mounted hvacs, window frames, etc."
++    assert {"roof-vents", "chimney-caps", "skylights", "flashing", "snow-guards"} <= set(roof)
++    assert {"satellite-mounts"} <= set(roof)
++    assert {"window-ac", "doors", "siding", "exterior-lights", "wall-vents", "downspouts"} <= set(
++        wall
++    )
++    assert tables.focus_ids("rooftop", "roof") == roof == tables.focus_ids("pavilion", "roof")
++    assert set(tables.focus_ids("facade", "ground")) >= {
++        "pavers",
++        "planters",
++        "benches",
++        "drainage",
++    }
++
++
++def test_the_kitchen_counter_and_floor():
++    assert tables.focus_ids("kitchen", "counter")[:2] == ("microwaves", "sinks-faucets")
++    assert "backsplash" in tables.focus_ids("kitchen", "counter")
++    assert tables.focus_ids("kitchen", "ground")[:3] == ("dishwashers", "fridges", "ranges")
++    assert tables.focus_ids("kitchen", "roof") == ()  # no roof indoors
++
++
++def test_a_room_keeps_its_own_categories_and_the_shared_ones():
++    ground = tables.focus_ids("bathroom", "ground")
++    assert "toilets" in ground and "vanities" in ground
++    assert "washers" not in ground and "hospital-beds" not in ground  # another room's
++    assert "ceiling-lights" in tables.focus_ids("laundry", "ceiling")  # shared
++
++
++def test_foci_and_their_names():
++    assert tables.normalize_focus("Roof") == "roof"
++    assert tables.normalize_focus(" floor ") == "ground"
++    assert tables.normalize_focus("window") == "opening"
++    for nothing in (None, "", "all", "sky", "none"):
++        assert tables.normalize_focus(nothing) is None
++    assert tables.foci_for("facade") == ["roof", "wall", "ground", "ceiling", "opening"]
++    assert tables.foci_for("kitchen") == ["wall", "ground", "ceiling", "counter", "opening"]
++    assert tables.foci_for(tables.GENERIC, "aerial") == tables.foci_for("facade")
++    assert tables.foci_for(tables.GENERIC, None) == []
++    assert tables.focus_setting(tables.GENERIC, "indoor") == "room"
++
++
++def test_an_extra_goes_where_its_words_put_it():
++    assert tables.foci_of_text("Red Tile Roofs roof tiles") == {"roof"}
++    assert tables.foci_of_text("Dormer Windows dormer windows") == {"roof"}  # a roof word wins
++    assert tables.foci_of_text("Countertops kitchen countertops") == {"counter"}
++    assert tables.foci_of_text("Awnings retractable awning") == {"wall"}
++    assert tables.foci_of_text("Rope Bridges suspension rope bridges") == {"ground"}
++    assert tables.foci_of_text("Water heaters") == set()
++
++
++def test_new_focus_categories_take_their_own_parts_without_stealing():
++    assert tables.classify("Pioneer 12,000 BTU Ductless Mini Split Air Conditioner") == "wall-hvac"
++    assert tables.classify("Amana 12,000 BTU PTAC Unit") == "wall-hvac"
++    assert tables.classify("5,000 BTU 115-Volt Window Air Conditioner") == "window-ac"
++    assert tables.classify("13.4 SEER2 Air Conditioner Condenser") == "hvac"
++    assert tables.classify("Vinyl Downspout Extension") == "downspouts"
++    assert tables.classify("5 in. Aluminum Hidden Gutter Hanger") == "gutters"
++    assert tables.classify("Galvanized Steel Roof Snow Guard") == "snow-guards"
++    assert tables.classify("16 in. x 16 in. Concrete Patio Paver") == "pavers"
++    assert tables.classify("4 in. Channel Drain with Grate") == "drainage"
++    assert tables.classify("Peel and Stick Subway Backsplash Tile") == "backsplash"
++    assert tables.classify("60 sq. in. Slant Back Roof Louver") == "roof-vents"
++
++
++# --- ordering ---------------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_zabel_leads_with_roof_categories_on_the_roof_and_wall_ones_on_a_wall():
++    det = await catalog.detect(_zabel()["site"])
++    roof = [c.id for c, _ in catalog.categories_for(det, "roof")]
++    wall = [c.id for c, _ in catalog.categories_for(det, "wall")]
++    assert roof[: len(tables.focus_ids("facade", "roof"))] == list(
++        tables.focus_ids("facade", "roof")
++    )
++    # Grok's roof extras follow: its tiles, and its dormer windows (known: Windows & frames)
++    assert roof[-2:] == ["x-red-tile-roofs", "windows"]
++    assert wall == list(tables.focus_ids("facade", "wall"))  # no roof extra on a wall
++    assert catalog.foci(det) == ["roof", "wall", "ground", "ceiling", "opening"]
++
++
++@pytest.mark.asyncio
++async def test_no_focus_or_an_unknown_one_is_todays_list():
++    det = await catalog.detect(_zabel()["site"])
++    today = [c.id for c, _ in catalog.categories_for(det)]
++    assert today[0] == "windows"  # the facade's list, what the scene shows first
++    assert [c.id for c, _ in catalog.categories_for(det, None)] == today
++    assert catalog.focus_categories(det, "counter") is None  # no counter outdoors
++    assert [c.id for c, _ in catalog.categories_for(det, "counter")] == today
++
++
++@pytest.mark.asyncio
++async def test_the_hospital_names_its_rooftop_hvac_on_the_roof():
++    det = await catalog.detect(_hospital()["site"])
++    pairs = catalog.categories_for(det, "roof")
++    ids = [c.id for c, _ in pairs]
++    assert ids == list(tables.focus_ids("facade", "roof"))  # Grok's both are curated roof ones
++    evidence = {c.id: ev for c, ev in pairs}
++    assert "grok: Rooftop HVAC" in evidence["hvac"]["seen"]
++    assert "grok: Roof Vents" in evidence["roof-vents"]["seen"]
++
++
++# --- the endpoint -----------------------------------------------------------------------------
++
++
++def test_get_catalog_with_focus_orders_stocked_categories_first(no_background):
++    _zabel()
++    _stock("400W solar panel")
++    _stock("gutter hanger")
++    _stock("vinyl window")
++    _stock("ductless mini split air conditioner")
++    with TestClient(app) as client:
++        roof = _get(client, site="zabel-gymnasium", focus="roof")
++        wall = _get(client, site="zabel-gymnasium", focus="wall")
++        plain = _get(client, site="zabel-gymnasium")
++        bogus = _get(client, site="zabel-gymnasium", focus="sky")
++        floor = _get(client, site="zabel-gymnasium", focus="Floor")
++    assert roof["focus"] == "roof" and roof["foci"] == [
++        "roof",
++        "wall",
++        "ground",
++        "ceiling",
++        "opening",
++    ]
++    ids = [c["id"] for c in roof["categories"]]
++    assert ids[:2] == ["solar-panels", "gutters"]  # stocked, in the table's order
++    assert set(ids) == ROOF | {"x-red-tile-roofs", "windows"}
++    stocked = [bool(c["items"]) for c in roof["categories"]]
++    assert stocked == sorted(stocked, reverse=True)  # the empty ones last
++    assert ids[2] == "windows"  # stocked: Grok's dormer windows (after the table's stocked ones)
++    assert [c["id"] for c in wall["categories"]][:2] == ["wall-hvac", "windows"]
++    assert wall["focus"] == "wall" and {c["id"] for c in wall["categories"]} == WALL
++    assert plain["focus"] is None and bogus["focus"] is None
++    assert [c["id"] for c in bogus["categories"]] == [c["id"] for c in plain["categories"]]
++    assert floor["focus"] == "ground" and floor["categories"][0]["id"] in ("pavers", "planters")
++
++
++def test_a_focused_list_searches_only_its_first_thin_categories(no_background):
++    _zabel()
++    with TestClient(app) as client:
++        _get(client, site="zabel-gymnasium", focus="roof")
++    lead = tables.focus_ids("facade", "roof")[: catalog.FOCUS_SEARCH_LEAD]
++    assert no_background == [tables.CATEGORIES[c].query for c in lead]
++    no_background.clear()
++    with TestClient(app) as client:
++        _get(client, site="zabel-gymnasium")  # the unfocused list searches every thin one
++    assert len(no_background) == len(
++        catalog.categories_for(catalog.known_detection("zabel-gymnasium"))
++    )
++
++
++def test_the_kitchen_floor_and_counter(no_background):
++    _kitchen()
++    _stock("dishwasher")
++    _stock("fridge")
++    _stock("over-the-range microwave")
++    with TestClient(app) as client:
++        ground = _get(client, site="kitchen", focus="ground")
++        counter = _get(client, site="kitchen", focus="counter")
++        roof = _get(client, site="kitchen", focus="roof")
++    assert [c["id"] for c in ground["categories"]][:2] == ["dishwashers", "fridges"]
++    assert ground["categories"][0]["components"] == ["dw1"]
++    assert counter["categories"][0]["id"] == "microwaves"
++    assert "x-countertops" in [c["id"] for c in counter["categories"]]  # Grok's counter extra
++    assert roof["focus"] is None  # no roof in a kitchen: today's list
++
++
++def test_a_focused_answer_from_the_cache_takes_under_10_ms(no_background):
++    _zabel()
++    for q in ("400W solar panel", "gutter hanger", "roof vent", "vinyl window", "window ac"):
++        _stock(q, 8)
++    with TestClient(app) as client:
++        _get(client, site="zabel-gymnasium", focus="roof")  # the detection is read once
++        took = []
++        for focus in ("roof", "wall", "ground", "roof", "opening"):
++            t0 = time.perf_counter()
++            body = _get(client, site="zabel-gymnasium", focus=focus)
++            took.append((body["took_ms"], (time.perf_counter() - t0) * 1000))
++    assert max(t for t, _ in took) < 10, took
++
++
++# --- warm -------------------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_warm_fills_the_focus_variants_within_a_budget(monkeypatch):
++    _zabel()
++    searched = []
++
++    async def fake_find_parts(req, progress=lambda s: None):
++        searched.append(req.query)
++        parts = [_part(f"{tables.slug(req.query)}-{i}", f"{req.query} {i}") for i in range(2)]
++        dumped = [p.model_dump(mode="json") for p in parts]
++        cache.put("search_by_query", cache.normalize(req.query), dumped)
++        return parts
++
++    async def fake_fetch(url, dest):
++        return False
++
++    monkeypatch.setattr(search, "find_parts", fake_find_parts)
++    monkeypatch.setattr(assets, "fetch_image", fake_fetch)
++    lines = []
++    totals = await catalog.warm(["zabel-gymnasium"], models=False, echo=lines.append)
++    assert totals["focus_lists"] == 5
++    text = "\n".join(lines)
++    assert "focus=roof:" in text and "focus=wall:" in text
++    wanted = set()
++    det = catalog.known_detection("zabel-gymnasium")
++    for c, _ in catalog.categories_for(det):
++        wanted.add(c.query)
++    for f in catalog.foci(det):
++        for c, _ in (catalog.focus_categories(det, f) or [])[: catalog.FOCUS_SEARCH_LEAD]:
++            wanted.add(c.query)
++    assert set(searched) == wanted and len(searched) == len(wanted)  # each query once
++    assert tables.CATEGORIES["snow-guards"].query not in searched  # 8th on the roof: not warmed
++    again = await catalog.warm(["zabel-gymnasium"], models=False, echo=lines.append)
++    assert again["searches"] == 0  # idempotent
++
++    catalog.reset()
++    searched.clear()
++    _stored("scan-k", 1, "kitchen", "indoor")  # nothing of a kitchen searched yet
++    _scene("scan-k", rev=1)
++    capped = await catalog.warm(["scan-k"], models=False, echo=lines.append, max_searches=2)
++    assert capped["searches"] == 2 and len(searched) <= 2
++    assert "over budget" in "\n".join(lines)
+-- 
+2.50.1 (Apple Git-155)
+

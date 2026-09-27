@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+data/
+.pytest_cache/
+.ruff_cache/
+.playwright-mcp/
+/tools/
+/work/
+/scene/
+/vid/

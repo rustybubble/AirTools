@@ -1,0 +1,178 @@
+From 71f84d946f346a88ec0ef6429d243968309b6686 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:12:59 -0400
+Subject: [PATCH 4/6] texture: a catalogue crop the product fills matches any
+ face (listings that swap W and D); cut cache v2
+
+The Insignia over-the-range microwave's listing has W and D swapped, so the photo (the product
+filling the frame) didn't match W/H and the saliency model's pick (the black door alone) won. The
+frame test now tries every face aspect of (W, H, D); image.cut.json version 2 remakes old cut-outs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/assets.py    | 12 ++++++++++--
+ server/meshgen.py   |  6 +++---
+ server/photo_cut.py | 30 +++++++++++++++++++++++-------
+ server/warm.py      |  3 ++-
+ 4 files changed, 38 insertions(+), 13 deletions(-)
+
+diff --git a/server/assets.py b/server/assets.py
+index 76e3244..6648744 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -583,6 +583,10 @@ def _shell_defaults(plan) -> set[str]:
+     }
+ 
+ 
++def _size(dims: Dims) -> tuple[float, float, float]:
++    return (dims.w, dims.h, dims.d)
++
++
+ def finish_of(part: Part, colors: dict) -> str:
+     """texture: the material cue ("metal" | "plastic" | "painted") from the listing, else the
+     sampled body colour."""
+@@ -599,7 +603,9 @@ def _texture_sync(part: Part, geometry, photo: Path, plan, face, tier: str | Non
+     info: dict = {}
+     c = None
+     if settings.ASSET_PHOTO_CUT or settings.ASSET_SIDE_COLOR or tier == "scad":
+-        c = photo_cut.cut(photo, meshgen.face_aspect(part.dims_mm, face, rotate))
++        c = photo_cut.cut(
++            photo, meshgen.face_aspect(part.dims_mm, face, rotate), size=_size(part.dims_mm)
++        )
+     if tier == "scad" and settings.ASSET_SCAD_ORIENT and c is not None:
+         geometry = geometry if isinstance(geometry, trimesh.Scene) else trimesh.Scene(geometry)
+         ori = meshgen.orientation(geometry, c.texture(rectify=True) if face == "front" else None)
+@@ -897,7 +903,9 @@ def _box(part: Part, photo: Path | None):
+             face = meshgen.aspect_guess(part.dims_mm, photo)
+             finish, info = None, {}
+             if get_settings().ASSET_SIDE_COLOR:
+-                c = photo_cut.cut(photo, meshgen.face_aspect(part.dims_mm, face))
++                c = photo_cut.cut(
++                    photo, meshgen.face_aspect(part.dims_mm, face), size=_size(part.dims_mm)
++                )
+                 finish = finish_of(part, c.colors)
+                 info = {"body": c.colors["body"], "trim": c.colors["trim"], "finish": finish}
+             scene = meshgen.decal_box(part.dims_mm, photo, face, finish=finish)
+diff --git a/server/meshgen.py b/server/meshgen.py
+index 34e77a2..60a2e21 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -422,7 +422,7 @@ def aspect_guess(dims: Dims, photo: Path) -> str:
+     "front" if the photo won't load."""
+     try:
+         if get_settings().ASSET_PHOTO_CUT:  # texture: the product cut out, not the background
+-            size = photo_cut.cut(photo, dims.w / dims.h).image.size
++            size = photo_cut.cut(photo, dims.w / dims.h, size=(dims.w, dims.h, dims.d)).image.size
+         else:
+             size = cut_product(photo)[0].size
+     except OSError:  # PIL's UnidentifiedImageError included
+@@ -528,7 +528,7 @@ def decal_box(dims: Dims, photo: Path, face: str, rotate_cw: int = 0, finish: st
+     colour and material cue (ASSET_SIDE_COLOR; the photo's edge colour without it)."""
+     settings = get_settings()
+     if settings.ASSET_SIDE_COLOR:
+-        c = photo_cut.cut(photo, face_aspect(dims, face, rotate_cw))
++        c = photo_cut.cut(photo, face_aspect(dims, face, rotate_cw), size=(dims.w, dims.h, dims.d))
+         box, _ = T.build("box", dims.model_dump(), None, {"body": c.colors["body"]})
+         box = recolor(box, c.colors, finish or "painted", replace_all=True)
+     else:
+@@ -652,7 +652,7 @@ def project(
+     aspect = float(np.ptp(allv @ r) / max(np.ptp(allv @ up), 1e-9))
+     if rotate_cw in (90, 270):
+         aspect = 1.0 / aspect
+-    c = photo_cut.cut(photo, aspect)
++    c = photo_cut.cut(photo, aspect, size=tuple(np.ptp(allv, axis=0)))
+     side = face in SIDES
+     whole = trimesh.util.concatenate([m for _, m in meshes])
+     eps = 1e-4 * float(np.linalg.norm(whole.extents))
+diff --git a/server/photo_cut.py b/server/photo_cut.py
+index f7e11eb..bd66874 100644
+--- a/server/photo_cut.py
++++ b/server/photo_cut.py
+@@ -47,7 +47,7 @@ from server.config import get_settings
+ 
+ logger = logging.getLogger(__name__)
+ 
+-VERSION = 1
++VERSION = 2  # 2: a frame-filling crop matches any face of the product
+ PLAIN_BORDER_FRAC = 0.4  # this share of the border near its median colour = a studio background
+ TOL = 12  # max per-channel distance from the border colour that still counts as background
+ MAX_SIDE = 1600  # photos are worked on at most this big (catalogue photos are <= 1000 px)
+@@ -190,10 +190,14 @@ def cached(photo: Path, aspect: float | None = None) -> Cut | None:
+     )
+ 
+ 
+-def cut(photo: Path, aspect: float | None = None, *, save: bool = True) -> Cut:
++def cut(
++    photo: Path, aspect: float | None = None, *, size: tuple | None = None, save: bool = True
++) -> Cut:
+     """The product cut out of `photo` (module docstring), cached next to it. `aspect`: width /
+     height of the product face the photo shows (the part's W/H for a front photo), used to pick
+-    the product among several objects. Raises OSError when the photo won't load."""
++    the product among several objects. `size`: the product's (W, H, D) -- a catalogue crop the
++    product fills matches one of its faces even when the listing swapped two dimensions. Raises
++    OSError when the photo won't load."""
+     hit = cached(photo, aspect)
+     if hit is not None:
+         return hit
+@@ -204,7 +208,7 @@ def cut(photo: Path, aspect: float | None = None, *, save: bool = True) -> Cut:
+         scale = MAX_SIDE / max(img.size)
+         img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+     rgb = np.asarray(img)
+-    alpha, method, background = segment(rgb, aspect)
++    alpha, method, background = segment(rgb, aspect, face_aspects(size))
+     fg = alpha > 127
+     ys, xs = np.nonzero(fg)
+     box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+@@ -332,12 +336,23 @@ def _aspect_off(fg: np.ndarray, aspect: float | None) -> float:
+     return float(abs(np.log((np.ptp(xs) + 1) / (np.ptp(ys) + 1) / aspect)))
+ 
+ 
+-def segment(rgb: np.ndarray, aspect: float | None = None) -> tuple[np.ndarray, str, str]:
++def face_aspects(size: tuple | None) -> tuple[float, ...]:
++    """Width / height of each face of a (W, H, D) product: front, side, top."""
++    if not size or min(size) <= 0:
++        return ()
++    w, h, d = (float(v) for v in size)
++    return (w / h, d / h, w / d)
++
++
++def segment(
++    rgb: np.ndarray, aspect: float | None = None, frames: tuple[float, ...] = ()
++) -> tuple[np.ndarray, str, str]:
+     """(alpha uint8 HxW, method, background) for the product in `rgb`: "flood" on a plain
+     background; on a cluttered one the saliency model's object when its box has about the
+     product's aspect, else "frame" when the photo itself has it (a catalogue crop the product
+     fills: the border is the product, not a background), else the model's object anyway, else a
+-    plausible flood, else "whole"."""
++    plausible flood, else "whole". `frames`: the aspects of the product's other faces (a listing's
++    swapped dimensions still find the frame-filling crop)."""
+     h, w = rgb.shape[:2]
+     whole = np.full((h, w), 255, np.uint8)
+     background = "cluttered"
+@@ -346,7 +361,8 @@ def segment(rgb: np.ndarray, aspect: float | None = None) -> tuple[np.ndarray, s
+         if fg.mean() >= FG_MIN:
+             return _feather(fg), "flood", "plain"
+         background = "plain"  # a product the flood swallowed (white on white): try the model
+-    frame = aspect is not None and abs(np.log((w / h) / aspect)) < FRAME_MATCH
++    shapes = [a for a in (aspect, *frames) if a]
++    frame = any(abs(np.log((w / h) / a)) < FRAME_MATCH for a in shapes)
+     pred = saliency(rgb)
+     if pred is not None:
+         fg = ndimage.binary_opening(pred > 0.5, iterations=2)
+diff --git a/server/warm.py b/server/warm.py
+index f8cb9e2..aca51b4 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -527,7 +527,8 @@ async def warm_retexture(
+     log = Path(get_settings().DATA_DIR) / "retexture.json"
+     cache.write_json_atomic(log, json.dumps(rows, indent=2, default=str))
+     print(
+-        f"retexture: {counts} in {took:.1f} s ({took / max(1, sum(counts.values())):.2f} s a model),"
++        f"retexture: {counts} in {took:.1f} s"
++        f" ({took / max(1, sum(counts.values())):.2f} s a model),"
+         f" {len(turned)} CAD models turned around, $0 (no paid calls)"
+     )
+     return {**counts, "seconds": round(took, 1), "turned": turned, "parts": len(parts)}
+-- 
+2.50.1 (Apple Git-155)
+

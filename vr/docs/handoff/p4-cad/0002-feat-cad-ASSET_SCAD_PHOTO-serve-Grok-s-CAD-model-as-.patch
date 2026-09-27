@@ -1,0 +1,94 @@
+From 53d4e729c347f1ddf9a0c8f3bb5861149616b0b3 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 00:41:38 -0400
+Subject: [PATCH 2/3] feat(cad): ASSET_SCAD_PHOTO -- serve Grok's CAD model as
+ written, without the photo decal
+
+Default true (the photo on the front, like every tier). false = Grok's own geometry and paint: the generator shown as
+it is (the photo over CAD relief draws a window's bars twice). One test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md       |  3 +++
+ server/assets.py  |  3 ++-
+ server/config.py  |  4 ++++
+ tests/test_cad.py | 20 ++++++++++++++++++++
+ 4 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index e0255f5..945a164 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -98,6 +98,9 @@ The headset can choose how the models are made (Settings ▸ 3D models) and comp
+   default effort (216-400 s, $0.10-0.20); grok-4.20 non-reasoning 9-19 s, $0.005-0.015, but flatter shapes (a window
+   as a slab, a knob mounted backwards); grok-4.20 reasoning 118-180 s, $0.03-0.05. `ASSET_SCAD_FIXES` (compile-fix
+   rounds; 2 for a non-reasoning model, else 1) and `ASSET_SCAD_SAMPLES` (parallel first answers, default 1) tune the loop.
++- **`ASSET_SCAD_PHOTO`** (default `true`): the product photo on the CAD model's front like every other tier. `false`
++  serves Grok's geometry and paint only (the CAD model as written: a cleaner generator comparison; the photo over CAD
++  relief can draw a window's bars twice). Applies to variants made after the change.
+ - **Pre-generation:** `python -m server.warm --scad [--sites kitchen] [--scad-match window] [--scad-jobs 3]
+   [--scad-parts id,...] [--no-demo-parts] [--retry-failed] [--estimate]` makes the CAD model of every catalog item that
+   has a model plus the demo's key parts (the kitchen dishwashers, the window frames, the gutter hangers), 3 at a time,
+diff --git a/server/assets.py b/server/assets.py
+index c92343d..ae9be2a 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -817,7 +817,8 @@ async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
+         info = _plan_info(plan)
+     if geometry is None:
+         return None, reason
+-    geometry = await _textured(part, geometry, photo, plan, face)
++    if tier != "scad" or get_settings().ASSET_SCAD_PHOTO:  # cad: or Grok's own paint only
++        geometry = await _textured(part, geometry, photo, plan, face)
+     return (geometry, tier, 0.0, info), reason
+ 
+ 
+diff --git a/server/config.py b/server/config.py
+index 584f180..c166f33 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -59,6 +59,10 @@ class Settings(BaseSettings):
+     # "low" (~70 s, ~$0.03 a part, measured) | "medium" | "high"; "" = the model's own default
+     # (grok-4.7: ~280 s, ~$0.14). Dropped for models that take none (grok-4.20).
+     ASSET_SCAD_EFFORT: str | None = "low"
++    # cad: the product photo on the CAD model's front, like the other tiers (true), or Grok's own
++    # geometry and paint only (false: the CAD model as written, e.g. to compare generators; a
++    # photo over CAD relief can draw a window's bars twice). Variants made before a change stay.
++    ASSET_SCAD_PHOTO: bool = True
+     # assetgen: a poor `asset` answer (none, or a known shape -- a window -- answered with another
+     # template) is asked once more here (server/meshgen.py ask). "" turns the retry off.
+     LLM_ASSET_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
+diff --git a/tests/test_cad.py b/tests/test_cad.py
+index 31fda23..6591c6b 100644
+--- a/tests/test_cad.py
++++ b/tests/test_cad.py
+@@ -227,6 +227,26 @@ async def test_a_failure_counts_for_its_model_and_an_hour(monkeypatch, router):
+     assert assets.ready("ac-1", "llm_scad") is None  # another model: try again
+ 
+ 
++@pytest.mark.asyncio
++async def test_the_cad_model_can_be_served_without_the_photo(monkeypatch, router):
++    _fake_plan_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    projected = []
++
++    def fake_project(geometry, photo, face, rotate=0):
++        projected.append(face)
++        return geometry
++
++    monkeypatch.setattr(meshgen, "project", fake_project)
++    _slab("ac-1")
++    got = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert got.asset.tier == "scad" and len(projected) == 1  # the photo on its front
++    monkeypatch.setenv("ASSET_SCAD_PHOTO", "false")
++    get_settings.cache_clear()
++    got = await assets.resolve_asset(_part(), mode="llm_scad", rebuild=True)
++    assert got.asset.tier == "scad" and len(projected) == 1  # Grok's own paint only
++
++
+ # --- (b) honest pending states on the endpoints ------------------------------------------------
+ 
+ 
+-- 
+2.50.1 (Apple Git-155)
+

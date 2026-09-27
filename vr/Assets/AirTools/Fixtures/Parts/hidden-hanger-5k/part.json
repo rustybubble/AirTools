@@ -1,0 +1,83 @@
+{
+  "id": "hidden-hanger-5k",
+  "name": "5\" K-style hidden gutter hanger with screw",
+  "manufacturer": "Amerimax (mock)",
+  "model_no": "HH5K-W",
+  "dims_mm": {
+    "w": 127,
+    "d": 38,
+    "h": 45
+  },
+  "weight_g": 60,
+  "color_hex": "#F2F2F0",
+  "finish": "white",
+  "material": "aluminum",
+  "finishes": [
+    {
+      "name": "white",
+      "hex": "#F2F2F0",
+      "part_id": "hidden-hanger-5k"
+    },
+    {
+      "name": "brown",
+      "hex": "#5A3E2B",
+      "part_id": "hidden-hanger-5k"
+    }
+  ],
+  "mount": {
+    "face": "-z",
+    "surface": "fascia"
+  },
+  "clearance_mm": {
+    "front": 0,
+    "back": 0,
+    "top": 25,
+    "bottom": 0,
+    "left": 0,
+    "right": 0
+  },
+  "spacing_mm": 600,
+  "asset": {
+    "tier": "proxy",
+    "source_url": "mock://fixtures",
+    "license": "CC0",
+    "scale_residual_pct": 0.0
+  },
+  "spec_url": "https://example.com/specs/hh5k",
+  "citations": [
+    "mock fixture (SPEC §5.3)"
+  ],
+  "sellers": [
+    {
+      "name": "Home Depot (mock)",
+      "price_usd": 4.27,
+      "shipping": "free",
+      "eta": "Tue",
+      "rating": 4.6,
+      "in_stock": true,
+      "url": "https://example.com/hd/hh5k"
+    },
+    {
+      "name": "Lowe's (mock)",
+      "price_usd": 4.48,
+      "shipping": "free",
+      "eta": "Mon",
+      "rating": 4.5,
+      "in_stock": true,
+      "url": "https://example.com/lowes/hh5k"
+    },
+    {
+      "name": "Amazon (mock)",
+      "price_usd": 3.99,
+      "shipping": "$5.99",
+      "eta": "Thu",
+      "rating": 4.3,
+      "in_stock": true,
+      "url": "https://example.com/amazon/hh5k"
+    }
+  ],
+  "recommended_seller": 0,
+  "recommendation_reason": "cheapest with free shipping",
+  "fetched_at": "2026-09-25T00:00:00-04:00",
+  "cached": true
+}

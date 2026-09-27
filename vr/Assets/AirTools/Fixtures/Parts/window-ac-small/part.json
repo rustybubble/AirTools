@@ -1,0 +1,80 @@
+{
+  "id": "window-ac-small",
+  "name": "Small window air conditioner, 5,000 BTU",
+  "manufacturer": "Frost (mock)",
+  "model_no": "FW05",
+  "dims_mm": {
+    "w": 470,
+    "d": 380,
+    "h": 300
+  },
+  "weight_g": 16500,
+  "color_hex": "#E8E8E8",
+  "finish": "white",
+  "material": "steel/plastic",
+  "finishes": [
+    {
+      "name": "white",
+      "hex": "#E8E8E8",
+      "part_id": "window-ac-small"
+    }
+  ],
+  "mount": {
+    "face": "-y",
+    "surface": "sill"
+  },
+  "clearance_mm": {
+    "front": 0,
+    "back": 0,
+    "top": 25,
+    "bottom": 0,
+    "left": 0,
+    "right": 0
+  },
+  "min_window_width_mm": 590,
+  "max_window_width_mm": 1000,
+  "spacing_mm": null,
+  "asset": {
+    "tier": "proxy",
+    "source_url": "mock://fixtures",
+    "license": "CC0",
+    "scale_residual_pct": 0.0
+  },
+  "spec_url": "https://example.com/specs/fw05",
+  "citations": [
+    "mock fixture (SPEC §5.3)"
+  ],
+  "sellers": [
+    {
+      "name": "Best Buy (mock)",
+      "price_usd": 189.99,
+      "shipping": "free",
+      "eta": "Wed",
+      "rating": 4.4,
+      "in_stock": true,
+      "url": "https://example.com/bb/fw05"
+    },
+    {
+      "name": "Walmart (mock)",
+      "price_usd": 179.0,
+      "shipping": "free",
+      "eta": "Fri",
+      "rating": 4.2,
+      "in_stock": true,
+      "url": "https://example.com/wm/fw05"
+    },
+    {
+      "name": "Home Depot (mock)",
+      "price_usd": 199.0,
+      "shipping": "free",
+      "eta": "Tue",
+      "rating": 4.6,
+      "in_stock": false,
+      "url": "https://example.com/hd/fw05"
+    }
+  ],
+  "recommended_seller": 1,
+  "recommendation_reason": "cheapest in stock",
+  "fetched_at": "2026-09-25T00:00:00-04:00",
+  "cached": true
+}

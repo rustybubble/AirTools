@@ -1,0 +1,1931 @@
+From d3bd4fd01be17d29d300b91d6126a6c68215ff1f Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 04:14:07 -0400
+Subject: [PATCH 09/11] feat: the agent measures with the headset's tape
+ (survey, check_slope, /agent/observe)
+
+brain.md S1 / B1, "the Quartermaster uses the tape": "measure every cabinet door" makes the
+headset run its real measure tool over every structure-layer object of that label, and the
+headset reports its own numbers back. The server never measures or estimates a size.
+
+- scene_digest.py: digest(site, scale) from scene/<site>/structure.r<rev>.json (cached by site +
+  file): counts by label, size groups, per-object {id,label,group,w_mm,h_mm,center,normal}, the 5
+  longest high near-horizontal edges (gutter candidates), gravity_residual_deg. Only counts and
+  groups reach the LLM (one system-prompt line, ~75 tokens for the kitchen).
+- survey.py: the /agent/observe body, greedy 10 mm size grouping, spoken summaries ("18 doors in
+  8 sizes: 6 at 26 by 28, ... Two didn't lock onto corners; they're amber."), the gutter verdict
+  (1/4 in per 10 ft; drains / won't drain / inconclusive from fall +- uncertainty), and template
+  answers for widest/narrowest/tallest/shortest/largest/smallest.
+- agent.py: fast paths for "measure/survey/size up every|all|each|the [upper|left|...] <label>"
+  -> survey {label, where, measure, request_id}, gutter/sill/ledge + slope/drain/fall/pitch ->
+  check_slope {target, request_id, edge_ids}, a bare "stop" -> stop_survey; LLM tools survey,
+  check_slope and survey_query (offered only once a survey exists); both headset tools end the
+  turn with their spoken acknowledgement. The context gains `site` and `scale`: with a known site
+  the reply counts ("Surveying 18 doors."), "doors" means cabinet_door in a kitchen, a missing
+  label or structure layer is answered straight instead of sending an empty sweep.
+- app.py: POST /agent/observe (survey_result | slope_result) -> {reply, actions, job_id} with
+  show_survey {request_id, label, groups, unverified, skipped, focus} or add_note; `tts: true`
+  adds audio like /voice/command. System prompt: numbers only from tools or the notebook.
+- api.md: the endpoint, four actions, two context fields, the fast-path phrasings.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md            |  73 ++++-
+ server/agent.py        | 366 ++++++++++++++++++++++-
+ server/app.py          |  51 +++-
+ server/scene_digest.py | 178 ++++++++++++
+ server/survey.py       | 340 ++++++++++++++++++++++
+ tests/test_survey.py   | 645 +++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 1625 insertions(+), 28 deletions(-)
+ create mode 100644 server/scene_digest.py
+ create mode 100644 server/survey.py
+ create mode 100644 tests/test_survey.py
+
+diff --git a/docs/api.md b/docs/api.md
+index a080186..2021c48 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -72,6 +72,19 @@ sequenceDiagram
+     S-->>U: receipt
+ ```
+ 
++### Agent survey (the agent uses the headset's tape)
++
++```mermaid
++sequenceDiagram
++    participant U as Unity
++    participant S as Server
++    U->>S: POST /voice/command "measure every cabinet door" (context.site)
++    S-->>U: {reply:"Surveying 18 doors.", actions:[{name:"survey",args:{label,where,measure,request_id}}]}
++    Note over U: measure each object with the real tape, one notebook entry each
++    U->>S: POST /agent/observe {kind:"survey_result", request_id, results[]}
++    S-->>U: {reply:"18 doors in 8 sizes: …", actions:[{name:"show_survey",args:{groups,…}}]}
++```
++
+ ### Voice command (push-to-talk)
+ 
+ ```mermaid
+@@ -383,6 +396,55 @@ Speak `reply` aloud. Execute `actions[]` (see section 5).
+ 
+ ---
+ 
++### `POST /agent/observe`
++
++The headset reports what its own tools measured for an agent `survey` or `check_slope` action
++(section 5). No LLM: the server groups sizes, writes the spoken summary or the gutter drainage
++verdict, and remembers the survey for follow-ups ("which is the widest?"). Works with `OFFLINE=true`.
++
++Survey (`kind: "survey_result"`), sent once when the sweep ends, is stopped, or can't start:
++```json
++{"session_id": "quest-1a2b3c4d5e", "request_id": "sv-7f3a09c1", "kind": "survey_result",
++ "label": "cabinet_door", "measure": "size", "status": "done", "planned": 18,
++ "results": [{"id": "o5", "label": "cabinet_door", "group": "g0", "w_m": 0.391, "h_m": 0.412,
++              "area_m2": 0.161, "angles_deg": [90.1, 89.8, 90.2, 89.9], "off_plane_m": 0.004,
++              "snap": ["corner", "corner", "edge", "corner"], "unverified": false,
++              "notebook_id": 12, "camera_id": 316}],
++ "skipped": [{"id": "o9", "reason": "corner behind scanned surface"}],
++ "tts": false}
++```
++`status`: `done` | `aborted` (a pinch or "stop"; send what finished and `planned`) |
++`no_structure` (the open scene has no structure layer). `label`/`measure` may be omitted when
++`request_id` is the one from the action. Only `id` is required per result; `unverified: true`
++means a corner didn't snap within 2 cm (drawn amber).
++
++Slope (`kind: "slope_result"`): `run_m` and `fall_mm` are required (422 otherwise).
++```json
++{"session_id": "quest-1a2b3c4d5e", "request_id": "sl-01c2d3e4", "kind": "slope_result",
++ "target": "gutter", "run_m": 4.2, "fall_mm": 0.4, "low_end": [2.10, 6.20, 0.03],
++ "gravity_residual_deg": 0.0, "uncertainty_mm": 2.0, "notebook_id": 13}
++```
++`uncertainty_mm` defaults to `run_m × 1000 × tan(gravity_residual_deg) + 2` (the residual defaults
++to the site's `scene.json`). Verdict against the gutter rule (¼ in per 10 ft = 2.083 mm/m):
++`drains` if `fall − unc ≥ required`, `won't drain` if `fall + unc < required`, else `inconclusive`.
++
++**Response** (same shape as `/agent/command`; `tts: true` adds `audio_b64`/`audio_mime`/`tts_error`
++exactly like `/voice/command`):
++```json
++{"reply": "18 doors in 8 sizes: 6 at 26 by 28, 4 at 21 by 53, 2 at 26 by 43 centimetres and 5 more sizes on the card. Two didn't lock onto corners; they're amber.",
++ "actions": [{"name": "show_survey", "args": {"request_id": "sv-7f3a09c1", "label": "cabinet_door",
++   "groups": [{"w_mm": 262, "h_mm": 279, "count": 6, "ids": ["o0", "o1", "o2", "o3", "o4", "o5"]}],
++   "unverified": ["o9", "o11"], "skipped": [], "focus": []}}],
++ "job_id": null}
++```
++A slope report answers with `add_note {text}` (e.g. "Gutter slope: won't drain (0.4 ± 2 mm of fall
++over 4.20 m; needs 8.7 mm)") and a reply like "Flat: 0 ± 2 mm of fall over 4.20 m. It needs about
++9 mm, so water will pond."
++
++Errors: `422` unknown `kind`, a slope report without `run_m`/`fall_mm`, `run_m ≤ 0`.
++
++---
++
+ ### `POST /voice/command` (multipart/form-data)
+ 
+ | field | type | notes |
+@@ -467,6 +529,10 @@ Errors: `400` empty frames, invalid base64, frame too large. `413` request body
+ | `add_note` | `{text}` | Append text to wrist notebook |
+ | `scene_pin` | `{frame_id, box, label}` | Project box centre onto mesh, drop a pin; `label` is the vision answer to show on it |
+ | `show_bom` | `{bom_id, lines, total_usd}` | Open the "what else do I need?" panel; `lines[]` are `BomLine` objects, ready to render without a second call |
++| `survey` | `{label, where, measure, request_id}` | Measure every structure-layer object with that `label` (`cabinet_door`/`drawer`/`panel`/`appliance`/`window`/`door`/`any`) with the real tape, one notebook entry each; `where`: `all`/`visible`/`upper`/`lower`/`left`/`right`/`nearest`; `measure`: `size`/`width`/`height`. Report with `POST /agent/observe` (`survey_result`, same `request_id`) |
++| `check_slope` | `{target, request_id, edge_ids}` | Tape the `target` (`gutter`/`sill`/`ledge`/`nearest_edge`) end to end and report `slope_result` to `/agent/observe`. `edge_ids`: for a gutter, the structure layer's long, high, near-horizontal edges, best first (may be `[]`) |
++| `show_survey` | `{request_id, label, groups, unverified, skipped, focus}` | Survey card: `groups[]` `{w_mm, h_mm, count, ids}` most common first; amber for `unverified` ids; highlight `focus` ids (the answer to "which is the widest?") |
++| `stop_survey` | `{}` | Abort a running survey (completed entries stay), then report `status: "aborted"` |
+ 
+ ---
+ 
+@@ -482,7 +548,9 @@ Send with every `/agent/command` and `/voice/command`.
+   "frames": [{"id": "frame-001", "jpg_b64": "<base64>"}],
+   "frame_jpg_b64": "<base64 JPEG>",
+   "tool": "tape",
+-  "placed": [{"part_id": "gutter-hanger-hidden-k-style", "count": 8}]
++  "placed": [{"part_id": "gutter-hanger-hidden-k-style", "count": 8}],
++  "site": "kitchen",
++  "scale": 1.0
+ }
+ ```
+ 
+@@ -495,6 +563,8 @@ Send with every `/agent/command` and `/voice/command`.
+ | `frame_jpg_b64` | single JPEG hint for `find_part` |
+ | `tool` | informational; agent does not act on it |
+ | `placed` | parts actually placed in the scene with their count (e.g. after `place_array`); needed for `what_else` ("what else do I need?"). Falls back to `selected_part_id` x1 if omitted. |
++| `site` | the open scene package (as in `GET /scenes`); omit for the built-in scene. Lets `survey` count objects ("Surveying 18 doors."), map "doors" to `cabinet_door` in a kitchen, refuse a label the scene lacks, and suggest gutter `edge_ids` |
++| `scale` | the headset's scale correction (1.0 = none); multiplies the structure sizes the agent sees |
+ 
+ Session state is in-memory; it resets on server restart. Keep `session_id` consistent across all calls.
+ 
+@@ -526,5 +596,6 @@ Offline mode activates automatically when Cybersource keys are absent or the san
+ | Search latency | ~5–30 s live, instant on cache hit |
+ | AI mesh | ~15–20 s per part, sequential (anonymous HF ZeroGPU semaphore); GLB may be pending when candidates first arrive |
+ | Text input | Agent truncates commands at 500 characters |
++| Survey fast path | "measure/survey/size up" + every/all (the)/each/the + optional upper/lower/left/right/top/bottom/nearest + cabinet door(s)/door(s)/drawer(s)/window(s)/panel(s)/appliance(s); "the" + one = nearest; "I can see"/"in view" = visible; width/wide, height/tall = that side only. Gutter/sill/ledge + slope/drain/fall/pitch → `check_slope` (not with find/get/need/buy). A bare "stop"/"cancel" → `stop_survey`. Other phrasings go to the LLM, which has the same tools |
+ | AI mesh quota | Anonymous HF ZeroGPU quota is per-IP (~minutes/day). Once exhausted, the server stops trying and serves proxy boxes until restart; set `HF_TOKEN` for more quota |
+ | Offline mode | `OFFLINE=true`: search/sellers/TTS served from disk cache only (`uv run python -m server.warm` pre-fills); cache misses return empty results, `503` from `/scene/ask` and `/voice/command` |
+diff --git a/server/agent.py b/server/agent.py
+index 214e869..12cd60c 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -14,11 +14,12 @@ are kept compact and only the last ~8 messages ride along.
+ import json
+ import logging
+ import re
++import uuid
+ from collections import OrderedDict
+ from dataclasses import dataclass, field
+ from typing import Any
+ 
+-from server import bom, jobs, search, sellers, vision
++from server import bom, jobs, scene_digest, search, sellers, survey, vision
+ from server.config import get_settings
+ from server.llm import chat
+ from server.models import SearchRequest
+@@ -29,13 +30,15 @@ MAX_TEXT_LEN = 500
+ MAX_HISTORY = 8
+ MAX_TURNS = 3
+ MAX_SESSIONS = 256  # ponytail: simple LRU cap, no persistence -- a restart clears sessions anyway
++MAX_PENDING = 16  # survey/check_slope requests awaiting the headset's /agent/observe report
+ 
+ SYSTEM_PROMPT = (
+     "You are the Quartermaster: a terse nautical voice riding the user's tool belt in an AR "
+     "headset. Reply in at most two short sentences, meant to be spoken aloud. Use the tools to "
+     "search for parts, answer what the camera sees, list sellers, and queue actions the "
+     "headset performs. You never authorize a payment yourself -- start_checkout only opens the "
+-    "hold-to-pay panel for the user's own pinch."
++    "hold-to-pay panel for the user's own pinch. Numbers come only from tool results or the "
++    "notebook. Never estimate a size yourself."
+ )
+ 
+ TOOLS: list[dict[str, Any]] = [
+@@ -169,6 +172,53 @@ TOOLS: list[dict[str, Any]] = [
+             },
+         },
+     },
++    {
++        "type": "function",
++        "function": {
++            "name": "survey",
++            "description": "Make the headset measure every object of one kind with its real tape "
++            "(it shows its work and logs each to the notebook). Use for 'measure/size up "
++            "all/every/each <thing>'. Never guess sizes yourself.",
++            "parameters": {
++                "type": "object",
++                "additionalProperties": False,
++                "properties": {
++                    "label": {"type": "string", "enum": list(survey.LABELS)},
++                    "where": {"type": "string", "enum": list(survey.WHERES)},
++                    "measure": {"type": "string", "enum": list(survey.MEASURES)},
++                },
++                "required": ["label", "where", "measure"],
++            },
++        },
++    },
++    {
++        "type": "function",
++        "function": {
++            "name": "check_slope",
++            "description": "Measure the fall along a gutter, sill or ledge and judge drainage "
++            "(gutter rule: at least 1/4 inch per 10 ft).",
++            "parameters": {
++                "type": "object",
++                "additionalProperties": False,
++                "properties": {"target": {"type": "string", "enum": list(survey.SLOPE_TARGETS)}},
++                "required": ["target"],
++            },
++        },
++    },
++    {
++        "type": "function",
++        "function": {
++            "name": "survey_query",
++            "description": "Answer a question about the last survey's results (widest, count by "
++            "size, does X fit).",
++            "parameters": {
++                "type": "object",
++                "additionalProperties": False,
++                "properties": {"question": {"type": "string"}},
++                "required": ["question"],
++            },
++        },
++    },
+     {
+         "type": "function",
+         "function": {
+@@ -181,7 +231,10 @@ TOOLS: list[dict[str, Any]] = [
+     },
+ ]
+ 
+-_CLIENT_ONLY_TOOLS = {"set_finish", "place_array", "equip_tool"}
++_CLIENT_ONLY_TOOLS = {"set_finish", "place_array", "equip_tool", "stop_survey"}
++# Tools whose work happens later on the headset (it reports back via /agent/observe): their spoken
++# acknowledgement ends the turn -- another LLM turn would have nothing new to say.
++_ENDS_TURN = {"survey", "check_slope"}
+ 
+ _CANNED_REPLY = {
+     "find_part": "Searching the supply shops.",
+@@ -194,6 +247,10 @@ _CANNED_REPLY = {
+     "equip_tool": "Tool swapped.",
+     "add_note": "Noted.",
+     "what_else": "Checking the extras.",
++    "survey": "Surveying.",
++    "check_slope": "Checking the fall.",
++    "survey_query": "Checked the survey.",
++    "stop_survey": "Stopping.",
+ }
+ 
+ # Spoken when OFFLINE and the fast-path matcher didn't catch the command -- the LLM path never
+@@ -210,6 +267,11 @@ class Session:
+     selected_part_id: str | None = None
+     notes: list[str] = field(default_factory=list)
+     placed: list[dict[str, Any]] = field(default_factory=list)  # [{part_id, count}], see what_else
++    site: str | None = None  # the scene package the headset has open (context "site")
++    scale: float = 1.0  # the headset's scale calibration (context "scale")
++    last_text: str = ""  # the command being handled, recorded with survey requests
++    pending: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
++    survey: dict[str, Any] | None = None  # the last survey the headset reported (/agent/observe)
+ 
+ 
+ _sessions: OrderedDict[str, Session] = OrderedDict()
+@@ -260,6 +322,50 @@ _FIND_RE = re.compile(
+     r"\b(?:find|get|need)\s+(?:me\s+)?(?:an?\s+|the\s+|some\s+)?(.+?)\s*(?:\bfor\b.*)?[.!?]?\s*$",
+     re.IGNORECASE,
+ )
++# "measure every cabinet door", "size up all the windows", "measure the upper drawers", "measure
++# the window" (the + one = the nearest). An optional qualifier word picks `where`.
++_SURVEY_RE = re.compile(
++    r"\b(?:measure|survey|size\s+up)\s+(every|all(?:\s+(?:of\s+)?the)?|each|the)\s+"
++    r"(?:(?!cabinet\b)(\w+)\s+)?"
++    r"(cabinet\s+doors?|doors?|drawers?|windows?|panels?|appliances?)\b",
++    re.IGNORECASE,
++)
++_SURVEY_VISIBLE_RE = re.compile(
++    r"\b(?:i|you)\s+can\s+see\b|\bin\s+view\b|\bvisible\b", re.IGNORECASE
++)
++_SURVEY_WHERE = {
++    "upper": "upper",
++    "top": "upper",
++    "lower": "lower",
++    "bottom": "lower",
++    "base": "lower",
++    "left": "left",
++    "right": "right",
++    "visible": "visible",
++    "nearest": "nearest",
++    "closest": "nearest",
++}
++_WIDTH_RE = re.compile(r"\b(?:widths?|wide)\b", re.IGNORECASE)
++_HEIGHT_RE = re.compile(r"\b(?:heights?|tall|high)\b", re.IGNORECASE)
++# "is this gutter sloped enough to drain?", "does the sill drain?" -- but "find a gutter drain
++# outlet" is a part search, so find/get/need/buy/order keep it off this path.
++_SLOPE_WORDS = r"(?:slope[sd]?|sloping|drain(?:s|ing|age)?|fall|pitch(?:ed)?)"
++_SLOPE_RE = re.compile(
++    rf"\b(gutter|sill|ledge)s?\b.*\b{_SLOPE_WORDS}\b|\b{_SLOPE_WORDS}\b.*\b(gutter|sill|ledge)s?\b",
++    re.IGNORECASE,
++)
++_SHOPPING_RE = re.compile(r"\b(?:find|get|need|buy|order|search|shop)\b", re.IGNORECASE)
++# Only a bare "stop" / "cancel" (the whole utterance): aborts a running survey on the headset.
++_STOP_RE = re.compile(
++    r"^\s*(?:ok(?:ay)?[,\s]+)?(?:stop|cancel|abort)"
++    r"(?:\s+(?:it|that|now|the\s+survey|surveying|measuring))?\s*[.!]*\s*$",
++    re.IGNORECASE,
++)
++# Follow-ups on the stored survey, only while there is one: "which is the widest?"
++_SURVEY_Q_RE = re.compile(
++    r"\b(?:which|what)\b.*\b(?:widest|narrowest|tallest|shortest|largest|biggest|smallest)\b",
++    re.IGNORECASE,
++)
+ _ORDINAL_INDEX = {"first": 0, "second": 1, "third": 2}
+ _UNIT_TO_MM = {
+     "cm": 10.0,
+@@ -289,6 +395,18 @@ def _match_fast_intent(text: str) -> tuple[str, dict[str, Any], str] | None:
+         tool = m.group(1).lower()
+         return "equip_tool", {"tool": tool}, f"{tool.capitalize()} in hand."
+ 
++    if _STOP_RE.search(text):
++        return "stop_survey", {}, _CANNED_REPLY["stop_survey"]
++
++    m = _SURVEY_RE.search(text)
++    if m:
++        return "survey", _survey_args(m, text), _CANNED_REPLY["survey"]
++
++    m = _SLOPE_RE.search(text)
++    if m and not _SHOPPING_RE.search(text):
++        target = (m.group(1) or m.group(2)).lower()
++        return "check_slope", {"target": target}, _CANNED_REPLY["check_slope"]
++
+     m = _SELECT_RE.search(text)
+     if m:
+         index = int(m.group(1)) - 1 if m.group(1) else _ORDINAL_INDEX[m.group(2).lower()]
+@@ -320,9 +438,148 @@ def _match_fast_intent(text: str) -> tuple[str, dict[str, Any], str] | None:
+     return None
+ 
+ 
++def _survey_args(m: re.Match, text: str) -> dict[str, Any]:
++    """`survey` args from a _SURVEY_RE match: "cabinet doors" -> cabinet_door, "the window" (the +
++    one) -> nearest, "upper"/"left"/... -> that filter, "I can see" -> visible, "widths" -> width."""
++    det, qualifier, thing = m.group(1).lower(), (m.group(2) or "").lower(), m.group(3).lower()
++    label = re.sub(r"\s+", "_", thing).rstrip("s")
++    where = _SURVEY_WHERE.get(qualifier)
++    if where is None:
++        where = "nearest" if det == "the" and not thing.endswith("s") else "all"
++    if _SURVEY_VISIBLE_RE.search(text):
++        where = "visible"
++    wide, tall = bool(_WIDTH_RE.search(text)), bool(_HEIGHT_RE.search(text))
++    measure = "width" if wide and not tall else "height" if tall and not wide else "size"
++    return {"label": label, "where": where, "measure": measure}
++
++
+ # --- tool execution ----------------------------------------------------------------------
+ 
+ 
++def _digest(session: Session) -> scene_digest.SceneDigest | None:
++    """The open scene's structure digest, if the headset named a site this server has."""
++    if not session.site:
++        return None
++    try:
++        return scene_digest.digest(session.site, session.scale)
++    except (KeyError, TypeError, ValueError) as exc:  # a malformed structure file
++        logger.warning("agent: no digest for %s: %s", session.site, exc)
++        return None
++
++
++def _new_request(session: Session, prefix: str, entry: dict[str, Any]) -> str:
++    request_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
++    session.pending[request_id] = entry
++    while len(session.pending) > MAX_PENDING:
++        session.pending.popitem(last=False)
++    return request_id
++
++
++def _survey_tool(session: Session, args: dict[str, Any]):
++    """`survey`: queue the headset's own tape over every object of one label. The server never
++    measures: it checks the label against the scene's structure layer (when it has the site)
++    so "measure every window" in a kitchen gets a straight answer instead of an empty sweep."""
++    label = args.get("label") if args.get("label") in survey.LABELS else "any"
++    where = args.get("where") if args.get("where") in survey.WHERES else "all"
++    measure = args.get("measure") if args.get("measure") in survey.MEASURES else "size"
++    d = _digest(session)
++    # "the doors" in a kitchen means its cabinet doors.
++    if label == "door" and d is not None and not d.count("door") and d.count("cabinet_door"):
++        label = "cabinet_door"
++    if d is not None and not d.structure:
++        spoken = "No structure layer for this scene; mark the corners yourself."
++        return {"ok": False, "spoken": spoken}, None, None
++    count = d.count(label) if d is not None else None
++    if count == 0:
++        spoken = f"No {survey.noun(label)} in this scene's structure layer."
++        return {"ok": False, "count": 0, "spoken": spoken}, None, None
++
++    request_id = _new_request(
++        session,
++        "sv",
++        {
++            "kind": "survey",
++            "label": label,
++            "where": where,
++            "measure": measure,
++            "query": session.last_text,
++        },
++    )
++    if where == "all":
++        spoken = (
++            f"Surveying {count} {survey.noun(label, count)}."
++            if count
++            else f"Surveying the {survey.noun(label)}."
++        )
++    elif where == "nearest":
++        spoken = f"Measuring the nearest {survey.noun(label, 1)}."
++    elif where == "visible":
++        spoken = f"Surveying the {survey.noun(label)} in view."
++    else:
++        spoken = f"Surveying the {where} {survey.noun(label)}."
++    action_args = {"label": label, "where": where, "measure": measure, "request_id": request_id}
++    result = {"ok": True, "request_id": request_id, "count": count, "spoken": spoken}
++    return result, {"name": "survey", "args": action_args}, None
++
++
++def _slope_tool(session: Session, args: dict[str, Any]):
++    """`check_slope`: the headset tapes the edge end to end and reports the fall to
++    /agent/observe, which judges drainage. For a gutter, `edge_ids` suggests the structure
++    layer's long high near-horizontal edges (best first); the app may pick its own."""
++    target = args.get("target") if args.get("target") in survey.SLOPE_TARGETS else "gutter"
++    d = _digest(session)
++    edge_ids = [e["id"] for e in d.gutter_edges] if d is not None and target == "gutter" else []
++    request_id = _new_request(
++        session, "sl", {"kind": "slope", "target": target, "query": session.last_text}
++    )
++    spoken = (
++        "Checking that edge's fall."
++        if target == "nearest_edge"
++        else f"Checking the {target}'s fall."
++    )
++    action_args = {"target": target, "request_id": request_id, "edge_ids": edge_ids}
++    return (
++        {"ok": True, "request_id": request_id, "spoken": spoken},
++        {
++            "name": "check_slope",
++            "args": action_args,
++        },
++        None,
++    )
++
++
++def _show_survey_action(stored: dict[str, Any], focus: list[str]) -> dict[str, Any]:
++    return {
++        "name": "show_survey",
++        "args": {
++            "request_id": stored.get("request_id"),
++            "label": stored.get("label"),
++            "groups": stored.get("groups", []),
++            "unverified": stored.get("unverified", []),
++            "skipped": stored.get("skipped", []),
++            "focus": focus,
++        },
++    }
++
++
++def _survey_query_tool(session: Session, args: dict[str, Any]):
++    """Template answers (widest, tallest, ...) with the object highlighted; anything else goes
++    back to the model as a compact CSV of the headset's numbers, to answer from those only."""
++    if not session.survey:
++        return {"error": "no survey yet"}, None, None
++    question = str(args.get("question") or session.last_text)
++    answer = survey.answer_query(question, session.survey)
++    if answer is not None:
++        spoken, ids = answer
++        return {"answer": spoken, "spoken": spoken}, _show_survey_action(session.survey, ids), None
++    result = {
++        "csv": survey.csv(session.survey),
++        "note": "Answer in at most 2 spoken sentences using only these numbers (mm). If any are "
++        "unverified, say how many.",
++    }
++    return result, None, None
++
++
+ async def _run_tool(
+     session: Session, name: str, args: dict[str, Any], context: dict[str, Any]
+ ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+@@ -395,6 +652,15 @@ async def _run_tool(
+         action = {"name": "show_sellers", "args": {"part_id": part.id, "sort": sort}}
+         return result, action, None
+ 
++    if name == "survey":
++        return _survey_tool(session, args)
++
++    if name == "check_slope":
++        return _slope_tool(session, args)
++
++    if name == "survey_query":
++        return _survey_query_tool(session, args)
++
+     if name == "what_else":
+         parts, counts = _placed_parts_and_counts(session)
+         if not parts:
+@@ -486,6 +752,14 @@ def _apply_context(session: Session, context: dict[str, Any]) -> None:
+         session.candidate_ids = context["candidate_ids"]
+     if context.get("placed"):
+         session.placed = context["placed"]
++    if context.get("site"):
++        session.site = str(context["site"])
++    if context.get("scale"):
++        try:
++            scale = float(context["scale"])
++        except (TypeError, ValueError):
++            scale = 0.0
++        session.scale = scale if scale > 0 else 1.0
+     # context["tool"] (currently-equipped tool) is headset-side state the agent doesn't need.
+ 
+ 
+@@ -557,8 +831,11 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+     ctx = context or {}
+     session = _get_session(session_id)
+     _apply_context(session, ctx)
++    session.last_text = text
+ 
+     fast = _match_fast_intent(text)
++    if fast is None and session.survey and _SURVEY_Q_RE.search(text):
++        fast = "survey_query", {"question": text}, _CANNED_REPLY["survey_query"]
+     if fast is not None:
+         name, args, canned_reply = fast
+         result, action, job_id = await _run_tool(session, name, args, ctx)
+@@ -580,20 +857,23 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+     session.history.append({"role": "user", "content": text})
+     session.history = session.history[-MAX_HISTORY:]
+ 
+-    messages: list[dict[str, Any]] = [
+-        {"role": "system", "content": SYSTEM_PROMPT},
+-        *session.history,
+-    ]
++    d = _digest(session)
++    system = SYSTEM_PROMPT + (" " + d.llm_line() if d is not None else "")
++    messages: list[dict[str, Any]] = [{"role": "system", "content": system}, *session.history]
+     actions: list[dict[str, Any]] = []
+     job_id: str | None = None
+     reply = ""
+     last_tool: str | None = None
+     last_result: dict[str, Any] | None = None
+ 
+-    # No frames from the headset = nothing to look at, so don't offer the model ask_scene.
+-    tools = (
+-        TOOLS if ctx.get("frames") else [t for t in TOOLS if t["function"]["name"] != "ask_scene"]
+-    )
++    # No frames from the headset = nothing to look at, so don't offer the model ask_scene; no
++    # survey reported yet = nothing for survey_query to answer from.
++    hidden = set()
++    if not ctx.get("frames"):
++        hidden.add("ask_scene")
++    if not session.survey:
++        hidden.add("survey_query")
++    tools = [t for t in TOOLS if t["function"]["name"] not in hidden]
+     for _turn in range(MAX_TURNS):
+         resp = await chat("agent", messages, tools=tools, reasoning_effort="low")
+         message = resp.choices[0].message
+@@ -601,8 +881,9 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+         tool_calls = message.tool_calls or []
+         has_find_part = any(tc.function.name == "find_part" for tc in tool_calls)
+         has_ask_scene = any(tc.function.name == "ask_scene" for tc in tool_calls)
++        has_ending = any(tc.function.name in _ENDS_TURN for tc in tool_calls)
+ 
+-        if content and not has_find_part:
++        if content and not has_find_part and not has_ending:
+             reply = content
+             break
+ 
+@@ -610,6 +891,8 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+             break
+ 
+         messages.append(_assistant_msg(message))
++        spoken: list[str] = []
++        answered = False  # a template survey_query answer is final, like ask_scene's
+         for tc in tool_calls:
+             name = tc.function.name
+             # find_part just starts a background job -- nothing else in this turn has
+@@ -623,6 +906,9 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+                 args = {}
+             last_tool = name
+             last_result, action, job = await _run_tool(session, last_tool, args, ctx)
++            if last_result.get("spoken") and (name in _ENDS_TURN or name == "survey_query"):
++                spoken.append(last_result["spoken"])
++                answered = answered or name == "survey_query"
+             if action:
+                 actions.append(action)
+             if job:
+@@ -635,6 +921,10 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+             reply = content or _CANNED_REPLY["find_part"]
+             break
+ 
++        if has_ending or answered:
++            reply = content or " ".join(spoken) or _synth_reply(last_tool, last_result)
++            break
++
+         if has_ask_scene:
+             # ask_scene already has the spoken answer in hand (from the vision call) -- don't
+             # spend another agent turn (and its token budget) re-asking the model to say it.
+@@ -652,3 +942,55 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+     session.history.append({"role": "assistant", "content": reply})
+     session.history = session.history[-MAX_HISTORY:]
+     return {"reply": reply, "actions": actions, "job_id": job_id}
++
++
++def observe(obs: survey.Observation) -> dict[str, Any]:
++    """`POST /agent/observe`: the headset reports what its tools measured for a `survey` or
++    `check_slope` action. Everything here is a template (no LLM, works OFFLINE): size groups and
++    the spoken summary, or the gutter drainage verdict. The reply joins the session history so
++    follow-ups ("which is the widest?") have it."""
++    session = _get_session(obs.session_id)
++    pending = session.pending.pop(obs.request_id, None) if obs.request_id else None
++    pending = pending or {}
++    actions: list[dict[str, Any]] = []
++
++    if obs.kind == "survey_result":
++        first_label = obs.results[0].label if obs.results else None
++        label = obs.label or pending.get("label") or first_label or "any"
++        measure = obs.measure or pending.get("measure") or "size"
++        summary = survey.survey_summary(obs, label, measure)
++        reply = summary["reply"]
++        if obs.results:
++            session.survey = {
++                "request_id": obs.request_id,
++                "label": label,
++                "measure": measure,
++                "query": obs.query or pending.get("query"),
++                "items": [r.model_dump() for r in obs.results],
++                "groups": summary["groups"],
++                "unverified": summary["unverified"],
++                "skipped": summary["skipped"],
++            }
++            actions.append(_show_survey_action(session.survey, []))
++    else:
++        residual = obs.gravity_residual_deg
++        if residual is None:
++            d = _digest(session)
++            residual = d.gravity_residual_deg if d is not None else None
++        unc = obs.uncertainty_mm
++        if unc is None:
++            unc = survey.slope_uncertainty_mm(obs.run_m, residual)
++        verdict = survey.slope_verdict(obs.run_m, obs.fall_mm, unc)
++        target = obs.target or pending.get("target") or "gutter"
++        reply = survey.slope_reply(verdict)
++        note = (
++            f"{target.replace('_', ' ').capitalize()} slope: {verdict['verdict']} "
++            f"({verdict['fall_mm']:g} ± {verdict['uncertainty_mm']:g} mm of fall over "
++            f"{verdict['run_m']:.2f} m; needs {verdict['required_mm']:g} mm)"
++        )
++        actions.append({"name": "add_note", "args": {"text": note}})
++        session.notes.append(note)
++
++    session.history.append({"role": "assistant", "content": reply})
++    session.history = session.history[-MAX_HISTORY:]
++    return {"reply": reply, "actions": actions, "job_id": None}
+diff --git a/server/app.py b/server/app.py
+index b3b88f0..a685d73 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -17,7 +17,19 @@ from fastapi.responses import FileResponse, JSONResponse, Response
+ from openai import RateLimitError
+ from pydantic import BaseModel, ValidationError
+ 
+-from server import __version__, agent, assets, bom, cache, checkout, jobs, search, vision, voice
++from server import (
++    __version__,
++    agent,
++    assets,
++    bom,
++    cache,
++    checkout,
++    jobs,
++    search,
++    survey,
++    vision,
++    voice,
++)
+ from server.config import get_settings
+ from server.models import SearchRequest
+ 
+@@ -400,22 +412,31 @@ async def voice_command(
+     except json.JSONDecodeError as exc:
+         raise HTTPException(400, "context must be JSON") from exc
+     result = await agent.handle_command(session_id, transcript, ctx)
++    extra = await _spoken_fields(result.get("reply", "")) if tts else _NO_AUDIO
++    return {"transcript": transcript, **extra, **result}
+ 
+-    extra: dict = {}
+-    if tts:
+-        try:
+-            wav_bytes, mime = await voice.speak(result.get("reply", ""))
+-            extra["audio_b64"] = base64.b64encode(wav_bytes).decode()
+-            extra["audio_mime"] = mime
+-        except voice.VoiceError as exc:
+-            extra["audio_b64"] = None
+-            extra["audio_mime"] = None
+-            extra["tts_error"] = str(exc)
+-    else:
+-        extra["audio_b64"] = None
+-        extra["audio_mime"] = None
+ 
+-    return {"transcript": transcript, **extra, **result}
++_NO_AUDIO = {"audio_b64": None, "audio_mime": None}
++
++
++async def _spoken_fields(reply: str) -> dict:
++    """`audio_b64`/`audio_mime` for a spoken reply, or nulls + `tts_error` when TTS fails."""
++    try:
++        wav_bytes, mime = await voice.speak(reply)
++    except voice.VoiceError as exc:
++        return {**_NO_AUDIO, "tts_error": str(exc)}
++    return {"audio_b64": base64.b64encode(wav_bytes).decode(), "audio_mime": mime}
++
++
++@app.post("/agent/observe")
++async def agent_observe(body: survey.Observation) -> dict:
++    """The headset reports what its tools measured for an agent `survey` / `check_slope` action
++    (brain.md S1): size groups + spoken summary, or the drainage verdict. Same response shape as
++    /agent/command; `tts: true` adds the spoken reply as audio, like /voice/command."""
++    result = agent.observe(body)
++    if body.tts:
++        result.update(await _spoken_fields(result["reply"]))
++    return result
+ 
+ 
+ class SpeakRequest(BaseModel):
+diff --git a/server/scene_digest.py b/server/scene_digest.py
+new file mode 100644
+index 0000000..dcde42a
+--- /dev/null
++++ b/server/scene_digest.py
+@@ -0,0 +1,178 @@
++"""Scene digest (brain.md S1, "the Quartermaster uses the tape"): what a site's structure layer
++holds, small enough for the agent.
++
++`digest(site, scale)` reads `scene/<site>/scene.json` -> its `structure.r<rev>.json` (the snap
++layer, api.md "structure.r<rev>.json") and returns:
++
++- `counts` by object label (`cabinet_door`, `drawer`, `panel`, `appliance`, `window`, `door`, ...);
++- size `groups` per label (greedy 10 mm clustering of `w_m` x `h_m` x `scale`, see survey.py);
++- `objects`, each `{id, label, group, w_mm, h_mm, center, normal}` in the package frame;
++- `gutter_edges`: the 5 longest near-horizontal edges (>= 0.5 m) above the median edge height
++  (gutter or fascia candidates for `check_slope`);
++- `gravity_residual_deg` from scene.json (the slope verdict's uncertainty).
++
++Only `llm_line()` (counts + groups, a few hundred tokens at most) goes to the LLM; the numbers the
++user hears always come from the headset's own tape (`POST /agent/observe`), never from here.
++Files on disk only, so it works offline. Parsed layers are cached by (site, structure file):
++revision-named files never change once published (api.md "Revision-named files").
++"""
++
++import json
++import logging
++import math
++import re
++import statistics
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any
++
++from server import survey
++from server.config import get_settings
++
++logger = logging.getLogger(__name__)
++
++_SITE_RE = re.compile(r"^[a-z0-9-]+$")
++_FILE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
++GUTTER_MAX_TILT_DEG = 5.0  # "near-horizontal": a draining gutter tilts ~0.1 deg
++GUTTER_MIN_LENGTH_M = 0.5  # shorter than a hand span is a trim detail, not a run to drain
++GUTTER_CANDIDATES = 5
++LLM_GROUPS_PER_LABEL = 3
++
++_layers: dict[tuple[str, str], dict[str, Any]] = {}
++
++
++@dataclass
++class SceneDigest:
++    site: str
++    revision: int | None = None
++    structure: bool = False  # False: the site has no structure layer (preview, or none written)
++    scale: float = 1.0
++    gravity_residual_deg: float | None = None
++    counts: dict[str, int] = field(default_factory=dict)
++    groups: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # label -> size groups
++    objects: list[dict[str, Any]] = field(default_factory=list)
++    gutter_edges: list[dict[str, Any]] = field(default_factory=list)
++
++    def count(self, label: str) -> int:
++        return sum(self.counts.values()) if label == "any" else self.counts.get(label, 0)
++
++    def llm_line(self) -> str:
++        """One compact line for the agent's system prompt, e.g. "Scene objects (structure
++        layer): 18 cabinet_door (6x 262x279 mm, 4x 208x525 mm, 2x 261x426 mm, +5 sizes); ..."."""
++        if not self.structure:
++            return "Scene: no structure layer, so no objects to survey."
++        if not self.counts:
++            return "Scene objects (structure layer): none."
++        parts = []
++        for label, n in sorted(self.counts.items(), key=lambda kv: (-kv[1], kv[0])):
++            groups = self.groups.get(label, [])
++            sizes = [f"{g['count']}x {g['w_mm']}x{g['h_mm']} mm" for g in groups]
++            more = len(groups) - LLM_GROUPS_PER_LABEL
++            if more > 0:
++                sizes = [*sizes[:LLM_GROUPS_PER_LABEL], f"+{more} size{'s' if more > 1 else ''}"]
++            parts.append(f"{n} {label}" + (f" ({', '.join(sizes)})" if sizes else ""))
++        return "Scene objects (structure layer): " + "; ".join(parts) + "."
++
++
++def _site_dir(site: str) -> Path | None:
++    if not _SITE_RE.match(site or ""):
++        return None
++    path = Path(get_settings().SCENE_DIR) / site
++    return path if path.is_dir() else None
++
++
++def _load_layer(site_dir: Path, site: str, file: str) -> dict[str, Any] | None:
++    key = (site, file)
++    if key not in _layers:
++        path = site_dir / file
++        if not _FILE_RE.match(file) or not path.is_file():
++            return None
++        _layers[key] = json.loads(path.read_text())
++    return _layers[key]
++
++
++def _center(points: list[list[float]]) -> list[float]:
++    return [round(sum(p[i] for p in points) / len(points), 4) for i in range(3)]
++
++
++def _gutter_edges(edges: list[dict[str, Any]], scale: float) -> list[dict[str, Any]]:
++    """Longest near-horizontal edges above the median edge height (+Y is up in the package)."""
++    mids = [(e["a"][1] + e["b"][1]) / 2 for e in edges if "a" in e and "b" in e]
++    if not mids:
++        return []
++    median = statistics.median(mids)
++    max_rise = math.sin(math.radians(GUTTER_MAX_TILT_DEG))
++    found = []
++    for e in edges:
++        a, b = e.get("a"), e.get("b")
++        if not a or not b:
++            continue
++        length = math.dist(a, b)
++        mid_y = (a[1] + b[1]) / 2
++        if length * scale < GUTTER_MIN_LENGTH_M or abs(a[1] - b[1]) / length > max_rise:
++            continue
++        if mid_y <= median:
++            continue
++        found.append(
++            {
++                "id": e["id"],
++                "length_m": round(length * scale, 3),
++                "height_m": round(mid_y * scale, 3),
++                "kind": e.get("kind"),
++            }
++        )
++    # Longest first (to the cm), then the highest: a gutter's top edge beats its front lip.
++    found.sort(key=lambda c: (-round(c["length_m"], 2), -c["height_m"]))
++    return found[:GUTTER_CANDIDATES]
++
++
++def digest(site: str | None, scale: float = 1.0) -> SceneDigest | None:
++    """The site's digest, or None when the server doesn't have that site (an unknown name, or the
++    app's built-in scene). `structure=False` when the site exists but has no structure layer."""
++    site_dir = _site_dir(site or "")
++    if site_dir is None:
++        return None
++    try:
++        meta = json.loads((site_dir / "scene.json").read_text())
++    except (OSError, json.JSONDecodeError):
++        return None
++    scale = scale if scale and scale > 0 else 1.0
++    out = SceneDigest(
++        site=site,
++        revision=meta.get("revision"),
++        scale=scale,
++        gravity_residual_deg=meta.get("gravity_residual_deg"),
++    )
++    entry = meta.get("structure") or {}
++    try:
++        layer = _load_layer(site_dir, site, entry.get("file") or "")
++    except (OSError, json.JSONDecodeError) as exc:
++        logger.warning("scene digest: unreadable structure layer for %s: %s", site, exc)
++        layer = None
++    if layer is None:
++        return out
++    out.structure = True
++
++    normals = {p.get("id"): p.get("normal") for p in layer.get("planes", [])}
++    for obj in layer.get("objects", []):
++        corners = obj.get("corners3d") or []
++        if obj.get("w_m") is None or obj.get("h_m") is None:
++            continue
++        out.objects.append(
++            {
++                "id": obj["id"],
++                "label": obj.get("label", "object"),
++                "group": obj.get("group"),
++                "w_mm": round(obj["w_m"] * scale * 1000),
++                "h_mm": round(obj["h_m"] * scale * 1000),
++                "center": _center(corners) if len(corners) == 4 else None,
++                "normal": normals.get(obj.get("plane")),
++            }
++        )
++    for o in out.objects:
++        out.counts[o["label"]] = out.counts.get(o["label"], 0) + 1
++    for label in out.counts:
++        members = [(o["id"], o["w_mm"], o["h_mm"]) for o in out.objects if o["label"] == label]
++        out.groups[label] = survey.group_sizes(members)
++    out.gutter_edges = _gutter_edges(layer.get("edges", []), scale)
++    return out
+diff --git a/server/survey.py b/server/survey.py
+new file mode 100644
+index 0000000..77a2eb9
+--- /dev/null
++++ b/server/survey.py
+@@ -0,0 +1,340 @@
++"""Survey and slope results from the headset's own tape (brain.md S1) -- deterministic, no LLM.
++
++The agent never measures anything itself: `survey` / `check_slope` actions make the headset run its
++real measure tool, and the headset reports what it measured back through `POST /agent/observe`
++(`Observation`). This module turns those reports into size groups, a spoken summary, a gutter
++drainage verdict, and template answers to follow-ups ("which is the widest?").
++"""
++
++import math
++from typing import Any, Literal
++
++from pydantic import BaseModel, Field, model_validator
++
++LABELS = ("cabinet_door", "drawer", "panel", "appliance", "window", "door", "any")
++WHERES = ("all", "visible", "upper", "lower", "left", "right", "nearest")
++MEASURES = ("size", "width", "height")
++SLOPE_TARGETS = ("gutter", "sill", "ledge", "nearest_edge")
++
++GROUP_TOLERANCE_MM = 10.0
++SPOKEN_GROUPS = 3
++GUTTER_MM_PER_M = 2.083  # 1/4 in of fall per 10 ft
++SNAP_UNCERTAINTY_MM = 2.0
++
++_NOUNS = {
++    "cabinet_door": ("door", "doors"),
++    "drawer": ("drawer", "drawers"),
++    "panel": ("panel", "panels"),
++    "appliance": ("appliance", "appliances"),
++    "window": ("window", "windows"),
++    "door": ("door", "doors"),
++    "any": ("object", "objects"),
++}
++_NUMBER_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"]
++
++
++def noun(label: str | None, n: int = 2) -> str:
++    """Spoken noun for a structure label: "door"/"doors" for cabinet_door (brain.md S1 speech)."""
++    if label in _NOUNS:
++        singular, plural = _NOUNS[label]
++    else:
++        singular = (label or "object").replace("_", " ")
++        plural = singular + "s"
++    return singular if n == 1 else plural
++
++
++# --- what the headset reports (POST /agent/observe) ---------------------------------------
++
++
++class SurveyItem(BaseModel):
++    """One object the headset measured with its tape (a notebook entry)."""
++
++    id: str = Field(max_length=64)  # the structure object id, e.g. "o5"
++    label: str = Field("", max_length=64)
++    group: str | None = Field(None, max_length=64)
++    w_m: float | None = None
++    h_m: float | None = None
++    area_m2: float | None = None
++    angles_deg: list[float] = Field(default_factory=list, max_length=8)
++    off_plane_m: float | None = None
++    snap: list[str] = Field(default_factory=list, max_length=8)  # per corner: corner|edge|plane|raw
++    unverified: bool = False  # a corner didn't snap within 2 cm: drawn amber
++    notebook_id: int | str | None = None
++    camera_id: int | None = None
++
++
++class SurveySkip(BaseModel):
++    id: str = Field(max_length=64)
++    reason: str = Field("", max_length=200)
++
++
++class Observation(BaseModel):
++    """`POST /agent/observe`: what the headset's tools measured for an agent action."""
++
++    session_id: str
++    request_id: str | None = Field(None, max_length=64)  # from the survey/check_slope action
++    kind: Literal["survey_result", "slope_result"]
++    query: str | None = Field(None, max_length=500)  # the user's words, if the app has them
++    tts: bool = False  # also return the spoken reply as audio (like /voice/command)
++
++    # survey_result
++    label: str | None = Field(None, max_length=64)
++    measure: Literal["size", "width", "height"] | None = None
++    status: Literal["done", "aborted", "no_structure"] = "done"
++    planned: int | None = Field(None, ge=0)  # how many objects the plan had
++    results: list[SurveyItem] = Field(default_factory=list, max_length=500)
++    skipped: list[SurveySkip] = Field(default_factory=list, max_length=500)
++
++    # slope_result
++    target: str | None = Field(None, max_length=32)
++    run_m: float | None = None
++    fall_mm: float | None = None
++    low_end: list[float] | None = None
++    gravity_residual_deg: float | None = None
++    uncertainty_mm: float | None = None
++    notebook_id: int | str | None = None
++
++    @model_validator(mode="after")
++    def _slope_needs_numbers(self):
++        if self.kind == "slope_result" and (self.run_m is None or self.fall_mm is None):
++            raise ValueError("slope_result needs run_m and fall_mm")
++        if self.run_m is not None and self.run_m <= 0:
++            raise ValueError("run_m must be positive")
++        return self
++
++
++# --- size groups ----------------------------------------------------------------------------
++
++
++def group_sizes(
++    items: list[tuple[str, float, float]], measure: str = "size", tol_mm: float = GROUP_TOLERANCE_MM
++) -> list[dict[str, Any]]:
++    """Greedy clustering of (id, w_mm, h_mm): smallest first, an item joins the first group whose
++    running mean is within `tol_mm` on the measured side(s) (`size` both, `width` w, `height` h),
++    else starts one. Groups come back most common first, then widest, as {w_mm, h_mm, count, ids};
++    `ids` keep the order the items came in (the headset's sweep order)."""
++    groups: list[dict[str, Any]] = []
++    order = {item_id: i for i, (item_id, _, _) in enumerate(items)}
++    for item_id, w, h in sorted(items, key=lambda it: (it[1], it[2], order[it[0]])):
++        for g in groups:
++            close_w = abs(g["_w"] - w) <= tol_mm or measure == "height"
++            close_h = abs(g["_h"] - h) <= tol_mm or measure == "width"
++            if close_w and close_h:
++                n = len(g["ids"])
++                g["_w"] = (g["_w"] * n + w) / (n + 1)
++                g["_h"] = (g["_h"] * n + h) / (n + 1)
++                g["ids"].append(item_id)
++                break
++        else:
++            groups.append({"_w": w, "_h": h, "ids": [item_id]})
++    out = [
++        {
++            "w_mm": round(g["_w"]),
++            "h_mm": round(g["_h"]),
++            "count": len(g["ids"]),
++            "ids": sorted(g["ids"], key=order.get),
++        }
++        for g in groups
++    ]
++    out.sort(key=lambda g: (-g["count"], -g["w_mm"], -g["h_mm"]))
++    return out
++
++
++def _mm_items(results: list[SurveyItem]) -> list[tuple[str, float, float]]:
++    return [
++        (r.id, r.w_m * 1000, r.h_m * 1000)
++        for r in results
++        if r.w_m is not None and r.h_m is not None
++    ]
++
++
++# --- speech ---------------------------------------------------------------------------------
++
++
++def _spoken_len(mm: float, unit: str) -> str:
++    """Half-up rounding (525 mm is "53", not banker's "52"): cm, or mm to the nearest 5."""
++    return str(int(mm / 10 + 0.5)) if unit == "cm" else str(5 * int(mm / 5 + 0.5))
++
++
++_UNIT_WORD = {"cm": "centimetres", "mm": "millimetres"}
++_SIDE_WORD = {"width": " wide", "height": " tall"}
++
++
++def _dims(w_mm: float, h_mm: float, measure: str) -> tuple[str, str]:
++    """("39 by 41", "cm") -- centimetres when every spoken side is over 100 mm, else mm rounded
++    to 5 (a hinge cup, a small drawer front). `width`/`height` speak one side only."""
++    sides = {"width": [w_mm], "height": [h_mm]}.get(measure, [w_mm, h_mm])
++    unit = "cm" if all(s > 100 for s in sides) else "mm"
++    return " by ".join(_spoken_len(s, unit) for s in sides), unit
++
++
++def _dims_with_unit(w_mm: float, h_mm: float, measure: str) -> str:
++    """ "39 by 41 centimetres", "26 centimetres wide"."""
++    dims, unit = _dims(w_mm, h_mm, measure)
++    return f"{dims} {_UNIT_WORD[unit]}{_SIDE_WORD.get(measure, '')}"
++
++
++def _group_phrase(g: dict[str, Any], measure: str) -> tuple[str, str]:
++    """("6 at 39 by 41", "cm")."""
++    dims, unit = _dims(g["w_mm"], g["h_mm"], measure)
++    return f"{g['count']} at {dims}", unit
++
++
++def _groups_phrase(groups: list[dict[str, Any]], measure: str) -> str:
++    spoken = [_group_phrase(g, measure) for g in groups[:SPOKEN_GROUPS]]
++    units = {u for _, u in spoken}
++    side = _SIDE_WORD.get(measure, "")
++    if len(units) == 1:
++        texts = [t for t, _ in spoken]
++        texts[-1] += f" {_UNIT_WORD[units.pop()]}{side}"
++    else:
++        texts = [f"{t} {_UNIT_WORD[u]}{side}" for t, u in spoken]
++    more = len(groups) - SPOKEN_GROUPS
++    if more > 0:
++        texts.append(f"{more} more size{'s' if more > 1 else ''} on the card")
++    return ", ".join(texts[:-1]) + (" and " if len(texts) > 1 else "") + texts[-1]
++
++
++def _count_word(n: int) -> str:
++    return _NUMBER_WORDS[n] if n < len(_NUMBER_WORDS) else str(n)
++
++
++def survey_summary(obs: Observation, label: str, measure: str) -> dict[str, Any]:
++    """Spoken reply + `show_survey` args for a survey the headset finished (or was stopped)."""
++    plural = noun(label)
++    if obs.status == "no_structure":
++        return {
++            "reply": "No structure layer for this scene; mark the corners yourself.",
++            "groups": [],
++            "unverified": [],
++            "skipped": [s.id for s in obs.skipped],
++        }
++    groups = group_sizes(_mm_items(obs.results), measure)
++    unverified = [r.id for r in obs.results if r.unverified]
++    n = sum(g["count"] for g in groups)
++
++    bits = []
++    if obs.status == "aborted":
++        planned = f" of {obs.planned}" if obs.planned else ""
++        bits.append(f"Stopped after {n}{planned}.")
++    if n == 0:
++        bits.append(
++            f"No {plural} measured."
++            if obs.status == "aborted"
++            else f"Found no {plural} to measure."
++        )
++    elif n == 1:
++        g = groups[0]
++        bits.append(f"1 {noun(label, 1)}: {_dims_with_unit(g['w_mm'], g['h_mm'], measure)}.")
++    elif len(groups) == 1:
++        g = groups[0]
++        bits.append(f"{n} {plural}, all {_dims_with_unit(g['w_mm'], g['h_mm'], measure)}.")
++    else:
++        bits.append(f"{n} {plural} in {len(groups)} sizes: {_groups_phrase(groups, measure)}.")
++    if unverified:
++        k = len(unverified)
++        bits.append(
++            f"{_count_word(k)} didn't lock onto corners; they're amber."
++            if k > 1
++            else "One didn't lock onto its corners; it's amber."
++        )
++    if obs.skipped:
++        bits.append(f"{_count_word(len(obs.skipped))} skipped.")
++    return {
++        "reply": " ".join(bits),
++        "groups": groups,
++        "unverified": unverified,
++        "skipped": [s.id for s in obs.skipped],
++    }
++
++
++# --- gutter slope ---------------------------------------------------------------------------
++
++
++def slope_uncertainty_mm(run_m: float, gravity_residual_deg: float | None) -> float:
++    """How wrong "up" can be over the run, plus snapping (S1: run * tan(residual) + 2 mm)."""
++    residual = math.radians(abs(gravity_residual_deg or 0.0))
++    return round(run_m * 1000 * math.tan(residual) + SNAP_UNCERTAINTY_MM, 1)
++
++
++def slope_verdict(run_m: float, fall_mm: float, uncertainty_mm: float) -> dict[str, Any]:
++    """Drainage verdict against the gutter rule (>= 1/4 in per 10 ft = 2.083 mm/m):
++    "drains" if even the low estimate is enough, "won't drain" if even the high one isn't,
++    else "inconclusive" -- the honest answer when the capture's "up" isn't good enough."""
++    required = run_m * GUTTER_MM_PER_M
++    fall = abs(fall_mm)
++    if fall - uncertainty_mm >= required:
++        verdict = "drains"
++    elif fall + uncertainty_mm < required:
++        verdict = "won't drain"
++    else:
++        verdict = "inconclusive"
++    return {
++        "verdict": verdict,
++        "fall_mm": round(fall, 1),
++        "uncertainty_mm": round(uncertainty_mm, 1),
++        "required_mm": round(required, 1),
++        "run_m": round(run_m, 3),
++    }
++
++
++def slope_reply(v: dict[str, Any]) -> str:
++    fall, unc, req = (
++        round(v["fall_mm"]),
++        max(1, round(v["uncertainty_mm"])),
++        round(v["required_mm"]),
++    )
++    over = f"of fall over {v['run_m']:.2f} m"
++    if v["verdict"] == "won't drain":
++        flat = "Flat: " if fall == 0 else ""
++        return f"{flat}{fall} ± {unc} mm {over}. It needs about {req} mm, so water will pond."
++    if v["verdict"] == "drains":
++        return f"{fall} ± {unc} mm {over}; it needs {req}, so it drains."
++    return f"About {fall} ± {unc} mm {over}; it needs {req}, so that's inconclusive. Put a real level on it."
++
++
++# --- follow-up questions on the stored survey -----------------------------------------------
++
++_SUPERLATIVES = {
++    "widest": ("w", max),
++    "narrowest": ("w", min),
++    "tallest": ("h", max),
++    "shortest": ("h", min),
++    "largest": ("area", max),
++    "biggest": ("area", max),
++    "smallest": ("area", min),
++}
++
++
++def answer_query(question: str, survey: dict[str, Any]) -> tuple[str, list[str]] | None:
++    """(spoken answer, ids to highlight) for the questions templates cover -- widest, narrowest,
++    tallest, shortest, largest/biggest, smallest -- else None (the agent answers from `csv()`)."""
++    q = question.lower()
++    word = next((w for w in _SUPERLATIVES if w in q), None)
++    items = [i for i in survey.get("items", []) if i.get("w_m") and i.get("h_m")]
++    if word is None or not items:
++        return None
++    key, pick = _SUPERLATIVES[word]
++
++    def value(i):
++        return {"w": i["w_m"], "h": i["h_m"]}.get(key, i["w_m"] * i["h_m"])
++
++    best = pick(items, key=value)
++    ties = [i["id"] for i in items if abs(value(i) - value(best)) * 1000 <= 2 and i is not best]
++    tail = f", tied with {len(ties)} more" if ties else ""
++    amber = " It's amber, so check it by hand." if best.get("unverified") else ""
++    spoken = (
++        f"The {word} {noun(survey.get('label'), 1)} is {best['id']}: "
++        f"{_dims_with_unit(best['w_m'] * 1000, best['h_m'] * 1000, 'size')}{tail}.{amber}"
++    )
++    return spoken, [best["id"], *ties]
++
++
++def csv(survey: dict[str, Any], limit: int = 60) -> str:
++    """Compact results for the LLM (brain.md S1 "survey_query" prompt): id,label,w,h,unverified."""
++    rows = ["id,label,w_mm,h_mm,unverified"]
++    for i in survey.get("items", [])[:limit]:
++        w = round(i["w_m"] * 1000) if i.get("w_m") else ""
++        h = round(i["h_m"] * 1000) if i.get("h_m") else ""
++        rows.append(f"{i['id']},{i.get('label', '')},{w},{h},{int(bool(i.get('unverified')))}")
++    return "\n".join(rows)
+diff --git a/tests/test_survey.py b/tests/test_survey.py
+new file mode 100644
+index 0000000..78fa932
+--- /dev/null
++++ b/tests/test_survey.py
+@@ -0,0 +1,645 @@
++"""The Quartermaster uses the tape (brain.md S1): scene digest, `survey`/`check_slope` fast paths
++and tools, `POST /agent/observe` grouping + speech, the gutter drainage verdict, and follow-ups.
++No LLM: every scripted completion is local."""
++
++import json
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++from server import agent, scene_digest, survey, voice
++from server.app import app
++from server.config import get_settings
++from tests.test_agent import (
++    _no_llm_chat,
++    _scripted_chat,
++    _text_completion,
++    _tool_call_completion,
++)
++
++# Like the real kitchen capture: 18 cabinet doors in 4 repeat sizes + 4 odd ones, 2 drawers.
++_KITCHEN_DOORS = (
++    [(262, 279)] * 6 + [(208, 525)] * 4 + [(261, 426)] * 2 + [(205, 422)] * 2
++    + [(548, 282), (141, 87), (102, 65), (70, 162)]
++)  # fmt: skip
++
++
++def _rect(w_mm: float, h_mm: float, x0: float = 0.0, y0: float = 0.0) -> list[list[float]]:
++    w, h = w_mm / 1000, h_mm / 1000
++    return [[x0, y0, 0.0], [x0 + w, y0, 0.0], [x0 + w, y0 + h, 0.0], [x0, y0 + h, 0.0]]
++
++
++def _obj(oid: str, label: str, w_mm: float, h_mm: float, x0: float = 0.0, y0: float = 0.0):
++    return {
++        "id": oid,
++        "label": label,
++        "plane": "p0",
++        "corners3d": _rect(w_mm, h_mm, x0, y0),
++        "w_m": w_mm / 1000,
++        "h_m": h_mm / 1000,
++    }
++
++
++def _write_site(root: Path, site: str, structure: dict | None, **meta) -> None:
++    site_dir = root / site
++    site_dir.mkdir(parents=True)
++    scene = {"name": site, "revision": 1, "gravity_residual_deg": 0.0, **meta}
++    if structure is not None:
++        (site_dir / "structure.r1.json").write_text(json.dumps(structure))
++        scene["structure"] = {"file": "structure.r1.json", "schema": "airtools.structure/1"}
++    (site_dir / "scene.json").write_text(json.dumps(scene))
++
++
++def _kitchen_structure() -> dict:
++    objects = [_obj(f"o{i}", "cabinet_door", w, h, x0=i) for i, (w, h) in enumerate(_KITCHEN_DOORS)]
++    objects += [_obj("o18", "drawer", 528, 90), _obj("o19", "drawer", 410, 90)]
++    return {
++        "schema": "airtools.structure/1",
++        "planes": [{"id": "p0", "normal": [0, 0, 1], "offset": 0}],
++        "edges": [{"id": "e0", "a": [0, 0.6, 0], "b": [1.5, 0.6, 0], "kind": "crease"}],
++        "objects": objects,
++    }
++
++
++def _facade_structure() -> dict:
++    # The synthetic facade: one 1.5 x 1.2 m window, one door, a level 4.2 m gutter box at ~6 m
++    # (top edge 6.2 m, front lip 6.0 m), a sloped roof edge and low wall edges.
++    edges = [
++        {"id": "e_lip", "a": [0, 6.0, 0.3], "b": [4.2, 6.0, 0.3], "kind": "crease"},
++        {"id": "e_top", "a": [0, 6.2, 0.2], "b": [4.2, 6.2, 0.2], "kind": "crease"},
++        {"id": "e_roof", "a": [0, 6.2, 0], "b": [0, 8.0, -2.0], "kind": "crease"},
++        {"id": "e_sill", "a": [0.75, 3.5, 0], "b": [-0.75, 3.5, 0], "kind": "boundary"},
++        {"id": "e_ground", "a": [-4, 0, 0], "b": [4, 0, 0], "kind": "crease"},
++        {"id": "e_short", "a": [0, 6.3, 0], "b": [0.2, 6.3, 0], "kind": "line"},
++        {"id": "e_head", "a": [0.75, 4.7, 0], "b": [-0.75, 4.7, 0], "kind": "boundary"},
++        {"id": "e_door", "a": [2.0, 2.03, 0], "b": [2.9, 2.03, 0], "kind": "boundary"},
++        {"id": "e_plinth", "a": [-4, 0.3, 0], "b": [4, 0.3, 0], "kind": "crease"},
++    ]
++    return {
++        "schema": "airtools.structure/1",
++        "planes": [{"id": "p0", "normal": [0, 0, 1], "offset": 0}],
++        "edges": edges,
++        "objects": [_obj("o0", "window", 1500, 1200, -0.75, 3.5), _obj("o1", "door", 914, 2032)],
++    }
++
++
++@pytest.fixture(autouse=True)
++def _clean(tmp_path, monkeypatch):
++    root = tmp_path / "scene"
++    _write_site(root, "kitchen", _kitchen_structure(), gravity_residual_deg=0.08)
++    _write_site(root, "facade", _facade_structure())
++    _write_site(root, "facade-preview", None)
++    monkeypatch.setenv("SCENE_DIR", str(root))
++    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
++    get_settings.cache_clear()
++    scene_digest._layers.clear()
++    agent._sessions.clear()
++    yield root
++    agent._sessions.clear()
++    scene_digest._layers.clear()
++    get_settings.cache_clear()
++
++
++# --- scene digest ---------------------------------------------------------------------------
++
++
++def test_kitchen_digest_counts_and_size_groups():
++    d = scene_digest.digest("kitchen")
++    assert d.structure and d.counts == {"cabinet_door": 18, "drawer": 2}
++    groups = d.groups["cabinet_door"]
++    assert [(g["count"], g["w_mm"], g["h_mm"]) for g in groups[:4]] == [
++        (6, 262, 279),
++        (4, 208, 525),
++        (2, 261, 426),
++        (2, 205, 422),
++    ]
++    assert len(groups) == 8  # the 4 repeats + 4 one-offs
++    assert sum(g["count"] for g in groups) == 18
++    assert d.gravity_residual_deg == 0.08
++    o0 = d.objects[0]
++    assert o0["id"] == "o0" and o0["w_mm"] == 262 and o0["normal"] == [0, 0, 1]
++    assert o0["center"] == pytest.approx([0.131, 0.1395, 0.0])
++
++
++def test_digest_llm_line_is_counts_and_groups_only():
++    line = scene_digest.digest("kitchen").llm_line()
++    assert line.startswith("Scene objects (structure layer): 18 cabinet_door (6x 262x279 mm,")
++    assert "+5 sizes" in line and "2 drawer (1x 528x90 mm, 1x 410x90 mm)" in line
++    assert "o0" not in line and "corners" not in line  # no per-object detail for the LLM
++    assert len(line) < 1600  # << 400 tokens
++
++
++def test_digest_scale_multiplies_sizes():
++    d = scene_digest.digest("facade", scale=1.5)
++    window = next(o for o in d.objects if o["label"] == "window")
++    assert (window["w_mm"], window["h_mm"]) == (2250, 1800)
++    assert d.gutter_edges[0]["length_m"] == pytest.approx(6.3)
++
++
++def test_digest_gutter_candidates_are_long_high_near_horizontal_edges():
++    d = scene_digest.digest("facade")
++    ids = [e["id"] for e in d.gutter_edges]
++    # Longest first, then highest: the gutter's top edge beats its front lip. The sloped roof
++    # edge (not horizontal), the 20 cm trim piece (too short) and everything below the median
++    # height (sill, head, door, plinth, ground) never qualify.
++    assert ids == ["e_top", "e_lip"]
++    assert d.gutter_edges[0] == {"id": "e_top", "length_m": 4.2, "height_m": 6.2, "kind": "crease"}
++
++
++def test_digest_without_structure_or_site():
++    preview = scene_digest.digest("facade-preview")
++    assert preview is not None and not preview.structure and preview.count("window") == 0
++    assert "no structure layer" in preview.llm_line()
++    assert scene_digest.digest("no-such-site") is None
++    assert scene_digest.digest("../etc") is None
++    assert scene_digest.digest(None) is None
++
++
++# --- fast paths -----------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "text,args",
++    [
++        ("Quartermaster, measure every cabinet door", ("cabinet_door", "all", "size")),
++        ("measure all the windows", ("window", "all", "size")),
++        ("measure all of the drawers.", ("drawer", "all", "size")),
++        ("size up the upper cabinet doors", ("cabinet_door", "upper", "size")),
++        ("measure the lower drawers", ("drawer", "lower", "size")),
++        ("survey each panel on the left", ("panel", "all", "size")),
++        ("measure the left doors", ("door", "left", "size")),
++        ("measure the window", ("window", "nearest", "size")),
++        ("measure the doors I can see", ("door", "visible", "size")),
++        ("measure every window's width", ("window", "all", "width")),
++        ("measure the heights of all the appliances", None),  # "of" breaks the phrase: LLM
++        ("measure all the appliances, just the height", ("appliance", "all", "height")),
++    ],
++)
++def test_survey_fast_path_phrasing(text, args):
++    match = agent._match_fast_intent(text)
++    if args is None:
++        assert match is None or match[0] != "survey"
++        return
++    name, got, _ = match
++    assert name == "survey"
++    assert (got["label"], got["where"], got["measure"]) == args
++
++
++@pytest.mark.parametrize(
++    "text,target",
++    [
++        ("Is this gutter sloped enough to drain?", "gutter"),
++        ("does the gutter have enough fall", "gutter"),
++        ("will water drain off that sill?", "sill"),
++        ("check the pitch of the ledge", "ledge"),
++    ],
++)
++def test_slope_fast_path(text, target):
++    assert agent._match_fast_intent(text)[:2] == ("check_slope", {"target": target})
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        "find a gutter drain outlet",
++        "I need a gutter slope bracket",
++        "find a hanger for this gutter",
++    ],
++)
++def test_slope_fast_path_leaves_part_searches_alone(text):
++    match = agent._match_fast_intent(text)
++    assert match is None or match[0] != "check_slope"
++
++
++@pytest.mark.parametrize("text", ["stop", "Stop.", "okay, stop", "cancel that", "abort the survey"])
++def test_stop_fast_path(text):
++    assert agent._match_fast_intent(text)[:2] == ("stop_survey", {})
++
++
++def test_stop_needs_the_whole_utterance():
++    assert agent._match_fast_intent("stop by the hardware store and find hinges") is None
++
++
++def test_existing_fast_paths_unchanged():
++    assert agent._match_fast_intent("every 60 cm")[0] == "place_array"
++    assert agent._match_fast_intent("buy it")[0] == "start_checkout"
++    assert agent._match_fast_intent("find a hanger for this gutter") is None
++
++
++# --- survey via the agent -------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_measure_every_cabinet_door_queues_one_survey_without_the_llm(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command(
++        "k1", "measure every cabinet door", {"site": "kitchen", "tool": "tape"}
++    )
++
++    assert result["reply"] == "Surveying 18 doors."
++    assert result["job_id"] is None
++    [action] = result["actions"]
++    assert action["name"] == "survey"
++    args = action["args"]
++    assert {k: args[k] for k in ("label", "where", "measure")} == {
++        "label": "cabinet_door",
++        "where": "all",
++        "measure": "size",
++    }
++    assert args["request_id"].startswith("sv-")
++    pending = agent._sessions["k1"].pending[args["request_id"]]
++    assert pending["label"] == "cabinet_door" and pending["query"] == "measure every cabinet door"
++
++
++@pytest.mark.asyncio
++async def test_doors_means_cabinet_doors_in_a_kitchen(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    kitchen = await agent.handle_command("k2", "measure all the doors", {"site": "kitchen"})
++    facade = await agent.handle_command("f2", "measure all the doors", {"site": "facade"})
++    assert kitchen["actions"][0]["args"]["label"] == "cabinet_door"
++    assert facade["actions"][0]["args"]["label"] == "door"
++    assert facade["reply"] == "Surveying 1 door."
++
++
++@pytest.mark.asyncio
++async def test_survey_of_a_label_the_scene_lacks_answers_straight(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command("k3", "measure all the windows", {"site": "kitchen"})
++    assert result == {
++        "reply": "No windows in this scene's structure layer.",
++        "actions": [],
++        "job_id": None,
++    }
++
++
++@pytest.mark.asyncio
++async def test_survey_without_a_structure_layer(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command("p1", "measure the window", {"site": "facade-preview"})
++    assert result["reply"] == "No structure layer for this scene; mark the corners yourself."
++    assert result["actions"] == []
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "text,reply",
++    [
++        ("measure every cabinet door", "Surveying the doors."),
++        ("measure the upper drawers", "Surveying the upper drawers."),
++        ("measure the window", "Measuring the nearest window."),
++        ("measure the panels I can see", "Surveying the panels in view."),
++    ],
++)
++async def test_survey_without_a_known_site_still_goes_to_the_headset(monkeypatch, text, reply):
++    """The built-in scene (or a site this server doesn't have): the headset owns its structure
++    layer, so the survey goes out anyway and the headset reports what it found."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command("n1", text, {})
++    assert result["reply"] == reply
++    assert result["actions"][0]["name"] == "survey"
++
++
++@pytest.mark.asyncio
++async def test_llm_survey_ends_the_turn_with_the_spoken_count(monkeypatch):
++    calls = []
++    scripted = _scripted_chat(
++        _tool_call_completion("survey", {"label": "drawer", "where": "all", "measure": "size"})
++    )
++
++    async def fake(role, messages, tools=None, **kw):
++        calls.append((messages, tools))
++        return await scripted(role, messages, tools, **kw)
++
++    monkeypatch.setattr(agent, "chat", fake)
++    result = await agent.handle_command("k4", "how big are the drawers here?", {"site": "kitchen"})
++
++    assert len(calls) == 1  # no second turn: the headset does the work
++    assert result["reply"] == "Surveying 2 drawers."
++    assert result["actions"][0]["args"]["label"] == "drawer"
++    messages, tools = calls[0]
++    assert "Never estimate a size yourself." in messages[0]["content"]
++    assert "Scene objects (structure layer): 18 cabinet_door" in messages[0]["content"]
++    names = {t["function"]["name"] for t in tools}
++    assert {"survey", "check_slope"} <= names
++    assert "survey_query" not in names  # nothing surveyed yet
++
++
++def test_survey_tool_schemas():
++    tools = {t["function"]["name"]: t["function"] for t in agent.TOOLS}
++    props = tools["survey"]["parameters"]["properties"]
++    assert props["label"]["enum"] == [
++        "cabinet_door",
++        "drawer",
++        "panel",
++        "appliance",
++        "window",
++        "door",
++        "any",
++    ]
++    assert props["where"]["enum"] == [
++        "all",
++        "visible",
++        "upper",
++        "lower",
++        "left",
++        "right",
++        "nearest",
++    ]
++    assert props["measure"]["enum"] == ["size", "width", "height"]
++    target = tools["check_slope"]["parameters"]["properties"]["target"]
++    assert target["enum"] == ["gutter", "sill", "ledge", "nearest_edge"]
++    assert tools["survey_query"]["parameters"]["required"] == ["question"]
++
++
++# --- /agent/observe: survey results -----------------------------------------------------------
++
++
++def _kitchen_results(unverified=("o9", "o11")) -> list[dict]:
++    out = []
++    for i, (w, h) in enumerate(_KITCHEN_DOORS):
++        out.append(
++            {
++                "id": f"o{i}",
++                "label": "cabinet_door",
++                "w_m": (w + (i % 3)) / 1000,  # a mm or two of tape noise
++                "h_m": h / 1000,
++                "area_m2": w * h / 1e6,
++                "angles_deg": [90.1, 89.8, 90.2, 89.9],
++                "snap": ["corner", "corner", "edge", "corner"],
++                "unverified": f"o{i}" in unverified,
++                "notebook_id": 12 + i,
++                "camera_id": 316,
++            }
++        )
++    return out
++
++
++def _observe(**body) -> survey.Observation:
++    return survey.Observation(**{"session_id": "k9", **body})
++
++
++def test_observe_survey_groups_sizes_and_speaks_them():
++    agent._sessions.clear()
++    obs = _observe(
++        request_id="sv-1", kind="survey_result", label="cabinet_door", results=_kitchen_results()
++    )
++    result = agent.observe(obs)
++
++    assert result["reply"] == (
++        "18 doors in 8 sizes: 6 at 26 by 28, 4 at 21 by 53, 2 at 26 by 43 centimetres and "
++        "5 more sizes on the card. Two didn't lock onto corners; they're amber."
++    )
++    [action] = result["actions"]
++    assert action["name"] == "show_survey"
++    args = action["args"]
++    assert args["request_id"] == "sv-1" and args["label"] == "cabinet_door"
++    assert args["unverified"] == ["o9", "o11"] and args["skipped"] == [] and args["focus"] == []
++    assert sum(g["count"] for g in args["groups"]) == 18
++    assert sorted(i for g in args["groups"] for i in g["ids"]) == sorted(f"o{i}" for i in range(18))
++    assert args["groups"][0]["count"] == 6 and args["groups"][0]["ids"] == [
++        "o0",
++        "o1",
++        "o2",
++        "o3",
++        "o4",
++        "o5",
++    ]
++    session = agent._sessions["k9"]
++    assert len(session.survey["items"]) == 18
++    assert session.history[-1] == {"role": "assistant", "content": result["reply"]}
++
++
++@pytest.mark.asyncio
++async def test_observe_uses_the_pending_request_for_label_and_measure(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    queued = await agent.handle_command("k9", "measure every window's width", {})
++    request_id = queued["actions"][0]["args"]["request_id"]
++
++    result = agent.observe(
++        _observe(
++            request_id=request_id,
++            kind="survey_result",
++            results=[{"id": "o0", "w_m": 1.502, "h_m": 1.199}],
++        )
++    )
++
++    assert result["reply"] == "1 window: 150 centimetres wide."
++    assert request_id not in agent._sessions["k9"].pending
++    assert agent._sessions["k9"].survey["query"] == "measure every window's width"
++
++
++@pytest.mark.parametrize(
++    "body,reply",
++    [
++        (
++            {"status": "aborted", "planned": 18, "results": _kitchen_results(())[:6]},
++            "Stopped after 6 of 18. 6 doors, all 26 by 28 centimetres.",
++        ),
++        (
++            {"status": "no_structure"},
++            "No structure layer for this scene; mark the corners yourself.",
++        ),
++        ({"results": []}, "Found no doors to measure."),
++        (
++            {
++                "results": [{"id": "o7", "w_m": 0.12, "h_m": 0.08, "unverified": True}],
++                "skipped": [{"id": "o9", "reason": "corner behind scanned surface"}],
++            },
++            (
++                "1 door: 120 by 80 millimetres. One didn't lock onto its corners; it's amber. "
++                "One skipped."
++            ),
++        ),
++    ],
++)
++def test_observe_survey_edge_cases(body, reply):
++    result = agent.observe(_observe(kind="survey_result", label="cabinet_door", **body))
++    assert result["reply"] == reply
++    assert bool(result["actions"]) == bool(body.get("results"))
++
++
++# --- gutter slope ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "fall,unc,verdict",
++    [
++        (0.0, 2.0, "won't drain"),  # the synthetic facade's level gutter
++        (12.0, 2.0, "drains"),
++        (7.0, 6.0, "inconclusive"),
++        (-12.0, 2.0, "drains"),  # sign is the direction; only the size of the fall matters
++    ],
++)
++def test_slope_verdict_table(fall, unc, verdict):
++    v = survey.slope_verdict(4.2, fall, unc)
++    assert v["verdict"] == verdict
++    assert v["required_mm"] == pytest.approx(8.7, abs=0.05)  # 4.2 m x 2.083 mm/m
++
++
++def test_slope_uncertainty_from_gravity_residual():
++    assert survey.slope_uncertainty_mm(4.2, 0.0) == 2.0
++    assert survey.slope_uncertainty_mm(4.2, 0.08) == pytest.approx(7.9, abs=0.05)
++
++
++def test_slope_replies_are_honest():
++    assert survey.slope_reply(survey.slope_verdict(4.2, 0.4, 2.0)) == (
++        "Flat: 0 ± 2 mm of fall over 4.20 m. It needs about 9 mm, so water will pond."
++    )
++    assert survey.slope_reply(survey.slope_verdict(4.2, 12, 2)) == (
++        "12 ± 2 mm of fall over 4.20 m; it needs 9, so it drains."
++    )
++    assert survey.slope_reply(survey.slope_verdict(4.2, 3, 7.9)) == (
++        "About 3 ± 8 mm of fall over 4.20 m; it needs 9, so that's inconclusive. "
++        "Put a real level on it."
++    )
++
++
++@pytest.mark.asyncio
++async def test_check_slope_suggests_gutter_edges_then_judges_the_report(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    queued = await agent.handle_command(
++        "f1", "Is this gutter sloped enough to drain?", {"site": "facade"}
++    )
++    assert queued["reply"] == "Checking the gutter's fall."
++    [action] = queued["actions"]
++    assert action["name"] == "check_slope"
++    assert action["args"]["target"] == "gutter"
++    assert action["args"]["edge_ids"] == ["e_top", "e_lip"]
++
++    result = agent.observe(
++        survey.Observation(
++            session_id="f1",
++            request_id=action["args"]["request_id"],
++            kind="slope_result",
++            run_m=4.2,
++            fall_mm=0.4,
++            low_end=[2.1, 6.2, 0.03],
++            notebook_id=13,
++        )
++    )
++    # No uncertainty sent: the facade's gravity residual (0 deg) + 2 mm of snapping.
++    assert result["reply"] == (
++        "Flat: 0 ± 2 mm of fall over 4.20 m. It needs about 9 mm, so water will pond."
++    )
++    assert result["actions"] == [
++        {
++            "name": "add_note",
++            "args": {
++                "text": "Gutter slope: won't drain (0.4 ± 2 mm of fall over 4.20 m; needs 8.7 mm)"
++            },
++        }
++    ]
++
++
++@pytest.mark.asyncio
++async def test_slope_report_on_a_real_capture_is_inconclusive(monkeypatch):
++    """The kitchen's 0.08 deg gravity residual over 4.2 m is ~6 mm of doubt on its own."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    queued = await agent.handle_command("k5", "does the ledge drain?", {"site": "kitchen"})
++    assert queued["actions"][0]["args"]["edge_ids"] == []  # gutter candidates are for gutters
++    request_id = queued["actions"][0]["args"]["request_id"]
++    result = agent.observe(
++        survey.Observation(
++            session_id="k5", request_id=request_id, kind="slope_result", run_m=4.2, fall_mm=3.0
++        )
++    )
++    assert "inconclusive" in result["reply"] and "± 8 mm" in result["reply"]
++    assert result["actions"][0]["args"]["text"].startswith("Ledge slope: inconclusive")
++
++
++# --- follow-ups on the stored survey ---------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_which_is_the_widest_answers_from_the_survey_without_the_llm(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    agent.observe(_observe(kind="survey_result", label="cabinet_door", results=_kitchen_results()))
++
++    result = await agent.handle_command("k9", "which is the widest?", {})
++
++    assert result["reply"] == "The widest door is o14: 55 by 28 centimetres."
++    [action] = result["actions"]
++    assert action["name"] == "show_survey" and action["args"]["focus"] == ["o14"]
++
++
++@pytest.mark.asyncio
++async def test_superlatives_without_a_survey_stay_with_the_llm(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _scripted_chat(_text_completion("No survey yet, matey.")))
++    result = await agent.handle_command("k10", "which one is the cheapest and smallest?", {})
++    assert result["reply"] == "No survey yet, matey."
++
++
++@pytest.mark.asyncio
++async def test_survey_query_tool_hands_the_model_a_csv(monkeypatch):
++    agent.observe(_observe(kind="survey_result", label="cabinet_door", results=_kitchen_results()))
++    seen = []
++    scripted = _scripted_chat(
++        _tool_call_completion("survey_query", {"question": "how many are taller than 40 cm?"}),
++        _text_completion("Eight are taller than 40 centimetres; two of the doors are amber."),
++    )
++
++    async def fake(role, messages, tools=None, **kw):
++        seen.append((list(messages), tools))
++        return await scripted(role, messages, tools, **kw)
++
++    monkeypatch.setattr(agent, "chat", fake)
++    result = await agent.handle_command("k9", "how many are taller than 40 cm?", {})
++
++    assert result["reply"].startswith("Eight are taller")
++    assert "survey_query" in {t["function"]["name"] for t in seen[0][1]}
++    tool_msg = seen[1][0][-1]
++    assert tool_msg["role"] == "tool"
++    payload = json.loads(tool_msg["content"])
++    assert payload["csv"].splitlines()[0] == "id,label,w_mm,h_mm,unverified"
++    assert "o9,cabinet_door,208,525,1" in payload["csv"]
++
++
++# --- HTTP ---------------------------------------------------------------------------------
++
++
++def test_observe_route_shape_and_tts(monkeypatch):
++    async def fake_speak(text):
++        assert text.startswith("1 window")
++        return b"RIFFfake", "audio/wav"
++
++    monkeypatch.setattr(voice, "speak", fake_speak)
++    body = {
++        "session_id": "http1",
++        "request_id": "sv-x",
++        "kind": "survey_result",
++        "label": "window",
++        "results": [{"id": "o0", "label": "window", "w_m": 1.5, "h_m": 1.2, "notebook_id": "n12"}],
++    }
++    with TestClient(app) as client:
++        plain = client.post("/agent/observe", json=body).json()
++        spoken = client.post("/agent/observe", json={**body, "tts": True}).json()
++
++    assert plain == {
++        "reply": "1 window: 150 by 120 centimetres.",
++        "actions": [
++            {
++                "name": "show_survey",
++                "args": {
++                    "request_id": "sv-x",
++                    "label": "window",
++                    "groups": [{"w_mm": 1500, "h_mm": 1200, "count": 1, "ids": ["o0"]}],
++                    "unverified": [],
++                    "skipped": [],
++                    "focus": [],
++                },
++            }
++        ],
++        "job_id": None,
++    }
++    assert spoken["audio_mime"] == "audio/wav" and spoken["audio_b64"] == "UklGRmZha2U="
++
++
++def test_observe_route_rejects_a_slope_report_without_numbers():
++    with TestClient(app) as client:
++        resp = client.post(
++            "/agent/observe", json={"session_id": "s", "kind": "slope_result", "target": "gutter"}
++        )
++        assert resp.status_code == 422
++        resp = client.post("/agent/observe", json={"session_id": "s", "kind": "guess"})
++        assert resp.status_code == 422
+-- 
+2.50.1 (Apple Git-155)
+

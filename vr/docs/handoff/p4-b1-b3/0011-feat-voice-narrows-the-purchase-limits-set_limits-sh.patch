@@ -1,0 +1,423 @@
+From 0616dd47cad0c862115af10a04e02e29ded0e25d Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 04:26:53 -0400
+Subject: [PATCH 11/11] feat: voice narrows the purchase limits (set_limits,
+ show_limits)
+
+brain.md S2 / B3, the agent half: "Find hangers, under $40, arriving by Friday."
+
+- Every command is scanned for limits first (digits only): "under / below / less than / no more
+  than / up to / at most / max / budget of $N" or "N dollars/bucks" -> max_total_usd (a cap on the
+  order total, so "$5 each/apiece/per ..." and "under 40 mm" are left alone), and
+  "arriving / delivered / here by|before <weekday|tomorrow|today|YYYY-MM-DD>" -> deliver_by.
+  They go through mandate.set_limits(source="voice") and queue show_limits; whatever is left of
+  the command is routed as usual, so the example sets the limits and then searches
+  ("Limits set: under $40, by Fri Oct 2. Searching the supply shops.").
+- LLM tool set_limits (S2 schema: max_total_usd, deliver_by, seller_policy, all nullable); it may
+  ride along with find_part in the same turn and ends the turn with its spoken line.
+- Voice can't loosen: "up to $100" after $40 answers "You'd need to raise that on the panel.
+  Still under $40, by Fri Oct 2." and show_limits carries the refusal.
+- show_limits {intent_id, max_total_usd, deliver_by, seller_policy, refused} for the wrist chip.
+- "buy it" still only opens the panel (start_checkout, unchanged).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md           |   2 +
+ server/agent.py       | 137 ++++++++++++++++++++++++++++++++++++++++--
+ tests/test_mandate.py | 116 ++++++++++++++++++++++++++++++++++-
+ 3 files changed, 249 insertions(+), 6 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index ea6b3bc..d542ff1 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -647,6 +647,7 @@ Errors: `400` empty frames, invalid base64, frame too large. `413` request body
+ | `check_slope` | `{target, request_id, edge_ids}` | Tape the `target` (`gutter`/`sill`/`ledge`/`nearest_edge`) end to end and report `slope_result` to `/agent/observe`. `edge_ids`: for a gutter, the structure layer's long, high, near-horizontal edges, best first (may be `[]`) |
+ | `show_survey` | `{request_id, label, groups, unverified, skipped, focus}` | Survey card: `groups[]` `{w_mm, h_mm, count, ids}` most common first; amber for `unverified` ids; highlight `focus` ids (the answer to "which is the widest?") |
+ | `stop_survey` | `{}` | Abort a running survey (completed entries stay), then report `status: "aborted"` |
++| `show_limits` | `{intent_id, max_total_usd, deliver_by, seller_policy, refused}` | Wrist limits chip, e.g. `≤ $40 · by Fri · fastest` (nulls = no limit). `refused[]` non-empty = voice tried to loosen a limit; the reply says to use the panel |
+ 
+ ---
+ 
+@@ -710,6 +711,7 @@ Offline mode activates automatically when Cybersource keys are absent or the san
+ | Search latency | ~5–30 s live, instant on cache hit |
+ | AI mesh | ~15–20 s per part, sequential (anonymous HF ZeroGPU semaphore); GLB may be pending when candidates first arrive |
+ | Text input | Agent truncates commands at 500 characters |
++| Limits fast path | Any command may carry "under/below/less than/no more than/up to/at most/max/budget of $N" or "N dollars/bucks" (a cap on the order total; "$N each/apiece/per …" is left alone) and "arriving/delivered/here by|before <weekday/tomorrow/today/YYYY-MM-DD>". They become `set_limits` + `show_limits`; the rest of the command is then routed as usual ("Find hangers, under $40, arriving by Friday." → limits, then the search) |
+ | Survey fast path | "measure/survey/size up" + every/all (the)/each/the + optional upper/lower/left/right/top/bottom/nearest + cabinet door(s)/door(s)/drawer(s)/window(s)/panel(s)/appliance(s); "the" + one = nearest; "I can see"/"in view" = visible; width/wide, height/tall = that side only. Gutter/sill/ledge + slope/drain/fall/pitch → `check_slope` (not with find/get/need/buy). A bare "stop"/"cancel" → `stop_survey`. Other phrasings go to the LLM, which has the same tools |
+ | AI mesh quota | Anonymous HF ZeroGPU quota is per-IP (~minutes/day). Once exhausted, the server stops trying and serves proxy boxes until restart; set `HF_TOKEN` for more quota |
+ | Offline mode | `OFFLINE=true`: search/sellers/TTS served from disk cache only (`uv run python -m server.warm` pre-fills); cache misses return empty results, `503` from `/scene/ask` and `/voice/command` |
+diff --git a/server/agent.py b/server/agent.py
+index 12cd60c..59d922a 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -17,9 +17,10 @@ import re
+ import uuid
+ from collections import OrderedDict
+ from dataclasses import dataclass, field
++from datetime import timedelta
+ from typing import Any
+ 
+-from server import bom, jobs, scene_digest, search, sellers, survey, vision
++from server import bom, jobs, mandate, scene_digest, search, sellers, survey, vision
+ from server.config import get_settings
+ from server.llm import chat
+ from server.models import SearchRequest
+@@ -135,6 +136,30 @@ TOOLS: list[dict[str, Any]] = [
+             },
+         },
+     },
++    {
++        "type": "function",
++        "function": {
++            "name": "set_limits",
++            "description": "Narrow what may be bought: budget cap, delivery deadline, seller "
++            "policy. Can only tighten existing limits. Never pays.",
++            "parameters": {
++                "type": "object",
++                "additionalProperties": False,
++                "properties": {
++                    "max_total_usd": {"type": ["number", "null"]},
++                    "deliver_by": {
++                        "type": ["string", "null"],
++                        "description": "ISO date or weekday name",
++                    },
++                    "seller_policy": {
++                        "type": ["string", "null"],
++                        "enum": ["cheapest", "fastest", "best", None],
++                    },
++                },
++                "required": ["max_total_usd", "deliver_by", "seller_policy"],
++            },
++        },
++    },
+     {
+         "type": "function",
+         "function": {
+@@ -234,7 +259,7 @@ TOOLS: list[dict[str, Any]] = [
+ _CLIENT_ONLY_TOOLS = {"set_finish", "place_array", "equip_tool", "stop_survey"}
+ # Tools whose work happens later on the headset (it reports back via /agent/observe): their spoken
+ # acknowledgement ends the turn -- another LLM turn would have nothing new to say.
+-_ENDS_TURN = {"survey", "check_slope"}
++_ENDS_TURN = {"survey", "check_slope", "set_limits"}
+ 
+ _CANNED_REPLY = {
+     "find_part": "Searching the supply shops.",
+@@ -251,6 +276,7 @@ _CANNED_REPLY = {
+     "check_slope": "Checking the fall.",
+     "survey_query": "Checked the survey.",
+     "stop_survey": "Stopping.",
++    "set_limits": "Limits set.",
+ }
+ 
+ # Spoken when OFFLINE and the fast-path matcher didn't catch the command -- the LLM path never
+@@ -260,6 +286,7 @@ OFFLINE_REPLY = "Offline: try a cached part or the crate menu."
+ 
+ @dataclass
+ class Session:
++    id: str = ""
+     history: list[dict[str, Any]] = field(default_factory=list)
+     measurement: dict[str, Any] | None = None
+     job_id: str | None = None
+@@ -282,7 +309,7 @@ def _get_session(session_id: str) -> Session:
+     unbounded number of headsets/tabs could otherwise grow this dict forever)."""
+     session = _sessions.get(session_id)
+     if session is None:
+-        session = Session()
++        session = Session(id=session_id)
+         _sessions[session_id] = session
+         if len(_sessions) > MAX_SESSIONS:
+             _sessions.popitem(last=False)  # evict the least-recently-used session
+@@ -366,6 +393,33 @@ _SURVEY_Q_RE = re.compile(
+     r"\b(?:which|what)\b.*\b(?:widest|narrowest|tallest|shortest|largest|biggest|smallest)\b",
+     re.IGNORECASE,
+ )
++# Purchase limits spoken with any command (brain.md S2): "under $40", "no more than 40 dollars",
++# "arriving by Friday", "delivered before 2026-10-02". Digits only; a price needs "$" or
++# "dollars"/"bucks" ("under 40 mm" is a size) and caps the order total, so "under $5 each" is
++# left alone. Voice can only tighten them (server/mandate.py).
++_LIMIT_PRICE_RE = re.compile(
++    r"\b(?:under|below|less\s+than|no\s+more\s+than|not\s+more\s+than|up\s+to|at\s+most"
++    r"|max(?:imum)?(?:\s+of)?|budget(?:\s+of)?|cap(?:\s+it)?\s+at)\s+"
++    r"(?:\$\s?(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:dollars?|bucks|usd)\b)"
++    r"(?![\d.]|\s*(?:each|apiece|per\b|a\s+piece))",  # a unit price is not a cap on the order
++    re.IGNORECASE,
++)
++_LIMIT_DATE_RE = re.compile(
++    r"\b(?:arriv\w*|deliver\w*|(?:get\s+(?:it|them)\s+)?here)\s+(by|before|no\s+later\s+than)\s+"
++    r"(?:this\s+|next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow"
++    r"|today|\d{4}-\d{2}-\d{2})\b",
++    re.IGNORECASE,
++)
++# Words that leave nothing to do once the limits are cut out ("keep it under $40").
++_LIMIT_FILLER = frozenset(
++    re.findall(
++        r"\S+",
++        "keep it that this the total budget limit limits spend spending and please price cost "
++        "set a an of only get here make sure must should we i want to be is with for but so ok "
++        "okay let lets let's us me my our needs need can you quartermaster all in has have got "
++        "gotta will would it's its actually just now then also oh well fine",
++    )
++)
+ _ORDINAL_INDEX = {"first": 0, "second": 1, "third": 2}
+ _UNIT_TO_MM = {
+     "cm": 10.0,
+@@ -453,6 +507,29 @@ def _survey_args(m: re.Match, text: str) -> dict[str, Any]:
+     return {"label": label, "where": where, "measure": measure}
+ 
+ 
++def _extract_limits(text: str) -> tuple[dict[str, Any], str]:
++    """(set_limits args, the text with those phrases cut out)."""
++    limits: dict[str, Any] = {}
++    m = _LIMIT_PRICE_RE.search(text)
++    if m:
++        limits["max_total_usd"] = float(m.group(1) or m.group(2))
++        text = f"{text[: m.start()]} {text[m.end() :]}"
++    m = _LIMIT_DATE_RE.search(text)
++    if m:
++        day = mandate.parse_deliver_by(m.group(2).lower(), mandate._today())
++        if m.group(1).lower() == "before":
++            day -= timedelta(days=1)
++        limits["deliver_by"] = day.isoformat()
++        text = f"{text[: m.start()]} {text[m.end() :]}"
++    rest = re.sub(r"\s*,(\s*,)+", ",", text)
++    rest = re.sub(r"\s+", " ", rest).strip(" ,.;")
++    return limits, rest
++
++
++def _has_more(rest: str) -> bool:
++    return any(w not in _LIMIT_FILLER for w in re.findall(r"[a-z0-9$']+", rest.lower()))
++
++
+ # --- tool execution ----------------------------------------------------------------------
+ 
+ 
+@@ -548,6 +625,39 @@ def _slope_tool(session: Session, args: dict[str, Any]):
+     )
+ 
+ 
++def _set_limits_tool(session: Session, args: dict[str, Any]):
++    """`set_limits`: voice narrows the purchase limits (server/mandate.py); a looser ask is
++    refused, never applied. Queues `show_limits` for the wrist chip."""
++    fields = {
++        k: args[k]
++        for k in ("max_total_usd", "deliver_by", "seller_policy")
++        if args.get(k) is not None
++    }
++    if not fields:
++        return {"error": "no limit given"}, None, None
++    try:
++        intent, refused, _changed = mandate.set_limits(
++            session.id, source="voice", text=session.last_text, **fields
++        )
++    except ValueError as exc:
++        return {"error": str(exc)}, None, None
++    limits = intent.spoken()
++    if refused:
++        spoken = "You'd need to raise that on the panel." + (f" Still {limits}." if limits else "")
++    else:
++        spoken = f"Limits set: {limits}." if limits else _CANNED_REPLY["set_limits"]
++    summary = intent.summary()
++    action_args = {
++        "intent_id": intent.id,
++        "max_total_usd": summary["max_total_usd"],
++        "deliver_by": summary["deliver_by"],
++        "seller_policy": summary["seller_policy"],
++        "refused": [r.model_dump() for r in refused],
++    }
++    result = {"ok": True, "limits": summary, "refused": action_args["refused"], "spoken": spoken}
++    return result, {"name": "show_limits", "args": action_args}, None
++
++
+ def _show_survey_action(stored: dict[str, Any], focus: list[str]) -> dict[str, Any]:
+     return {
+         "name": "show_survey",
+@@ -661,6 +771,9 @@ async def _run_tool(
+     if name == "survey_query":
+         return _survey_query_tool(session, args)
+ 
++    if name == "set_limits":
++        return _set_limits_tool(session, args)
++
+     if name == "what_else":
+         parts, counts = _placed_parts_and_counts(session)
+         if not parts:
+@@ -833,6 +946,22 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+     _apply_context(session, ctx)
+     session.last_text = text
+ 
++    limits, rest = _extract_limits(text)
++    if limits:
++        # "Find hangers, under $40, arriving by Friday": set the limits deterministically, then
++        # route what's left of the command (if anything) as usual.
++        result, action, _ = await _run_tool(session, "set_limits", limits, ctx)
++        reply = f"Can't do that yet: {result['error']}." if "error" in result else result["spoken"]
++        head = {"reply": reply, "actions": [action] if action else [], "job_id": None}
++        if not _has_more(rest):
++            return head
++        tail = await handle_command(session_id, rest, context)
++        return {
++            **tail,
++            "reply": f"{head['reply']} {tail['reply']}".strip(),
++            "actions": head["actions"] + tail["actions"],
++        }
++
+     fast = _match_fast_intent(text)
+     if fast is None and session.survey and _SURVEY_Q_RE.search(text):
+         fast = "survey_query", {"question": text}, _CANNED_REPLY["survey_query"]
+@@ -898,7 +1027,7 @@ async def handle_command(session_id: str, text: str, context: dict[str, Any]) ->
+             # find_part just starts a background job -- nothing else in this turn has
+             # results to act on yet, so drop every other tool call except equip_tool/
+             # add_note (client-side no-ops that don't depend on search results).
+-            if has_find_part and name not in ("find_part", "equip_tool", "add_note"):
++            if has_find_part and name not in ("find_part", "equip_tool", "add_note", "set_limits"):
+                 continue
+             try:
+                 args = json.loads(tc.function.arguments or "{}")
+diff --git a/tests/test_mandate.py b/tests/test_mandate.py
+index 94636ed..72b312b 100644
+--- a/tests/test_mandate.py
++++ b/tests/test_mandate.py
+@@ -10,11 +10,12 @@ import pytest
+ import respx
+ from fastapi.testclient import TestClient
+ 
+-from server import jobs, mandate
++from server import agent, jobs, mandate
+ from server.app import app
+ from server.checkout import CYBERSOURCE_HOST, CYBERSOURCE_PATH
+ from server.config import get_settings
+-from server.models import Dims, Fit, Part, Seller
++from server.models import Dims, Fit, Job, Part, Seller
++from tests.test_agent import _no_llm_chat, _scripted_chat, _tool_calls_completion
+ from tests.test_checkout import CS_ENV
+ 
+ TODAY = date(2026, 9, 26)  # a Saturday: "by Friday" is Fri Oct 2
+@@ -53,9 +54,11 @@ def _env(tmp_path, monkeypatch):
+     get_settings.cache_clear()
+     monkeypatch.setattr(mandate, "_today", lambda: TODAY)
+     mandate._nonces.clear()
++    agent._sessions.clear()
+     jobs.save_part(_hanger())
+     yield tmp_path
+     mandate._nonces.clear()
++    agent._sessions.clear()
+     get_settings.cache_clear()
+ 
+ 
+@@ -478,3 +481,112 @@ def test_evidence_summary_is_short_ascii():
+     long = [mandate.Evidence(label="ruban n° 3 " + "x" * 60, value_m=1.0)]
+     summary = mandate.evidence_summary(long)
+     assert len(summary) == 64 and summary.isascii()
++
++
++# --- the agent: limits by voice --------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "text,limits",
++    [
++        ("under $40", {"max_total_usd": 40.0}),
++        ("keep it under 40 dollars", {"max_total_usd": 40.0}),
++        ("no more than $37.50 total", {"max_total_usd": 37.5}),
++        ("it has to arrive by Friday", {"deliver_by": "2026-10-02"}),
++        ("delivered before Friday", {"deliver_by": "2026-10-01"}),
++        ("up to 40 bucks, here by tomorrow", {"max_total_usd": 40.0, "deliver_by": "2026-09-27"}),
++    ],
++)
++async def test_limits_fast_path_never_calls_the_llm(monkeypatch, text, limits):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command(SESSION, text, {})
++    [action] = result["actions"]
++    assert action["name"] == "show_limits"
++    got = {k: action["args"][k] for k in ("max_total_usd", "deliver_by") if action["args"][k]}
++    assert got == limits
++    assert result["reply"].startswith("Limits set: ")
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        "find a hanger under 40 mm wide",
++        "measure up to 40 cm",
++        "every 60 cm",
++        "buy it",
++        "find hinges under $5 each",
++        "pulls below 3 dollars apiece",
++        "anything under $2 per foot",
++    ],
++)
++def test_sizes_are_not_limits(text):
++    assert agent._extract_limits(text)[0] == {}
++
++
++@pytest.mark.asyncio
++async def test_find_with_limits_sets_them_then_searches(monkeypatch):
++    seen = []
++    scripted = _scripted_chat(_tool_calls_completion(("find_part", {"query": "gutter hanger"})))
++
++    async def fake(role, messages, tools=None, **kw):
++        seen.append(messages[-1]["content"])
++        return await scripted(role, messages, tools, **kw)
++
++    monkeypatch.setattr(agent, "chat", fake)
++    monkeypatch.setattr(
++        jobs, "start_search", lambda req: Job(id="job9", status="running", query=req.query)
++    )
++
++    result = await agent.handle_command(SESSION, "Find hangers, under $40, arriving by Friday.", {})
++
++    assert seen == ["Find hangers"]  # the LLM routes only what's left
++    assert result["reply"] == "Limits set: under $40, by Fri Oct 2. Searching the supply shops."
++    assert [a["name"] for a in result["actions"]] == ["show_limits", "search_started"]
++    assert result["job_id"] == "job9"
++    intent = mandate.current_intent(SESSION)
++    assert intent.text == "Find hangers, under $40, arriving by Friday."
++
++
++@pytest.mark.asyncio
++async def test_voice_cannot_raise_a_limit(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    await agent.handle_command(SESSION, "under $40, arriving by Friday", {})
++    result = await agent.handle_command(SESSION, "actually, up to $100", {})
++    assert (
++        result["reply"] == "You'd need to raise that on the panel. Still under $40, by Fri Oct 2."
++    )
++    [action] = result["actions"]
++    assert action["args"]["max_total_usd"] == 40
++    assert action["args"]["refused"][0]["asked"] == 100
++
++
++@pytest.mark.asyncio
++async def test_llm_set_limits_survives_a_find_part_turn(monkeypatch):
++    monkeypatch.setattr(
++        jobs, "start_search", lambda req: Job(id="job7", status="running", query=req.query)
++    )
++    completion = _tool_calls_completion(
++        ("find_part", {"query": "gutter hanger"}),
++        ("set_limits", {"max_total_usd": 40, "deliver_by": "friday", "seller_policy": "fastest"}),
++    )
++    monkeypatch.setattr(agent, "chat", _scripted_chat(completion))
++
++    result = await agent.handle_command(SESSION, "find hangers, forty bucks tops, and quick", {})
++
++    assert [a["name"] for a in result["actions"]] == ["search_started", "show_limits"]
++    assert result["actions"][1]["args"] == {
++        "intent_id": mandate.current_intent(SESSION).id,
++        "max_total_usd": 40.0,
++        "deliver_by": "2026-10-02",
++        "seller_policy": "fastest",
++        "refused": [],
++    }
++
++
++def test_set_limits_schema():
++    tools = {t["function"]["name"]: t["function"] for t in agent.TOOLS}
++    params = tools["set_limits"]["parameters"]
++    assert params["required"] == ["max_total_usd", "deliver_by", "seller_policy"]
++    assert params["properties"]["seller_policy"]["enum"] == ["cheapest", "fastest", "best", None]
++    assert "Never pays" in tools["set_limits"]["description"]
+-- 
+2.50.1 (Apple Git-155)
+

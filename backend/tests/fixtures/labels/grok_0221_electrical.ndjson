@@ -1,0 +1,6 @@
+{"name":"electrical outlet","detail":"white duplex receptacle","source":"seen","box":[12.5,29.0,18.2,38.5],"confidence":0.9}
+{"name":"light switch","detail":"white single-pole toggle","source":"seen","box":[20.0,28.5,25.5,38.0],"confidence":0.85}
+{"name":"stainless steel sink","detail":"undermount single basin","source":"seen","box":[20.0,57.0,65.0,75.0],"confidence":0.95}
+{"name":"chrome faucet","detail":"single-handle gooseneck","source":"seen","box":[39.0,39.0,49.5,53.0],"confidence":0.9}
+{"name":"warning sign","detail":"red rectangular safety notice","source":"printed_text","box":[33.5,25.0,49.0,36.5],"confidence":0.95}
+{"name":"wood cabinet","detail":"light brown upper cabinet","source":"seen","box":[0.0,0.0,23.0,8.5],"confidence":0.8}

@@ -1,0 +1,125 @@
+{
+ "steps": [
+  {
+   "say": "Remove the top foam insert containing the bracket and hardware from the carton. Measure the inside opening of your window sill and use that distance to set the total width of the bracket Extension Arms. To adjust the extension arms, press the Spring Push Pin, slide the Left Extension Arm out and then install the Right Extension Arm.",
+   "page": 11,
+   "quote": "A. Measure the inside opening of your window sill and use that distance to set the total width of the bracket Extension Arms. To adjust the extension arms, press the Spring Push Pin, slide the Left Extension Arm out and then install the Right Extension Arm. Use the short arm for 22-26\u201d windows, and the long arm for 26-36\u201d windows.",
+   "checks": [
+    {
+     "question": "Is the bracket width set to match the measured window sill opening?",
+     "expect": "yes"
+    },
+    {
+     "question": "Are the left and right extension arms attached to the center bracket?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Place bracket on window sill to make sure you have measured and aligned the bracket arms correctly. Once your bracket arms are properly calibrated, apply bracket sealing foam strips to the bottom of the bracket as shown, based on your window type.",
+   "page": 11,
+   "quote": "B. Place bracket on window sill to make sure you have measured and aligned the bracket arms correctly.",
+   "checks": [
+    {
+     "question": "Is the bracket sitting flat and aligned on the window sill?",
+     "expect": "yes"
+    },
+    {
+     "question": "Are the bracket sealing foam strips applied to the bottom of the bracket?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Install the Main Support Bracket into the window opening. Ensure that the Horizontal Bracket and Extension Arms are located on the indoor side of the window. Move the Angled Support Arms toward the exterior wall until the feet touch the wall.",
+   "page": 12,
+   "quote": "A. Install the Main Support Bracket into the window opening. Ensure that the Horizontal Bracket and Extension Arms are located on the indoor side of the window.",
+   "checks": [
+    {
+     "question": "Is the horizontal bracket and extension arms on the indoor side of the window?",
+     "expect": "yes"
+    },
+    {
+     "question": "Do the angled support arm feet touch the exterior wall?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Place the level on the bracket and adjust the Support Arms so that it is level or tilted 1/4 bubble downward and towards the outside. Insert the Main Support Pin through the holes in the Main Support and Angled Support Arm.",
+   "page": 12,
+   "quote": "B. Move the Angled Support Arms toward the exterior wall until the feet touch the wall. Place the level on the bracket and adjust the Support Arms so that it is level or tilted 1/4 bubble downward and towards the outside.",
+   "checks": [
+    {
+     "question": "Is the bracket level or tilted slightly downward toward the outside?",
+     "expect": "yes"
+    },
+    {
+     "question": "Are the main support pins inserted through the aligned holes?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Check the level again and ensure the bracket feels secure. After making any necessary adjustments, insert the cotter pins into the Main Support Pins. Secure the bracket to the windowsill by drilling 1/8\u201d pilot holes and installing the 1/2\u201d Type A screws or 1\u201d Type A screws as shown.",
+   "page": 13,
+   "quote": "D. Check the level again and ensure the bracket feels secure. After making any necessary adjustments, insert the cotter pins into the Main Support Pins.",
+   "checks": [
+    {
+     "question": "Are the cotter pins installed in the main support pins?",
+     "expect": "yes"
+    },
+    {
+     "question": "Is the bracket secured to the windowsill with the correct screws?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Set the air conditioner on top of the support bracket. Ensure the grooves on the bottom of the air conditioner align with the Main Supports. Using a level, check for proper tilt towards the outside. Pull the window down into the slot to help align the unit in the correct location.",
+   "page": 14,
+   "quote": "A. Set the air conditioner on top of the support bracket. Ensure the grooves on the bottom of the air conditioner align with the Main Supports. Using a level, check for proper tilt towards the outside.",
+   "checks": [
+    {
+     "question": "Does the air conditioner sit with grooves aligned on the main supports?",
+     "expect": "yes"
+    },
+    {
+     "question": "Is the unit tilted slightly toward the outside as checked with a level?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Install the Open Window Brackets using the provided screws as shown. Measure the distance between the Side Arm Hinge and the closest part of the window frame in line with the Side Arm. Add 1/4\u201d to this distance and cut the Side Arm Foam to length.",
+   "page": 15,
+   "quote": "C. Next, you must install the Open Window Brackets using the provided screws as shown.",
+   "checks": [
+    {
+     "question": "Are the open window brackets installed with screws on both sides?",
+     "expect": "yes"
+    },
+    {
+     "question": "Is the side arm foam cut to the measured length plus 1/4 inch?",
+     "expect": "yes"
+    }
+   ]
+  },
+  {
+   "say": "Apply Window Sealing Foam to the Side Arm Foam as shown. Insert Side Arm Foam into Side Arm Hinge until the top front of the Side Arm is flush with the top of the hinge. Extend the Anti-Tip Brackets into the window track opening until they stop and secure with the screw.",
+   "page": 16,
+   "quote": "C. Insert Side Arm Foam into Side Arm Hinge until the top front of the Side Arm is flush with the top of the hinge.",
+   "checks": [
+    {
+     "question": "Is the side arm foam inserted flush in the hinge on both sides?",
+     "expect": "yes"
+    },
+    {
+     "question": "Are the anti-tip brackets extended into the window track and secured?",
+     "expect": "yes"
+    }
+   ]
+  }
+ ],
+ "cost_usd": 0.0101931
+}

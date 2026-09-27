@@ -1,0 +1,428 @@
+From 2bd845b9337011d0a06dedef5ea1f0fc78db0bda Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:41:57 -0400
+Subject: [PATCH 01/11] fix: open checkout for "buy it" / "check out" / "pay
+ for it" instead of starting a new search
+
+Integration finding #10: with a hinge selected and placed, "buy it from the recommended seller"
+and "check out with the recommended seller" both came back as "Searching the supply shops." +
+search_started -- no fast path for checkout, and find_part's "Find a real part to buy" pulled
+them in.
+
+- fast path `_CHECKOUT_RE`: buy/purchase/order + it/this/that/these/those/them, pay for it /
+  pay now / pay with ..., and "check out" on its own or before with/from/now/at/using ("check out
+  this hinge" and "buy a hinge" still go to the LLM) -> start_checkout, no LLM call
+- start_checkout now runs server-side: needs a selected part with sellers; seller_index null =
+  a seller named in the command, else the cheapest/fastest if asked, else recommended_seller;
+  the reply names the seller
+- find_part's description no longer says "to buy"; start_checkout's says buy/check out/pay and
+  takes a nullable seller_index
+
+Rebased onto integration/grok-all (c706f13): F6 already made start_checkout server-side (the
+recall warning, once per part per session). Merged, not replaced: the seller pick and the
+"needs a selected part with sellers" errors are ours, the warning is F6's and names the seller
+when the server picked it. A server-picked seller's line is `spoken`, so F6's verbatim rule says
+it (the model can't know which seller); an explicit index from the model keeps the model's reply.
+No recommendation computed -> the first seller, like F15's pay step. The action carries only
+`seller_index`. The fast path sits in row 5 of the priority table.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md                       |   2 +-
+ docs/integration-grok-features.md |   2 +-
+ server/agent.py                   |  83 ++++++++++++--
+ tests/test_agent.py               | 182 ++++++++++++++++++++++++++++++
+ tests/test_safety.py              |  20 ++++
+ 5 files changed, 277 insertions(+), 12 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 3d1e41a..9ff4073 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1598,7 +1598,7 @@ running coach there too.
+ | `set_finish` | `{name, model_url?, label?}` | With `model_url`: reload the part's GLB from it in place, keeping the placed transform (same size and origin). Without it: tint as before, matching `name` against `part.finishes[]`. Show `label` under the spec card when present. The server renders it (`POST /parts/{id}/finish`, 20 s cap), so an old client that reads only `name` still works |
+ | `place_array` | `{spacing_mm}` | Repeat part along last tape line at interval |
+ | `show_sellers` | `{part_id, sort}` | Fetch sellers and open the sellers panel |
+-| `start_checkout` | `{seller_index}` | Open hold-to-pay panel — do NOT call `/checkout` yet. On a part whose cached safety verdict is `recalled`, the reply speaks the recall first (once per part per session); the panel still opens |
++| `start_checkout` | `{seller_index}` | Open hold-to-pay panel — do NOT call `/checkout` yet. Index into the selected part's `sellers[]`: the one named in the command ("buy it from Home Depot"), else the cheapest/fastest if asked, else `recommended_seller`. "buy/purchase/order it", "check out", "pay for it" never start a search. On a part whose cached safety verdict is `recalled`, the reply speaks the recall first (once per part per session); the panel still opens |
+ | `equip_tool` | `{tool}` | Swap hand tool: `tape`/`level`/`protractor`/`plumb`/`area`/`notebook`/`part` |
+ | `add_note` | `{text}` | Append text to wrist notebook |
+ | `scene_pin` | `{frame_id, box}` | Project box centre onto mesh, drop a pin |
+diff --git a/docs/integration-grok-features.md b/docs/integration-grok-features.md
+index 768c926..fcf1fef 100644
+--- a/docs/integration-grok-features.md
++++ b/docs/integration-grok-features.md
+@@ -273,7 +273,7 @@ coach running, a reimagine on screen, both).
+ | 2 | `revoke_packet`, `send_packet` (F14) | "take the packet down", "revoke the link"; "send it to my contractor", "share the job" | always |
+ | 3 | `share_design` (F19) | "add it to the wall (as Maya)", "put it on the wall", "share my design", "post it" | always |
+ | 4 | `fix_pin`, `survey_condition` (F10) | "find a fix for pin f1", "survey the roof" | always |
+-| 5 | base paths | equip a tool, "pick the second one", sort sellers, "every 60 cm" (not with a `site`: then the LLM plans it), "what else do I need?" | always |
++| 5 | base paths | equip a tool, "pick the second one", "buy it" / "check out (with ...)" / "pay for it" → `start_checkout` (app lane 0001; "buy a hinge" and "check out this hinge" stay with the LLM), sort sellers, "every 60 cm" (not with a `site`: then the LLM plans it), "what else do I need?" | always |
+ | 6 | `make_report` (F4), `see_it_installed` (F5) | "send me the report", "show me what it'll look like" | always |
+ | 7 | `check_quote` (F20) | "check / review / look over ... quote / estimate / bid" (not "... from the manual") | always |
+ | 8 | `check_safety` (F6), `check_rules` (F13) | "is it recalled?", "do I need a permit?", "any rebates?" | always |
+diff --git a/server/agent.py b/server/agent.py
+index c61ee3d..77461e2 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -48,6 +48,7 @@ from server import (
+     runjob,
+     safety,
+     search,
++    sellers,
+     survey,
+     vision,
+ )
+@@ -77,8 +78,9 @@ TOOLS: list[dict[str, Any]] = [
+         "type": "function",
+         "function": {
+             "name": "find_part",
+-            "description": "Find a real part to buy (any 'find/get/need a ...' request, even "
+-            "'for this gutter'). Runs in the background; returns a job id.",
++            "description": "Search the supply shops for a new part (any 'find/get/need a ...' "
++            "request, even 'for this gutter'). Never for buying the selected part -- that's "
++            "start_checkout. Runs in the background; returns a job id.",
+             "parameters": {
+                 "type": "object",
+                 "properties": {"query": {"type": "string", "description": "e.g. 'gutter hanger'"}},
+@@ -164,10 +166,16 @@ TOOLS: list[dict[str, Any]] = [
+         "type": "function",
+         "function": {
+             "name": "start_checkout",
+-            "description": "Open the hold-to-pay panel for a seller. Never pays by itself.",
++            "description": "Buy / check out / pay for the selected part: opens the hold-to-pay "
++            "panel for one of its sellers. Never pays by itself.",
+             "parameters": {
+                 "type": "object",
+-                "properties": {"seller_index": {"type": "integer"}},
++                "properties": {
++                    "seller_index": {
++                        "type": ["integer", "null"],
++                        "description": "0-based seller; null = the recommended seller",
++                    }
++                },
+                 "required": ["seller_index"],
+             },
+         },
+@@ -697,6 +705,16 @@ _SHARE_RE = re.compile(
+     re.IGNORECASE,
+ )
+ _SHARE_NAME_RE = re.compile(r"\bas\s+([A-Za-z][\w' -]{0,39}?)[.!]?\s*$", re.IGNORECASE)
++# Buying the selected part (live: "buy it from the recommended seller" became a new search).
++# buy/purchase/order only with a pronoun object -- "buy a hinge" / "where can I buy ..." stay
++# searches for the LLM; "pay for it/now/with ..."; "check out" only on its own or before
++# with/from/now/at/using ("check out this hinge" means look at it). Opens the panel only.
++_CHECKOUT_RE = re.compile(
++    r"\b(?:check\s*-?\s*out(?=\s*(?:$|[.!?,]|\b(?:with|from|now|at|using)\b))"
++    r"|(?:buy|purchase|order)\s+(?:it|this|that|these|those|them)\b"
++    r"|pay\s+(?:for\s+(?:it|this|that|these|those|them)|now|with)\b)",
++    re.IGNORECASE,
++)
+ # Offline only: online, the LLM rewrites "a hanger for this gutter" into a far better query.
+ _FIND_RE = re.compile(
+     r"\b(?:find|get|need)\s+(?:me\s+)?(?:an?\s+|the\s+|some\s+)?(.+?)\s*(?:\bfor\b.*)?[.!?]?\s*$",
+@@ -764,6 +782,11 @@ def _match_fast_intent(text: str) -> tuple[str, dict[str, Any], str] | None:
+         index = int(m.group(1)) - 1 if m.group(1) else _ORDINAL_INDEX[m.group(2).lower()]
+         return "select_candidate", {"index": index}, "Locked that one in."
+ 
++    if _CHECKOUT_RE.search(text):
++        # seller_index None: _run_tool picks a seller named in the command, else the recommended one.
++        args = {"seller_index": None, "hint": text}
++        return "start_checkout", args, _CANNED_REPLY["start_checkout"]
++
+     m = _SORT_RE.search(text)
+     if m:
+         sort = m.group(1).lower()
+@@ -1205,15 +1228,38 @@ async def _run_tool(
+         return result, action, None
+ 
+     if name == "start_checkout":
+-        # Honesty over blocking: the panel still opens on a recalled part, but the warning is
+-        # spoken first, once per part per session. Cache only -- never stall on a live check.
+-        part = jobs.load_part(session.selected_part_id) if session.selected_part_id else None
+-        safety_report = safety.peek(part) if part else None
++        # Buying the selected part: a null seller_index is a seller named in the command, else
++        # the cheapest/fastest if asked, else recommended_seller; the reply then names it (the
++        # model can't know which one the server picked). Honesty over blocking (F6): the panel
++        # still opens on a recalled part, but the warning is spoken first, once per part per
++        # session. Cache only -- never stall on a live check.
++        if not session.selected_part_id:
++            return {"error": "no part selected"}, None, None
++        part = jobs.load_part(session.selected_part_id)
++        if part is None:
++            return {"error": "part not found"}, None, None
++        index = args.get("seller_index")
++        picked = index is None
++        if picked:
++            index = _checkout_seller(part, str(args.get("hint") or ""))
++        try:
++            index = int(index)
++        except (TypeError, ValueError):
++            index = -1
++        if not 0 <= index < len(part.sellers):
++            return {"error": "no seller to check out with"}, None, None
++        seller = part.sellers[index].name
++        safety_report = safety.peek(part)
+         result: dict[str, Any] = {"ok": True}
+         if safety_report and safety_report.verdict == "recalled" and part.id not in session.warned:
+             session.warned.add(part.id)
+-            result["spoken"] = f"{safety_report.spoken} The pay panel's open if you still want it."
+-        return result, {"name": name, "args": args}, None
++            where = f" for {seller}" if picked else ""
++            result["spoken"] = (
++                f"{safety_report.spoken} The pay panel's open{where} if you still want it."
++            )
++        elif picked:
++            result["spoken"] = f"Hold-to-pay panel's open for {seller}."
++        return result, {"name": name, "args": {"seller_index": index}}, None
+ 
+     if name == "add_note":
+         text = str(args.get("text", ""))[:MAX_TEXT_LEN]
+@@ -1621,6 +1667,23 @@ def _sellers_line(part) -> str:
+     return ", ".join(bits) + "." + tail
+ 
+ 
++def _checkout_seller(part, hint: str) -> int | None:
++    """Seller index for "buy it ...": one named in the command ("from Home Depot"), else the
++    cheapest/fastest if asked for, else the part's recommended seller (which already follows the
++    user's last "sellers, cheapest first")."""
++    lowered = hint.lower()
++    for i, s in enumerate(part.sellers):
++        if s.name and s.name.lower() in lowered:
++            return i
++    for sort in ("cheapest", "fastest"):
++        if sort in lowered:
++            rec = sellers.recommend(part.sellers, sort)
++            return rec[0] if rec else None
++    if part.recommended_seller is None and part.sellers:
++        return 0  # no recommendation computed: the first listing, like F15's pay step
++    return part.recommended_seller
++
++
+ def _placed_parts_and_counts(session: Session) -> tuple[list, dict[str, int]]:
+     """Parts placed so far, for `what_else` -- `session.placed` (see the `placed` context field,
+     folded in by `_apply_context`) if the headset sent one, else the single selected part x1."""
+diff --git a/tests/test_agent.py b/tests/test_agent.py
+index bd2b304..9091eda 100644
+--- a/tests/test_agent.py
++++ b/tests/test_agent.py
+@@ -800,3 +800,185 @@ def test_bom_reply_is_short_for_speech():
+     ]
+     reply = agent._bom_reply(Bom(id="b", part_ids=["p"], lines=lines, total_usd=24.81))
+     assert reply == "Also grab exterior sealant, drip edge and 2 more. $24.81 more."
++
++
++# --- checkout intent ("buy it from the recommended seller", integration finding #10) ---------
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        "buy it from the recommended seller",
++        "check out with the recommended seller",
++        "checkout",
++        "Check out.",
++        "let's check out now",
++        "pay for it",
++        "pay with Visa",
++        "purchase this",
++        "order them",
++    ],
++)
++def test_checkout_fast_path_matches_phrasing(text):
++    name, args, _ = agent._match_fast_intent(text)
++    assert name == "start_checkout"
++    assert args["seller_index"] is None
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        "find me a part to buy",
++        "where can I buy a cabinet hinge",
++        "buy a drawer slide",
++        "check out this hinge",
++        "how much will I pay?",
++    ],
++)
++def test_checkout_fast_path_leaves_searches_and_questions_alone(text):
++    match = agent._match_fast_intent(text)
++    assert match is None or match[0] != "start_checkout"
++
++
++def _hinge_with_sellers() -> Part:
++    return Part(
++        id="pivot-door-hinges-1e8608",
++        name="Pivot door hinge",
++        dims_mm=Dims(w=10, d=10, h=10),
++        sellers=[
++            Seller(name="Hardware Tree", price_usd=9.10, shipping_usd=0.0, in_stock=True),
++            Seller(name="Hinge Outlet", price_usd=7.59, shipping_usd=0.0, in_stock=True),
++            Seller(name="Zoro", price_usd=8.20, eta="Sep 30", eta_days=4, in_stock=True),
++        ],
++        recommended_seller=1,
++    )
++
++
++# The headset's context from the live repro (a hinge selected and placed on a door).
++_CHECKOUT_CTX = {
++    "measurement": {"label": "tape #1", "value_m": 0.2625, "axis": "w"},
++    "selected_part_id": "pivot-door-hinges-1e8608",
++    "placed": [{"part_id": "pivot-door-hinges-1e8608", "count": 1}],
++    "candidate_ids": ["pivot-door-hinges-1e8608", "other-a", "other-b"],
++    "tool": "part",
++}
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "text", ["buy it from the recommended seller", "check out with the recommended seller"]
++)
++async def test_checkout_opens_panel_for_recommended_seller(monkeypatch, text):
++    """Live bug: both phrasings came back as "Searching the supply shops." + search_started."""
++    hinge = _hinge_with_sellers()
++    monkeypatch.setattr(jobs, "load_part", lambda pid: hinge if pid == hinge.id else None)
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++
++    def no_search(req):
++        raise AssertionError("a purchase must not start a search")
++
++    monkeypatch.setattr(jobs, "start_search", no_search)
++
++    result = await agent.handle_command("co1", text, _CHECKOUT_CTX)
++
++    assert result == {
++        "reply": "Hold-to-pay panel's open for Hinge Outlet.",
++        "actions": [{"name": "start_checkout", "args": {"seller_index": 1}}],
++        "job_id": None,
++    }
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "text,expected",
++    [
++        ("buy it from hardware tree", 0),  # a seller named in the command
++        ("check out with the cheapest", 1),  # Hinge Outlet, $7.59
++        ("buy it, fastest", 2),  # the only seller with an eta
++    ],
++)
++async def test_checkout_picks_named_or_sorted_seller(monkeypatch, text, expected):
++    hinge = _hinge_with_sellers()
++    monkeypatch.setattr(jobs, "load_part", lambda pid: hinge)
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++
++    result = await agent.handle_command("co2", text, _CHECKOUT_CTX)
++
++    assert result["actions"] == [{"name": "start_checkout", "args": {"seller_index": expected}}]
++
++
++@pytest.mark.asyncio
++async def test_checkout_needs_a_selected_part_with_sellers(monkeypatch):
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    result = await agent.handle_command("co3", "buy it", {})
++    assert result == {
++        "reply": "Can't do that yet: no part selected.",
++        "actions": [],
++        "job_id": None,
++    }
++
++    bare = Part(id="p1", name="Hanger", dims_mm=Dims(w=10, d=10, h=10))
++    monkeypatch.setattr(jobs, "load_part", lambda pid: bare)
++    result = await agent.handle_command("co4", "buy it", {"selected_part_id": "p1"})
++    assert result["reply"] == "Can't do that yet: no seller to check out with."
++    assert result["actions"] == []
++
++
++@pytest.mark.asyncio
++async def test_llm_start_checkout_null_seller_index_means_recommended(monkeypatch):
++    hinge = _hinge_with_sellers()
++    monkeypatch.setattr(jobs, "load_part", lambda pid: hinge)
++    monkeypatch.setattr(
++        agent,
++        "chat",
++        _scripted_chat(
++            _tool_call_completion("start_checkout", {"seller_index": None}),
++            _text_completion("Hold to pay when ready."),
++        ),
++    )
++
++    result = await agent.handle_command("co5", "I'll take the recommended one", _CHECKOUT_CTX)
++
++    assert result["actions"] == [{"name": "start_checkout", "args": {"seller_index": 1}}]
++    # The server picked the seller, so its line is said verbatim (F6's start_checkout rule): the
++    # model can't know which seller that was.
++    assert result["reply"] == "Hold-to-pay panel's open for Hinge Outlet."
++
++
++@pytest.mark.asyncio
++async def test_llm_start_checkout_explicit_seller_keeps_the_model_reply(monkeypatch):
++    hinge = _hinge_with_sellers()
++    monkeypatch.setattr(jobs, "load_part", lambda pid: hinge)
++    monkeypatch.setattr(
++        agent,
++        "chat",
++        _scripted_chat(
++            _tool_call_completion("start_checkout", {"seller_index": 2}),
++            _text_completion("Hold to pay when ready."),
++        ),
++    )
++
++    result = await agent.handle_command("co6", "the Zoro one", _CHECKOUT_CTX)
++
++    assert result["actions"] == [{"name": "start_checkout", "args": {"seller_index": 2}}]
++    assert result["reply"] == "Hold to pay when ready."
++
++
++@pytest.mark.asyncio
++async def test_checkout_without_a_recommendation_opens_the_first_seller(monkeypatch):
++    hinge = _hinge_with_sellers().model_copy(update={"recommended_seller": None})
++    monkeypatch.setattr(jobs, "load_part", lambda pid: hinge)
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++
++    result = await agent.handle_command("co7", "buy it", _CHECKOUT_CTX)
++
++    assert result["actions"] == [{"name": "start_checkout", "args": {"seller_index": 0}}]
++    assert result["reply"] == "Hold-to-pay panel's open for Hardware Tree."
++
++
++def test_find_part_description_no_longer_attracts_purchases():
++    tools = {t["function"]["name"]: t["function"] for t in agent.TOOLS}
++    assert "to buy" not in tools["find_part"]["description"]
++    assert "start_checkout" in tools["find_part"]["description"]
++    seller_index = tools["start_checkout"]["parameters"]["properties"]["seller_index"]
++    assert seller_index["type"] == ["integer", "null"]
+diff --git a/tests/test_safety.py b/tests/test_safety.py
+index fe829fc..957bedc 100644
+--- a/tests/test_safety.py
++++ b/tests/test_safety.py
+@@ -303,6 +303,26 @@ async def test_start_checkout_on_recalled_part_warns_once_and_still_opens(monkey
+     assert result == {"ok": True}  # said once, not on every tap
+ 
+ 
++@pytest.mark.asyncio
++async def test_buy_it_on_recalled_part_warns_and_names_the_seller(monkeypatch):
++    """The app lane's "buy it" fast path (the server picks the seller) keeps F6's warning."""
++    with respx.mock() as router:
++        _mock(router)
++        await safety.check(MIDEA)
++
++    async def no_llm(*args, **kwargs):
++        raise AssertionError("a fast path must not call the LLM")
++
++    monkeypatch.setattr(agent, "chat", no_llm)
++    ctx = {"selected_part_id": MIDEA.id}
++    result = await agent.handle_command("s6", "buy it", ctx)
++    assert result["actions"] == [{"name": "start_checkout", "args": {"seller_index": 0}}]
++    assert result["reply"].startswith("Heads up: this exact model was recalled")
++    assert result["reply"].endswith("The pay panel's open for Home Depot if you still want it.")
++    result = await agent.handle_command("s6", "buy it", ctx)
++    assert result["reply"] == "Hold-to-pay panel's open for Home Depot."  # warned once
++
++
+ @pytest.mark.asyncio
+ async def test_select_candidate_kicks_off_the_check_in_background(monkeypatch):
+     monkeypatch.setattr(agent.manuals, "prefetch", lambda part: None)  # F9's own xAI call
+-- 
+2.50.1 (Apple Git-155)
+

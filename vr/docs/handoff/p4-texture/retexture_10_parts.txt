@@ -1,0 +1,30 @@
+retexture: 10 parts, modes auto, hf, llm_scad (offline: no LLM/Hunyuan calls)
+  frigidaire-fdpc4221as-341c87                         auto     llm     done  cut=flood  key=- body=#A3A3A3 metal   photo_tris=8      0.24 s
+  frigidaire-fdpc4221as-341c87                         hf       ai_mesh done  cut=flood  key=- body=#A3A3A3 metal   photo_tris=3966   0.86 s
+  frigidaire-fdpc4221as-341c87                         llm_scad scad    done  cut=flood  key=- body=#A3A3A3 metal   photo_tris=716    0.23 s
+  ge-profile-30-fingerprint-resistant-stainless-steel- auto     llm     done  cut=flood  key=- body=#8B8B8B metal   photo_tris=4      0.07 s
+  ge-profile-30-fingerprint-resistant-stainless-steel- hf       ai_mesh done  cut=flood  key=- body=#8B8B8B metal   photo_tris=1335   0.26 s
+  ge-profile-30-fingerprint-resistant-stainless-steel- llm_scad scad    done  cut=flood  key=- body=#8B8B8B metal   photo_tris=288    0.11 s
+  lg-36-in-28-cu-ft-3-door-french-door-refrigerator-w- auto     llm     done  cut=u2netp key=y body=#87847C metal   photo_tris=16     0.27 s
+  lg-36-in-28-cu-ft-3-door-french-door-refrigerator-w- hf       ai_mesh done  cut=u2netp key=- body=#87847C metal   photo_tris=4408   0.45 s
+  lg-36-in-28-cu-ft-3-door-french-door-refrigerator-w- llm_scad scad    done  cut=u2netp key=y body=#87847C metal   photo_tris=782    0.17 s
+  liberty-p38532c-cz-cp-f68288                         auto     llm     done  cut=flood  key=- body=#9A876B metal   photo_tris=2      0.24 s
+  liberty-p38532c-cz-cp-f68288                         hf       ai_mesh done  cut=flood  key=- body=#9A876B metal   photo_tris=1311   0.35 s
+  liberty-p38532c-cz-cp-f68288                         llm_scad scad    done  cut=flood  key=- body=#9A876B metal   photo_tris=358    0.24 s
+  ge-jvm3160rfss-35dc0e                                auto     llm     done  cut=flood  key=- body=#B9B9B9 metal   photo_tris=2      0.17 s
+  ge-jvm3160rfss-35dc0e                                hf       llm     done  cut=flood  key=- body=#B9B9B9 metal   photo_tris=2      0.05 s
+  ge-jvm3160rfss-35dc0e                                llm_scad scad    done  cut=flood  key=- body=#B9B9B9 metal   photo_tris=526    0.14 s
+  jeld-wen-thdjw235100032-d0809e                       auto     llm     done  cut=flood  key=- body=#FFFFFF plastic photo_tris=26     0.23 s
+  jeld-wen-thdjw235100032-d0809e                       llm_scad scad    done  cut=flood  key=- body=#FFFFFF plastic photo_tris=146    0.22 s
+  broan-nutone-rl6230sf-680219                         auto     llm     done  cut=flood  key=y body=#A19FA0 metal   photo_tris=2      0.13 s
+  broan-nutone-rl6230sf-680219                         llm_scad scad    done  cut=flood  key=- body=#A19FA0 metal   photo_tris=292    0.05 s
+  moen-87233srs-6eb25b                                 auto     llm     done  cut=flood  key=- body=#C6C6C5 metal   photo_tris=103    0.24 s
+  moen-87233srs-6eb25b                                 llm_scad scad    done  cut=flood  key=- body=#C6C6C5 metal   photo_tris=492    0.16 s
+  cottage-48-bench-navy-8f8de7                         auto     llm     done  cut=flood  key=- body=#3A4A63 painted photo_tris=6      0.08 s
+  cottage-48-bench-navy-8f8de7                         llm_scad scad    done  cut=flood  key=- body=#3A4A63 painted photo_tris=483    0.06 s
+  vigoro-hd1114-089-a90548                             auto     llm     done  cut=flood  key=- body=#E7E8ED plastic photo_tris=4      0.19 s
+  vigoro-hd1114-089-a90548                             llm_scad scad    done  cut=flood  key=- body=#E7E8ED plastic photo_tris=90     0.13 s
+retexture: {'done': 25} in 5.3 s (0.21 s a model), 0 CAD models turned around, $0 (no paid calls)
+real 6.29
+user 5.64
+sys 0.37

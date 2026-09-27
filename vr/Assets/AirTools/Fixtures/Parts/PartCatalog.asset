@@ -1,0 +1,58 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 166ba5a0f64594d78823ebcbb1d0b848, type: 3}
+  m_Name: PartCatalog
+  m_EditorClassIdentifier: AirTools.Runtime::AirTools.Parts.PartCatalog
+  entries:
+  - id: hidden-hanger-5k
+    partJson: {fileID: 4900000, guid: 4ce9906db12284330b0ae0ad37115a1a, type: 3}
+    model: {fileID: 9011609596103865968, guid: f047e11ad65a249ada3675de20c68ffb, type: 3}
+    image: {fileID: 2800000, guid: e39f7a1193e1843069418f7892f21108, type: 3}
+    keywords:
+    - bracket
+    - fascia
+    - gutter
+    - hanger
+    - hidden
+    - hidden-hanger-5k
+    - k-style
+    - screw
+    - with
+  - id: window-ac-small
+    partJson: {fileID: 4900000, guid: 78ff28a4cac324b088578eef49f99376, type: 3}
+    model: {fileID: 9011609596103865968, guid: 9a2cb0b5e5d5346b78dacb1f388cdde6, type: 3}
+    image: {fileID: 2800000, guid: ae47381c7511443f5b8477fa9565f4ec, type: 3}
+    keywords:
+    - ac
+    - air
+    - btu
+    - conditioner
+    - cooling
+    - small
+    - window
+    - window-ac-small
+  - id: window-frame-58x46
+    partJson: {fileID: 4900000, guid: a1e9a7fc26714efc8f9dbb479cb8260e, type: 3}
+    model: {fileID: 2107409826236812522, guid: 03bddbe8faa64861be89c03ca1af2157, type: 3}
+    image: {fileID: 2800000, guid: 4b8ef839acf94e70b74177f2a9866f71, type: 3}
+    keywords:
+    - frame
+    - grids
+    - replacement
+    - sash
+    - slider
+    - sliding
+    - vinyl
+    - white
+    - window
+    - window-frame-58x46
+    - with

@@ -1,0 +1,324 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "kitchen",
+ "title": "Kitchen",
+ "focus": "counter",
+ "foci": [
+  "wall",
+  "ground",
+  "ceiling",
+  "counter",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "microwaves",
+   "title": "Microwaves",
+   "icon": "app-window",
+   "query": "over-the-range microwave",
+   "items": [
+    {
+     "part_id": "insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616",
+     "name": "Insignia 1.7 Cu. Ft. Over-the-Range Microwave with 1,000W Cooking Power",
+     "price_usd": 209.99,
+     "dims_mm": {
+      "w": 406.4,
+      "h": 381.0,
+      "d": 736.6
+     },
+     "image_url": "/parts/insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616/image.jpg",
+     "model_url": "/parts/insignia-1-7-cu-ft-over-the-range-microwave-with-1-000w-cooking-power-541616/model.glb",
+     "model_ready": true,
+     "seller": "Best Buy"
+    },
+    {
+     "part_id": "lg-mvem1621y-2bc95d",
+     "name": "1.6 cu. ft. 30 in. W. Over-the-Range Microwave Oven with EasyClean in Stainless Steel",
+     "price_usd": 239.0,
+     "dims_mm": {
+      "w": 758.95,
+      "h": 417.58,
+      "d": 403.35
+     },
+     "image_url": "/parts/lg-mvem1621y-2bc95d/image.jpg",
+     "model_url": "/parts/lg-mvem1621y-2bc95d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-jvm3160rfss-35dc0e",
+     "name": "1.6 cu. ft. Over-the-Range Microwave in Stainless Steel",
+     "price_usd": 242.0,
+     "dims_mm": {
+      "w": 758.82,
+      "h": 409.57,
+      "d": 395.29
+     },
+     "image_url": "/parts/ge-jvm3160rfss-35dc0e/image.jpg",
+     "model_url": "/parts/ge-jvm3160rfss-35dc0e/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "sinks-faucets",
+   "title": "Sinks & faucets",
+   "icon": "drop",
+   "query": "kitchen faucet",
+   "items": [
+    {
+     "part_id": "moen-87233srs-6eb25b",
+     "name": "Adler Single-Handle Pull-Down Sprayer Kitchen Faucet with Power Clean and Reflex in Spot Resist Stainless",
+     "price_usd": 169.0,
+     "dims_mm": {
+      "w": 312.0,
+      "h": 371.0,
+      "d": 628.0
+     },
+     "image_url": "/parts/moen-87233srs-6eb25b/image.jpg",
+     "model_url": "/parts/moen-87233srs-6eb25b/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "cooktops",
+   "title": "Cooktops",
+   "icon": "cooking-pot",
+   "query": "30 in. electric cooktop",
+   "items": [
+    {
+     "part_id": "amzchef-67hdla30k2-a03e1f",
+     "name": "30 in. 4 Elements Ceramic Electric Cooktop in Black with Hot Surface Indicator and ETL/FCC Certified",
+     "price_usd": 219.0,
+     "dims_mm": {
+      "w": 769.87,
+      "h": 74.93,
+      "d": 519.94
+     },
+     "image_url": "/parts/amzchef-67hdla30k2-a03e1f/image.jpg",
+     "model_url": "/parts/amzchef-67hdla30k2-a03e1f/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-jp3030dwbb-76045c",
+     "name": "30 in. 4 Burner Element Radiant Electric Cooktop in Black including 2 Power Boil Burners",
+     "price_usd": 599.0,
+     "dims_mm": {
+      "w": 758.82,
+      "h": 101.6,
+      "d": 533.4
+     },
+     "image_url": "/parts/ge-jp3030dwbb-76045c/image.jpg",
+     "model_url": "/parts/ge-jp3030dwbb-76045c/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "frigidaire-ffec3025ub-596af7",
+     "name": "30 in. Electric Cooktop in Black with 4 Elements, including Quick Boil Burner & Ceramic Glass Surface",
+     "price_usd": 599.0,
+     "dims_mm": {
+      "w": 777.88,
+      "h": 66.67,
+      "d": 542.92
+     },
+     "image_url": "/parts/frigidaire-ffec3025ub-596af7/image.jpg",
+     "model_url": "/parts/frigidaire-ffec3025ub-596af7/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "backsplash",
+   "title": "Backsplash tile",
+   "icon": "squares-four",
+   "query": "kitchen backsplash tile",
+   "items": [
+    {
+     "part_id": "villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b",
+     "name": "Villa Zellige Pearl Opal Polished Ceramic Tile",
+     "price_usd": 1.49,
+     "dims_mm": {
+      "w": 63.5,
+      "h": 203.2,
+      "d": 9.0
+     },
+     "image_url": "/parts/villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b/image.jpg",
+     "model_url": "/parts/villa-zellige-pearl-opal-polished-ceramic-tile-a9c01b/model.glb",
+     "model_ready": false,
+     "seller": "Floor and Decor"
+    },
+    {
+     "part_id": "daltile-re1536modhd1p4-a4a4e0",
+     "name": "Restore Bright White 3 in. x 6 in. Glossy Ceramic Subway Wall Tile (12.5 sq. ft. /case)",
+     "price_usd": 14.98,
+     "dims_mm": {
+      "w": 76.2,
+      "h": 7.94,
+      "d": 152.4
+     },
+     "image_url": "/parts/daltile-re1536modhd1p4-a4a4e0/image.jpg",
+     "model_url": "/parts/daltile-re1536modhd1p4-a4a4e0/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ivy-hill-tile-ext3rd105189-f9b1ae",
+     "name": "Kingston White 3 in. x 8 in. Glazed Ceramic Wall Tile (5.38 sq. ft./case)",
+     "price_usd": 53.74,
+     "dims_mm": {
+      "w": 76.2,
+      "h": 9.0,
+      "d": 203.2
+     },
+     "image_url": "/parts/ivy-hill-tile-ext3rd105189-f9b1ae/image.jpg",
+     "model_url": "/parts/ivy-hill-tile-ext3rd105189-f9b1ae/model.glb",
+     "model_ready": false,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "lighting",
+   "title": "Lighting",
+   "icon": "lightbulb",
+   "query": "under cabinet light",
+   "items": [
+    {
+     "part_id": "commercial-electric-57301-sv-1f3a6d",
+     "name": "9 in. USB Rechargeable Silver Integrated LED Under Cabinet Light (2-Pack)",
+     "price_usd": 19.98,
+     "dims_mm": {
+      "w": 116.84,
+      "h": 228.6,
+      "d": 39.62
+     },
+     "image_url": "/parts/commercial-electric-57301-sv-1f3a6d/image.jpg",
+     "model_url": "/parts/commercial-electric-57301-sv-1f3a6d/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "commercial-electric-57104-wh-332c6f",
+     "name": "24 in. Hardwired White Integrated LED 5 CCT Linkable Under Cabinet Light",
+     "price_usd": 49.97,
+     "dims_mm": {
+      "w": 83.82,
+      "h": 609.6,
+      "d": 30.48
+     },
+     "image_url": "/parts/commercial-electric-57104-wh-332c6f/image.jpg",
+     "model_url": "/parts/commercial-electric-57104-wh-332c6f/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "armacost-lighting-132250-c61083",
+     "name": "RibbonFlex Pro 32.8 ft. 12-Volt White Tape Strip Light 60 LEDs/m Soft White (2700K)",
+     "price_usd": 59.27,
+     "dims_mm": {
+      "w": 8.0,
+      "h": 1.0,
+      "d": 1.0
+     },
+     "image_url": "/parts/armacost-lighting-132250-c61083/image.jpg",
+     "model_url": "/parts/armacost-lighting-132250-c61083/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "cabinet-hardware",
+   "title": "Cabinet hardware",
+   "icon": "hand-grabbing",
+   "query": "cabinet pull",
+   "items": [
+    {
+     "part_id": "everbilt-h32636e-np-cp-c7a101",
+     "name": "1 Pair Frameless 35 mm 110-Degree Full Overlay Soft Close Nickel Cabinet Hinge (2 Pieces)",
+     "price_usd": 14.32,
+     "dims_mm": {
+      "w": 14.99,
+      "h": 13.97,
+      "d": 99.82
+     },
+     "image_url": "/parts/everbilt-h32636e-np-cp-c7a101/image.jpg",
+     "model_url": "/parts/everbilt-h32636e-np-cp-c7a101/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "emtek-86013-07030d",
+     "name": "Emtek 86013 Providence Knob",
+     "price_usd": 10.41,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 15.88,
+      "d": 25.4
+     },
+     "image_url": "/parts/emtek-86013-07030d/image.jpg",
+     "model_url": "/parts/emtek-86013-07030d/model.glb",
+     "model_ready": true,
+     "seller": "Trademark Hardware"
+    },
+    {
+     "part_id": "pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608",
+     "name": "Pivot Door Hinges - Rear Pivoting - High Quality Steel - Statuary Bronze Finish",
+     "price_usd": 7.59,
+     "dims_mm": {
+      "w": 9.53,
+      "h": 53.98,
+      "d": 2.38
+     },
+     "image_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/image.jpg",
+     "model_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/model.glb",
+     "model_ready": true,
+     "seller": "Hinge Outlet"
+    }
+   ]
+  },
+  {
+   "id": "x-countertops",
+   "title": "Countertops",
+   "icon": "square",
+   "query": "kitchen countertops",
+   "items": [
+    {
+     "part_id": "hampton-bay-thd-hbu-0002-4caaed",
+     "name": "6 ft. L x 25 in. D Unfinished Hevea Solid Wood Butcher Block Countertop with Standard Edge",
+     "price_usd": 199.0,
+     "dims_mm": {
+      "w": 635.0,
+      "h": 38.1,
+      "d": 635.0
+     },
+     "image_url": "/parts/hampton-bay-thd-hbu-0002-4caaed/image.jpg",
+     "model_url": "/parts/hampton-bay-thd-hbu-0002-4caaed/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "hampton-bay-thd-hbu-0004-f5f1e8",
+     "name": "8 ft. L x 25 in. D Unfinished Hevea Solid Wood Butcher Block Countertop With Standard Edge",
+     "price_usd": 269.0,
+     "dims_mm": {
+      "w": 2438.4,
+      "h": 38.1,
+      "d": 635.0
+     },
+     "image_url": "/parts/hampton-bay-thd-hbu-0004-f5f1e8/image.jpg",
+     "model_url": "/parts/hampton-bay-thd-hbu-0004-f5f1e8/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,351 @@
+From 67226ab1ef50e3219e7a9b59fa84c07efbd289c9 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 03:53:36 -0400
+Subject: [PATCH 6/8] feat: sizes printed in the listing title as the
+ last-resort dims source
+
+Integration finding #15 follow-up: a candidate the LLM, Home Depot and the page fetch can't size
+is dropped even when its title prints the size. sellers.parse_title_sizes reads the one size
+mention in a title -- "3 in. (76 mm)" (the printed metric wins), "3-3/4 in.", "1-1/4in.",
+"12 in. x 8 in.", "10 in. x12 in.", "12 x 8 inch", "36 in. W x 24 in. D x 34.5 in. H" -- and is
+conservative: a number needs a length unit; alternatives ("3 or 3-3/4 in. (76/96 mm)"), screw
+gauges ("#8 x 1-1/4 in."), centre-to-centre / hole-centre spacing, radii, overlays and cups are
+never sizes; two separate size mentions in one title mean "don't know".
+
+search._dims_from_title runs only after the page fallback and only completes a box, never guesses
+a side: W/D/H-labelled sizes take their axis, three unlabelled ones follow _parse_dims' flat-goods
+rule (thinnest = depth, longest = height), and one unlabelled size may only fill the single side
+the LLM's published dims left empty. dims_source "title" (documented in api.md).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md           |  2 +-
+ server/models.py      |  2 +-
+ server/search.py      | 43 +++++++++++++++++++++---
+ server/sellers.py     | 66 +++++++++++++++++++++++++++++++++++++
+ tests/test_search.py  | 77 +++++++++++++++++++++++++++++++++++++++++++
+ tests/test_sellers.py | 42 +++++++++++++++++++++++
+ 6 files changed, 226 insertions(+), 6 deletions(-)
+
+diff --git a/docs/api.md b/docs/api.md
+index 8a1a58f..7e81125 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -147,7 +147,7 @@ Full `Part` object. Key fields for rendering:
+ | `id` | string | slug, e.g. `"gutter-hanger-hidden-k-style"` |
+ | `name` | string | display name |
+ | `dims_mm` | `{w,d,h}` | millimetres |
+-| `dims_source` | string | `"home_depot"/"page"/"llm"` |
++| `dims_source` | string | `"home_depot"/"page"/"llm"/"title"`; `"title"` = last resort, sizes printed in the listing title (e.g. "12 in. W x 8 in. D x 3 in. H", or the one side the LLM's published dims lacked) |
+ | `asset.tier` / `asset.status` | string | see section 2 |
+ | `asset.scale_residual_pct` | float | |
+ | `fit.status` | string | `"fits"/"too_big"/"too_small"/"unknown"` |
+diff --git a/server/models.py b/server/models.py
+index ad8ded0..8f08035 100644
+--- a/server/models.py
++++ b/server/models.py
+@@ -74,7 +74,7 @@ class Part(BaseModel):
+     manufacturer: str | None = None
+     model_no: str | None = None
+     dims_mm: Dims
+-    dims_source: str = "llm"  # "home_depot", "page", "llm"
++    dims_source: str = "llm"  # "home_depot", "page", "llm", "title" (sizes printed in the title)
+     weight_g: float | None = None
+     color_hex: str | None = None
+     finish: str | None = None
+diff --git a/server/search.py b/server/search.py
+index b9af9c4..83998b6 100644
+--- a/server/search.py
++++ b/server/search.py
+@@ -5,8 +5,8 @@
+   parallel, cached, each failure -> empty; `llm.web_search` only as a last resort if all three
+   come back empty) -> one LLM `extract` call (role "extract") turns the condensed, interleaved
+   listings + web text into a `Plan` of candidates -> per candidate, bounded-concurrent: dims
+-  enrichment (Home Depot wins > page fetch on role "cheap" > drop), image, sellers +
+-  recommendation, spec_url liveness, fit against the measurement -> `Part`.
++  enrichment (Home Depot wins > page fetch on role "cheap" > sizes in the title > drop), image,
++  sellers + recommendation, spec_url liveness, fit against the measurement -> `Part`.
+ 
+ Token budget (Groq free tier, 8K tokens/min on gpt-oss-120b): one search makes exactly one
+ role="extract" call with a condensed, capped prompt (7 shopping + 5 Home Depot listings,
+@@ -454,7 +454,8 @@ async def _resolve_dims(
+     candidate: Candidate, cand_listings: list[dict]
+ ) -> tuple[Dims | None, str, dict | None]:
+     """Home Depot wins outright when it matches (even over already-complete LLM dims), else
+-    the LLM's own dims if complete, else a page-fetch fallback, else give up (drop).
++    the LLM's own dims if complete, else a page-fetch fallback, else sizes printed in the
++    title (`_dims_from_title`), else give up (drop).
+ 
+     An HD listing the LLM already tied via listing_indexes skips straight to
+     `home_depot_product(product_id)` (1 call); otherwise at most one HD search+product pair as a
+@@ -483,9 +484,43 @@ async def _resolve_dims(
+     if page_dims is not None:
+         return page_dims, "page", hd_result
+ 
++    title_dims = _dims_from_title(candidate, cand_listings, hd_result)
++    if title_dims is not None:
++        return title_dims, "title", hd_result
++
+     return None, "", hd_result
+ 
+ 
++def _dims_from_title(
++    candidate: Candidate, cand_listings: list[dict], hd: dict | None
++) -> Dims | None:
++    """Last resort: sizes printed in the product's own name or listing titles
++    (`sellers.parse_title_sizes`). Only completes a box, never guesses a side: W/D/H-labelled
++    sizes take their axis, three unlabelled ones follow `_parse_dims`' flat-goods rule (thinnest
++    = depth, longest = height), and a single unlabelled size may only fill the one side the LLM's
++    published dims left empty. Anything else stays unknown (dropped)."""
++    titles = [candidate.name, (hd or {}).get("title"), *(li.get("title") for li in cand_listings)]
++    sizes = next((s for s in map(sellers.parse_title_sizes, titles) if s), [])
++    known = candidate.dims_mm.model_dump()  # sides the LLM filled from published text
++    for mm, axis in sizes:
++        if axis and known[axis] is None:
++            known[axis] = mm
++    missing = [axis for axis, v in known.items() if v is None]
++    loose = [
++        mm
++        for mm, axis in sizes
++        if axis is None and all(v is None or abs(v - mm) > 2 for v in known.values())
++    ]
++    if len(missing) == 3 and len(loose) == 3:
++        thin, mid, long_ = sorted(loose)
++        known = {"w": mid, "d": thin, "h": long_}
++    elif len(missing) == 1 and len(loose) == 1:
++        known[missing[0]] = loose[0]
++    if any(v is None for v in known.values()):
++        return None
++    return Dims(**known)
++
++
+ # --- per-candidate sellers ------------------------------------------------------------------
+ 
+ _MAX_SELLERS = 8
+@@ -594,7 +629,7 @@ async def _build_candidate(
+     dims, dims_source, hd = await _resolve_dims(candidate, cand_listings)
+     if dims is None:
+         logger.info(
+-            "find_parts: dropping %r (%s) -- no dims from LLM, Home Depot, or page",
++            "find_parts: dropping %r (%s) -- no dims from LLM, Home Depot, page, or title",
+             candidate.name,
+             candidate.model_no,
+         )
+diff --git a/server/sellers.py b/server/sellers.py
+index 02686fd..a6e2cb8 100644
+--- a/server/sellers.py
++++ b/server/sellers.py
+@@ -312,6 +312,72 @@ def _parse_inches(value: str) -> float | None:
+         return None
+ 
+ 
++# Sizes printed in a listing title, for search's last-resort dims ("12 in. x 8 in.", "3-3/4 in.",
++# "3 in. (76 mm)", "36 in. W x 24 in. D x 34.5 in. H"). A number counts only with a length unit
++# (a bare "in" only before x/(/,/end, so "2 in 1" isn't a size); an "x" chain shares its last unit.
++_SIZE_NUM = r"\d+[-\s]\d+/\d+|\d+/\d+|\d+(?:\.\d+)?"
++_SIZE_UNIT = r"mm\b|cm\b|in\.|inch(?:es)?\b|in\b(?=\s*(?:[x×(),]|$))|\"|”|ft\b\.?|feet\b"
++_SIZE_ITEM_RE = re.compile(
++    rf"(?P<num>{_SIZE_NUM})\s*-?\s*(?P<unit>{_SIZE_UNIT})?"
++    r"(?:\s*\(\s*(?P<metric>\d+(?:\.\d+)?)\s*(?P<metric_unit>mm|cm)\s*\))?"
++    r"(?:\s*(?P<axis>(?-i:[WDH]))\b\.?)?",
++    re.IGNORECASE,
++)
++_SIZE_ITEM = re.sub(r"\?P<\w+>", "?:", _SIZE_ITEM_RE.pattern)  # same item, no named groups
++_SIZE_CHAIN_RE = re.compile(rf"{_SIZE_ITEM}(?:\s*[x×]\s*{_SIZE_ITEM}){{0,2}}", re.IGNORECASE)
++# Numbers that aren't the part's own size: screw spacing ("3 in. Center-to-Center", "3 Inch
++# Hole Center"), a radius, a hinge's overlay or cup, a screw gauge ("#8 x 1 in.").
++_NOT_SIZE_AFTER = re.compile(
++    r"^\s*[-,]?\s*(?:cent(?:er|re)[-\s]*to[-\s]*cent(?:er|re)|cent(?:er|re)s\b|c-?c\b|"
++    r"on\s+cent|o\.c\.|hole|(?:corner\s+)?radius|overlay|cup|bore)",
++    re.IGNORECASE,
++)
++_NOT_SIZE_BEFORE = re.compile(
++    r"(?:#|cent(?:er|re)[-\s]*to[-\s]*cent(?:er|re)\s*:?|hole\s+(?:spacing|cent(?:er|re))\s*:?)\s*$",
++    re.IGNORECASE,
++)
++_ALTERNATIVE_SIZES = re.compile(
++    r"\d\s*(?:in\.|mm|\")?\s+or\s+\d|\d{2,}\s*/\s*\d{2,}\s*mm", re.IGNORECASE
++)
++_TO_MM = {"mm": 1.0, "cm": 10.0, "ft": 304.8, "fe": 304.8}  # by unit[:2]; anything else is inches
++
++
++def parse_title_sizes(title: str | None) -> list[tuple[float, str | None]]:
++    """The one size mention in a title as [(mm, axis "w"/"d"/"h" or None), ...] in title order,
++    e.g. "10 in. x12 in. Shelf Bracket" -> [(254, None), (304.8, None)], "3 in. (76 mm) Pull"
++    -> [(76, None)] (the printed metric wins). Conservative: [] when there's no unit-tagged size,
++    when sizes are alternatives ("3 or 3-3/4 in. (76/96 mm)"), or when the title has more than one
++    separate size mention (which one is the part?); centre-to-centre spacing, radii, overlays and
++    screw gauges are never sizes."""
++    if not title or _ALTERNATIVE_SIZES.search(title):
++        return []
++    mentions = []
++    for chain in _SIZE_CHAIN_RE.finditer(title):
++        items = list(_SIZE_ITEM_RE.finditer(chain.group(0)))
++        last_unit = items[-1].group("unit") or items[-1].group("metric_unit")
++        if not last_unit:
++            continue  # "(25-Pack)", "110-Degree", "2 x 4": no length unit
++        if _NOT_SIZE_AFTER.match(title[chain.end() :]) or _NOT_SIZE_BEFORE.search(
++            title[: chain.start()]
++        ):
++            continue
++        sizes = []
++        for item in items:
++            if item.group("metric"):
++                mm = float(item.group("metric")) * _TO_MM[item.group("metric_unit").lower()]
++            else:
++                unit = (item.group("unit") or last_unit).lower()
++                value = _parse_inches(item.group("num").replace(" ", "-"))
++                if value is None:
++                    break
++                mm = value * _TO_MM.get(unit[:2], 25.4)
++            axis = item.group("axis")
++            sizes.append((round(mm, 2), axis.lower() if axis else None))
++        else:
++            mentions.append(sizes)
++    return mentions[0] if len(mentions) == 1 else []
++
++
+ def _parse_dims(specs: list[dict]) -> Dims | None:
+     for group in specs:
+         if group.get("key") != "Dimensions":
+diff --git a/tests/test_search.py b/tests/test_search.py
+index a148cb2..f9afde6 100644
+--- a/tests/test_search.py
++++ b/tests/test_search.py
+@@ -780,6 +780,83 @@ async def test_page_fetch_dims_uses_cheap_role(monkeypatch):
+     assert parts[0].dims_mm == Dims(w=127, d=38, h=45)
+ 
+ 
++# --- last resort: sizes printed in the title (integration finding #15) ---------------------
++
++
++def _title_candidate(name, **dims):
++    return _candidate(
++        name=name,
++        manufacturer="Acme",
++        model_no=None,
++        dims_mm=search.DimsMm(**{"w": None, "d": None, "h": None, **dims}),
++        listing_indexes=[],
++    )
++
++
++def test_dims_from_title_wdh_labels_and_flat_goods_rule():
++    labelled = _title_candidate("Acme 36 in. W x 24 in. D x 34.5 in. H Base Cabinet")
++    assert search._dims_from_title(labelled, [], None) == Dims(w=914.4, d=609.6, h=876.3)
++    # unlabelled: thinnest = depth off the mounting surface, longest runs vertical
++    plain = _title_candidate("Acme Wall Shelf")
++    listing = {"title": "Acme Wall Shelf 12 x 8 x 3 in., White"}
++    assert search._dims_from_title(plain, [listing], None) == Dims(w=203.2, d=76.2, h=304.8)
++
++
++def test_dims_from_title_fills_only_the_one_missing_side():
++    # the LLM published width and depth ("1.5 in. wide, 10 in. arm"); the title has the height
++    bracket = _title_candidate("Acme 8 in. Shelf Bracket", w=38.1, d=254.0)
++    assert search._dims_from_title(bracket, [], None) == Dims(w=38.1, d=254.0, h=203.2)
++    # a title size the LLM already has is not a new side
++    same = _title_candidate("Acme 10 in. Shelf Bracket", w=38.1, d=254.0)
++    assert search._dims_from_title(same, [], None) is None
++
++
++@pytest.mark.parametrize(
++    "name,dims",
++    [
++        ("Acme 12 in. x 8 in. Shelf Bracket", {}),  # two sides, the third unknown
++        ("Acme 3-3/4 in. Bar Pull", {"w": 146.0}),  # one size, two sides missing
++        ("Acme 3 in. (76 mm) Center-to-Center Bar Pull", {"w": 146.0, "d": 32.0}),  # spacing
++        ("Acme Mystery Pull", {"w": 146.0, "d": 32.0}),  # no size at all
++    ],
++)
++def test_dims_from_title_never_guesses_a_side(name, dims):
++    assert search._dims_from_title(_title_candidate(name, **dims), [], None) is None
++
++
++@pytest.mark.asyncio
++async def test_title_sizes_rescue_a_candidate_with_no_other_dims(monkeypatch):
++    """No Home Depot match, no page text: before, this candidate was dropped for "no dims"."""
++    listing = {**OTHER_LISTING, "title": "Acme 8 in. Heavy Duty Shelf Bracket, Black"}
++
++    async def fake_shopping(query):
++        return [listing]
++
++    async def fake_web_search(query, n=6):
++        return []
++
++    async def fake_fetch(url, max_chars=12000):
++        return None
++
++    async def fake_extract(role, messages, model_cls):
++        assert role == "extract"  # no page text, so no "cheap" dims call either
++        cand = _title_candidate("Acme Heavy Duty Shelf Bracket", w=38.1, d=254.0)
++        return _plan([cand.model_copy(update={"listing_indexes": [1]})])
++
++    monkeypatch.setattr(search.sellers, "shopping", fake_shopping)
++    monkeypatch.setattr(search.sellers, "stores", _no_stores)
++    monkeypatch.setattr(search.sellers, "home_depot_lookup", _no_hd)
++    monkeypatch.setattr(search.web, "search", fake_web_search)
++    monkeypatch.setattr(search.web, "fetch", fake_fetch)
++    monkeypatch.setattr(search.web, "url_alive", _dead_url_alive)
++    monkeypatch.setattr(search.llm, "extract", fake_extract)
++
++    [part] = await search.find_parts(_req(query="shelf bracket"))
++
++    assert part.dims_source == "title"
++    assert part.dims_mm == Dims(w=38.1, d=254.0, h=203.2)
++
++
+ # --- whole-result cache: a hit skips discovery + the LLM entirely --------------------------
+ 
+ 
+diff --git a/tests/test_sellers.py b/tests/test_sellers.py
+index e98c97b..9b6f5ea 100644
+--- a/tests/test_sellers.py
++++ b/tests/test_sellers.py
+@@ -593,3 +593,45 @@ def test_parse_dims_still_none_without_enough_sides():
+     ]
+     assert sellers._parse_dims(bracket) is None
+     assert sellers._parse_dims(hinge) is None
++
++
++# --- parse_title_sizes (search's last-resort dims, integration finding #15) ----------------
++
++
++@pytest.mark.parametrize(
++    "title,expected",
++    [
++        # the printed metric wins over the inch figure
++        ("(4-Pack) Solid Bar 3 in. (76 mm) Brushed Stainless Steel Pulls", [(76.0, None)]),
++        ("Hammercraft 3-2/5 in. (87 mm) Vintage Matte Black Drawer Pull", [(87.0, None)]),
++        ("3-3/4 in. Matte Black Solid Cabinet Bar Pulls (10-Pack)", [(95.25, None)]),
++        ("10 Pack 1.2 in. Champagne Bronze Round Cabinet Knobs", [(30.48, None)]),
++        ("Pull, 96mm", [(96.0, None)]),
++        ("1 Pair 22 in. Full Extension Drawer Slide Set", [(558.8, None)]),
++        # "x" chains share the last unit
++        ("12 in. x 8 in. Black Steel HD Shelf Bracket", [(304.8, None), (203.2, None)]),
++        ("10 in. x12 in. Black Steel Shelf Bracket", [(254.0, None), (304.8, None)]),
++        ("12 x 8 inch shelf bracket", [(304.8, None), (203.2, None)]),
++        ("10-1/4 in. x 1 in. 250 lbs. White Steel Shelf Bracket", [(260.35, None), (25.4, None)]),
++        (
++            "36 in. W x 24 in. D x 34.5 in. H Base Cabinet",
++            [(914.4, "w"), (609.6, "d"), (876.3, "h")],
++        ),
++        # screw spacing, radii and overlays are never the part's size
++        ("European Style 3 in. (76 mm) Center-to-Center Satin Nickel Bar Pull (25-Pack)", []),
++        ("Ravinte 30 Pack 5 Inch Cabinet Pulls 3 Inch Hole Center", [(127.0, None)]),
++        ("3-1/2 in. Bronze Door Hinge 5/8 in. Corner Radius", [(88.9, None)]),
++        ("5 Pair Face Frames 35 mm 105-Degree 1/2 in. Overlay Hinge", [(35.0, None)]),
++        ("Center Mount 22 in. Drawer Slide", [(558.8, None)]),  # "center" alone is fine
++        # conservative: alternatives, gauges, unitless numbers, several separate sizes
++        ("Step Edge 3 or 3-3/4 in. (76/96 mm) Matte Black Drawer Pull", []),
++        ("#8 x 1-1/4 in. Phillips Wood Screw", []),
++        ("5,000 BTU 115-Volt Window Air Conditioner cools 150 sq. ft.", []),
++        ("2 in 1 hinge", []),
++        ("Acme 5 in. Hanger for 6 in. Gutters", []),
++        (None, []),
++        ("", []),
++    ],
++)
++def test_parse_title_sizes(title, expected):
++    assert sellers.parse_title_sizes(title) == expected
+-- 
+2.50.1 (Apple Git-155)
+

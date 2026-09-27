@@ -1,0 +1,11 @@
+retexture: 162 parts, modes auto, hf, llm_scad (offline: no LLM/Hunyuan calls)
+retexture: {'kept': 6, 'done': 230} in 48.3 s (0.20 s a model), 0 CAD models turned around, $0 (no paid calls)
+real 49.34
+user 44.78
+sys 1.72
+  1-12-scale-mini-gym-equipment-set-barbell-bench-pres auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.05 s  (the template plan isn't cached)
+  black-decker-bcd6w-f0c793                            auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.17 s  (the template plan isn't cached)
+  everbilt-d94220e-zp-w-d0e252                         auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.16 s  (the template plan isn't cached)
+  everbilt-d94222e-zp-w-788401                         auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.43 s  (the template plan isn't cached)
+  everbilt-h1530se-np-cp-1e3dbf                        auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.17 s  (the template plan isn't cached)
+  mainstays-3-2-cu-ft-2-door-refrigerator-with-freezer auto     llm     kept  cut=-      key=- body=- -       photo_tris=-      0.08 s  (the template plan isn't cached)

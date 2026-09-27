@@ -1,0 +1,326 @@
+From d9962f155a71d6fb86265981cc78115c931bf5a2 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:23:57 -0400
+Subject: [PATCH 10/12] fix(replace job): search for the gap's size when
+ nothing fits; a model URL never 404s; "next one" with nothing in the gap
+ places one
+
+Live on :8005, "the fridge is too small for us, get us a bigger one" (Grok: replace_component,
+query "bigger fridge") found 36-60 in fridges for the kitchen's 80 cm fridge gap (x1.63) and
+stopped. Now:
+- When nothing that came back fits or is tight, the job searches once more for parts of the
+  gap's size: the widest standard width of the kind that fits it ("30 inch fridge"; replace.sized_query,
+  PRIORS widths_in), and uses those when one fits.
+- The plain kind's fallback search starts only when the named search is slow (45 s) or comes back
+  empty, not alongside every named search (SerpApi quota).
+- GET /parts/{id}/model.glb builds a searched part's model on first request (assets.resolve_shared,
+  90 s cap, 504 past it) instead of a 404 while the background worker hasn't got to it.
+- "next one" / "option 2" / "put it in" swap (cycle_model) only when a model stands in the gap;
+  otherwise place_part (after a job that stopped at the pick, nothing is there).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/agent.py           |  2 +-
+ server/app.py             | 17 +++++++++-
+ server/replace.py         | 16 ++++++++-
+ server/replace_job.py     | 65 +++++++++++++++++++++++++----------
+ tests/test_replace_job.py | 71 +++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 150 insertions(+), 21 deletions(-)
+
+diff --git a/server/agent.py b/server/agent.py
+index 6cc5906..4e3c4d9 100644
+--- a/server/agent.py
++++ b/server/agent.py
+@@ -1584,7 +1584,7 @@ async def _replace_tool(session: Session, name: str, args: dict[str, Any], ctx:
+     if not 0 <= index < n or parts[index] is None:
+         return {"error": f"there's no option {index + 1}"}, None, None
+     part = parts[index]
+-    swap = name == "cycle_in_gap" or (say_option and _model_in_gap(session, ids, ctx))
++    swap = _model_in_gap(session, ids, ctx)  # nothing in the gap yet (a stopped job): place it
+     f, action = _place_action(session, c, cav, index, n, part, swap=swap)
+     session.gap_index = index
+     session.selected_part_id = part.id
+diff --git a/server/app.py b/server/app.py
+index 96c664e..107ff02 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -1,5 +1,6 @@
+ """FastAPI routes for the AirTool parts server (plan §1b endpoint table)."""
+ 
++import asyncio
+ import base64
+ import hashlib
+ import json
+@@ -182,8 +183,22 @@ def get_part_json(part_id: str) -> FileResponse:
+     return _serve_part_file(part_id, "part.json", "application/json")
+ 
+ 
++MODEL_ON_DEMAND_S = 90.0  # one LLM template call + build; a queued Groq call can take a minute
++
++
+ @app.get("/parts/{part_id}/model.glb")
+-def get_part_model(part_id: str) -> FileResponse:
++async def get_part_model(part_id: str) -> FileResponse:
++    """The part's GLB. A searched part whose model isn't built yet (the search's background worker
++    hasn't got to it; "next one" after a replace job that stopped) is built now, once
++    (assets.resolve_shared), so a candidate's model_url never 404s."""
++    pdir = _validated_part_dir(part_id)
++    if not (pdir / "model.glb").exists():
++        part = jobs.load_part(part_id)
++        if part is not None:
++            try:
++                await asyncio.wait_for(assets.resolve_shared(part), MODEL_ON_DEMAND_S)
++            except TimeoutError as exc:
++                raise HTTPException(504, f"the model for {part_id!r} is still being built") from exc
+     return _serve_part_file(part_id, "model.glb", "model/gltf-binary")
+ 
+ 
+diff --git a/server/replace.py b/server/replace.py
+index bcabf5a..a4e6e56 100644
+--- a/server/replace.py
++++ b/server/replace.py
+@@ -233,12 +233,14 @@ KINDS: dict[str, tuple[str, ...]] = {
+     ),
+ }
+ 
+-# Inches. plausible_in: what a real opening for the kind measures, per axis (w across, h, d).
++# Inches. plausible_in: what a real opening for the kind measures, per axis (w across, h, d);
++# widths_in: the kind's standard widths (a size-anchored search, sized_query).
+ # standards: (axis, inches, words) in order of preference; the first that leaves every axis
+ # plausible wins.
+ PRIORS: dict[str, dict[str, Any]] = {
+     "dishwasher": {
+         "plausible_in": {"w": (20.0, 26.0), "h": (32.0, 36.5), "d": (21.0, 28.0)},
++        "widths_in": [18, 24],
+         "standards": [
+             ("h", 34.5, "34½″ dishwasher opening"),
+             ("w", 24.0, "24″ dishwasher opening"),
+@@ -246,10 +248,12 @@ PRIORS: dict[str, dict[str, Any]] = {
+     },
+     "range": {
+         "plausible_in": {"w": (19.0, 37.0), "h": (34.0, 50.0), "d": (22.0, 30.0)},
++        "widths_in": [20, 24, 30, 36],
+         "standards": [("w", 30.0, "30″ range"), ("w", 36.0, "36″ range"), ("w", 24.0, "24″ range")],
+     },
+     "fridge": {
+         "plausible_in": {"w": (23.0, 40.0), "h": (60.0, 76.0), "d": (24.0, 36.0)},
++        "widths_in": [24, 28, 30, 33, 36],
+         "standards": [
+             ("w", 36.0, "36″ fridge opening"),
+             ("w", 33.0, "33″ fridge opening"),
+@@ -258,6 +262,7 @@ PRIORS: dict[str, dict[str, Any]] = {
+     },
+     "base cabinet": {
+         "plausible_in": {"w": (9.0, 60.0), "h": (30.0, 36.5), "d": (20.0, 28.0)},
++        "widths_in": [12, 15, 18, 21, 24, 27, 30, 33, 36, 42, 48],
+         "standards": [
+             ("h", 34.5, "34½″ base cabinet"),
+             ("d", 24.0, "24″-deep base cabinet"),
+@@ -333,6 +338,15 @@ def scale_prior(kind: str | None, gap_m: tuple[float, float, float]) -> ScalePri
+     return best
+ 
+ 
++def sized_query(kind: str | None, noun: str, cavity: Cavity) -> str:
++    """A search for parts of the gap's size: the widest standard width of the kind that fits it
++    ("30 inch fridge" for an 80 cm fridge gap), else the gap's whole inches."""
++    w_in = cavity.size_m()[0] / IN
++    widths = [w for w in (PRIORS.get(kind or "") or {}).get("widths_in", []) if w <= w_in - 0.25]
++    size = max(widths) if widths else int(w_in)
++    return f"{size} inch {noun}"
++
++
+ def _say_size(axis: str, inches: float) -> str:
+     """ "the opening is 34 and a half inches tall" (what LocalIntents / _SCALE_RE take)."""
+     whole = int(inches)
+diff --git a/server/replace_job.py b/server/replace_job.py
+index f473ed8..f9a5a67 100644
+--- a/server/replace_job.py
++++ b/server/replace_job.py
+@@ -48,6 +48,7 @@ MODEL_CAP_S = 60.0  # the pick's GLB: one LLM call + template build, or a queued
+ UPGRADE_CAP_S = 25.0  # one more try at a better model than the proxy box
+ MORE_MODELS_CAP_S = 45.0  # the next two candidates' GLBs, after the pick is in the gap
+ PROGRESS_EVERY_S = 4.0
++FALLBACK_AFTER_S = 45.0  # a named search still running: start the plain kind alongside
+ 
+ # --- the phrases (the fast path; free phrasing goes to the LLM's replace_component tool) ------
+ 
+@@ -244,7 +245,7 @@ async def _chain(run: runjob.Run, session: Any, st: State) -> None:
+         "remove": (lambda: _remove(session, st), 5.0),
+         "measure": (lambda: _measure(session, st, run.context), 5.0),
+         "scale": (lambda: _scale(session, st, run.context), 5.0),
+-        "search": (lambda: _search(run, by["search"], session, st), SEARCH_CAP_S + 15),
++        "search": (lambda: _search(run, by["search"], session, st), 2 * SEARCH_CAP_S + 15),
+         "pick": (lambda: _pick(session, st), 5.0),
+         "model": (lambda: _model(st), MODEL_CAP_S + UPGRADE_CAP_S + 5),
+         "place": (lambda: _place(session, st), 5.0),
+@@ -374,36 +375,64 @@ async def _scale(session: Any, st: State, context: dict[str, Any]):
+     return st.scale_note, [action], None
+ 
+ 
++async def _await_search(run, step, job, what: str, t0: float, cap: float, tick=None):
++    """A search job, polled with progress lines (job_step running) until it's done or `cap`;
++    `tick(elapsed)` runs on every progress line."""
++    while True:
++        cur = jobs.get(job.id) or job
++        if cur.status in ("done", "failed") or time.monotonic() - t0 >= cap:
++            return cur
++        await jobs.wait(cur.id, min(PROGRESS_EVERY_S, max(0.01, cap - (time.monotonic() - t0))))
++        cur = jobs.get(cur.id) or cur
++        if cur.status == "running":
++            stage = cur.stage or "searching"
++            _progress(run, step, f"Searching for {what} · {stage} · {time.monotonic() - t0:.0f} s")
++            if tick is not None:
++                tick(time.monotonic() - t0)
++
++
++def _fitting(job, cav: Cavity) -> bool:
++    return any(
++        replace.fits_word(replace.fit(p.dims_mm, cav)) in ("fits", "tight") for p in job.candidates
++    )
++
++
+ async def _search(run: runjob.Run, step: dict[str, Any], session: Any, st: State):
++    """The user's (or the kind's) query fitted to the gap; the plain kind alongside as a fallback
++    for a fresh query that comes back empty; and when nothing that came back fits, one more search
++    for parts of the gap's size ("30 inch fridge")."""
+     cav = st.cavity
+     plain = replace._norm(st.label)
+     query = st.want.query or plain
+     what = _plural(query)
+     searches = [jobs.start_search(SearchRequest(query=query, cavity=cav))]
+-    if (
+-        replace._norm(query) != plain
+-    ):  # the plain kind as a fallback ("range" for "30 inch induction")
+-        searches.append(jobs.start_search(SearchRequest(query=plain, cavity=cav)))
++    fallback_ok = replace._norm(query) != plain  # "range" for "30 inch induction range"
++
++    def fallback(elapsed: float = FALLBACK_AFTER_S) -> None:
++        """The plain kind, started only once the named search is slow (SerpApi quota is tight)."""
++        if fallback_ok and len(searches) == 1 and elapsed >= FALLBACK_AFTER_S:
++            searches.append(jobs.start_search(SearchRequest(query=plain, cavity=cav)))
++
+     t0 = time.monotonic()
+     _progress(run, step, f"Searching for {what} that fit {_gap_words(cav)}.")
+-    while True:
+-        first = jobs.get(searches[0].id) or searches[0]
+-        if first.status in ("done", "failed"):
+-            break
+-        elapsed = time.monotonic() - t0
+-        if elapsed >= SEARCH_CAP_S:
+-            break
+-        await jobs.wait(first.id, PROGRESS_EVERY_S)
+-        first = jobs.get(first.id) or first
+-        if first.status == "running":
+-            stage = first.stage or "searching"
+-            _progress(run, step, f"Searching for {what} · {stage} · {time.monotonic() - t0:.0f} s")
+-    job = jobs.get(searches[0].id) or searches[0]
++    job = await _await_search(run, step, searches[0], what, t0, SEARCH_CAP_S, tick=fallback)
++    if not (job.status == "done" and job.candidates):
++        fallback()
+     if not (job.status == "done" and job.candidates) and len(searches) > 1:
+         fallback = await jobs.wait(searches[1].id, max(1.0, SEARCH_CAP_S - (time.monotonic() - t0)))
+         if fallback is not None and fallback.status == "done" and fallback.candidates:
+             st.search_note = f" No {what} came back in time; these are plain {_plural(plain)}."
+             job, what = fallback, _plural(plain)
++    if job.status == "done" and job.candidates and not _fitting(job, cav):
++        sized = replace.sized_query(st.kind, plain, cav)
++        if replace._norm(sized) != replace._norm(query):
++            _progress(run, step, f"None of those fit; searching for {_plural(sized)}.")
++            retry = jobs.start_search(SearchRequest(query=sized, cavity=cav))
++            t1 = time.monotonic()
++            again = await _await_search(run, step, retry, _plural(sized), t1, SEARCH_CAP_S)
++            if again.status == "done" and again.candidates and _fitting(again, cav):
++                st.search_note = f" None of the {what} fit; these are {_plural(sized)}."
++                job, what = again, _plural(sized)
+     if not (job.status == "done" and job.candidates):
+         if job.status == "running":
+             raise runjob.Stop(f"The search for {what} took too long; say find one that fits.")
+diff --git a/tests/test_replace_job.py b/tests/test_replace_job.py
+index 5a1090b..10e6990 100644
+--- a/tests/test_replace_job.py
++++ b/tests/test_replace_job.py
+@@ -125,6 +125,8 @@ def shop(monkeypatch):
+         found = [p.model_copy(deep=True) for p in answers.get(req.query, DISHWASHERS)]
+         job = Job(id=uuid.uuid4().hex[:12], status="done", query=req.query)
+         job.candidates = search.fit_to_cavity(found, req.cavity)
++        for part in job.candidates:  # like jobs._run_search: part.json on disk, the GLB not yet
++            jobs.save_part(part)
+         jobs._jobs[job.id] = job
+         jobs._done_events[job.id] = asyncio.Event()
+         jobs._done_events[job.id].set()
+@@ -701,3 +703,72 @@ async def test_a_proxy_box_gets_one_more_try_at_a_real_model(monkeypatch):
+     assert json.loads((pdir / "part.json").read_text())["asset"]["tier"] == "llm"
+     await assets.upgrade_proxy(part)  # once per part per run
+     assert tries == [part.id]
++
++
++@pytest.mark.asyncio
++async def test_when_nothing_fits_it_searches_for_the_gaps_size(monkeypatch, shop):
++    """Live on :8005: "the fridge is too small, get us a bigger one" found 36-60 in fridges for the
++    kitchen's 80 cm fridge gap (x1.63). Nothing fit, so it searches for "30 inch fridge" once more."""
++    big = [
++        _part("samsung-rf32", "Samsung", "RF32CG5D00SR", 914.0, 1778.0, 921.0, 1599.0),
++        _part("forno-ffffd", "Forno", "FFFFD1722", 1518.0, 2134.0, 754.0, 2899.0),
++    ]
++    thirty = [_part("ge-gie18gs", "GE", "GIE18GSNRSS", 756.0, 1683.0, 822.0, 899.0)]
++    real = jobs.start_search
++
++    def by_query(req):
++        job = real(req)
++        found = {"bigger fridge": big, "30 inch fridge": thirty}.get(req.query)
++        if found is not None:
++            job.candidates = search.fit_to_cavity([p.model_copy() for p in found], req.cavity)
++        return job
++
++    monkeypatch.setattr(jobs, "start_search", by_query)
++
++    async def grok(role, messages, tools=None, **kw):
++        args = {"component": "fridge", "query": "bigger fridge", "max_price_usd": None}
++        return _tool_call("replace_component", args)
++
++    monkeypatch.setattr(agent, "chat", grok)
++    r = await _say("the fridge is too small for us, get us a bigger one", scale=1.63)
++    run = await _finish(_run_id(r))
++    assert [q.query for q in shop["search"]] == ["bigger fridge", "30 inch fridge"]
++    steps = {s["name"]: s for s in run.steps}
++    assert steps["search"]["spoken"].endswith(
++        "None of the bigger fridges fit; these are 30 inch fridges."
++    )
++    acts = runjob.body(run, 0)["actions"]
++    assert _named(acts, "place_part")[0]["args"]["part_id"] == "ge-gie18gs"
++    progress = [a["args"]["spoken"] for a in acts if a["name"] == "job_step"]
++    assert "None of those fit; searching for 30 inch fridges." in progress
++
++
++@pytest.mark.asyncio
++async def test_after_a_stopped_job_next_one_puts_a_model_in(monkeypatch, shop):
++    """Nothing stands in the gap after a job that stopped at the pick: "next one" places a model
++    (place_part, which loads by URL) instead of swapping one that isn't there (cycle_model)."""
++    monkeypatch.setattr(agent, "chat", _no_llm_chat)
++    r = await _say("replace the dishwasher", scale=1.2)
++    run = await _finish(_run_id(r))
++    assert run.status == "stopped"
++    ids = agent._sessions["auto"].candidate_ids
++    r = await _say("next one", scale=1.2, removed=["dw1"], candidate_ids=ids)
++    assert r["actions"][0]["name"] == "place_part"
++
++
++def test_a_candidates_model_is_built_on_first_request(monkeypatch, shop):
++    """GET /parts/{id}/model.glb for a searched part whose GLB isn't built yet builds it (once)."""
++    from fastapi.testclient import TestClient
++
++    from server.app import app
++
++    part = DISHWASHERS[2].model_copy()
++    jobs.save_part(part)  # part.json only, like a fresh search's candidate
++    with TestClient(app) as client:
++        first = client.get(f"/parts/{part.id}/model.glb")
++        again = client.get(f"/parts/{part.id}/model.glb")
++        missing = client.get("/parts/no-such-part/model.glb")
++    assert first.status_code == again.status_code == 200
++    assert first.content[:4] == b"glTF"
++    assert shop["models"] == [part.id]
++    assert missing.status_code == 404
+-- 
+2.50.1 (Apple Git-155)
+

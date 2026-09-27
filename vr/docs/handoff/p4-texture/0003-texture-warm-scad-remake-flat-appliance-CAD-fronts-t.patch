@@ -1,0 +1,116 @@
+From 9a4cafda50118705c7c5bf7a3e754ffa82009b90 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:09:08 -0400
+Subject: [PATCH 3/6] texture: warm --scad --remake-flat (appliance CAD fronts
+ that are one flat slab, made again)
+
+The relief check names appliances only (dishwasher, range, fridge, microwave, hood, ...); "cabinet"
+matched cabinet knobs and under-cabinet lights. `--scad --remake-flat` moves a flat-front
+appliance's scad.glb/scad.json aside (scad.flat.*, to roll back) and makes it again with the
+front-and-back prompt and the relief pass; `--estimate` lists them and prices it (demo parts: 3,
+~$0.10; all 81 CAD models on disk: 25 flat fronts). Live check on the Frigidaire dishwasher with
+grok-4.7 low: the first answer was still flush, the relief pass made the handle bar and control
+strip stand proud (front view 25 % off-plane), 2 calls, 102 s, $0.047, not turned.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/meshgen.py |  2 +-
+ server/warm.py    | 41 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/server/meshgen.py b/server/meshgen.py
+index b41a6eb..34e77a2 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -857,7 +857,7 @@ RELIEF_NOTE = (
+ # Products whose front carries handles / controls / doors (a flat front is a modelling miss).
+ _RELIEF_NAME = re.compile(
+     r"\b(?:dishwasher|range|oven|stove|cooktop|refrigerator|fridge|freezer|microwave|hood|washer"
+-    r"|dryer|air conditioner|dehumidifier|wine cooler|beverage|ice maker|cabinet|vanity|dresser)\b",
++    r"|dryer|air conditioner|dehumidifier|wine cooler|beverage cooler|ice maker)\b",
+     re.IGNORECASE,
+ )
+ 
+diff --git a/server/warm.py b/server/warm.py
+index be5be77..f8cb9e2 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -9,6 +9,7 @@ scripted demo needs is cached locally; only the live search is lost").
+     uv run python -m server.warm --scad [--sites kitchen] [--scad-match window] [--scad-jobs 3]
+         [--scad-parts id,id] [--no-demo-parts] [--retry-failed] [--estimate]
+     uv run python -m server.warm --retexture [--parts id,id] [--match fridge] [--modes auto,hf,llm_scad]
++    uv run python -m server.warm --scad --remake-flat [--estimate]
+ 
+ For each `{"query": ..., "measurement": {...}}` entry: runs the same `find_parts` +
+ `resolve_asset` path `jobs.py` runs for a live search (sequential -- `assets.py` rate-limits the
+@@ -78,6 +79,8 @@ import logging
+ import time
+ from pathlib import Path
+ 
++import trimesh
++
+ from server import agent, assets, bom, cache, catalog, jobs, labels, meshgen, search, voice
+ from server.config import get_settings
+ from server.models import Job, Measurement, Part, SearchRequest
+@@ -331,6 +334,31 @@ async def scad_parts(
+     return parts
+ 
+ 
++def set_aside_flat(parts: list[Part], dry_run: bool = False) -> list[str]:
++    """texture: the appliances whose CAD front is one flat slab (meshgen.front_relief under
++    RELIEF_MIN: handles and controls painted flush, so the front reads as a back). Their scad.glb
++    and scad.json move to scad.flat.glb / scad.flat.json (kept to roll back), so `--scad` makes
++    them again with the front-and-back prompt and the relief pass. `dry_run`: only list them."""
++    flat = []
++    for part in parts:
++        out = assets.scad_path(part.id)
++        if not out.exists() or not meshgen.wants_relief(part):
++            continue
++        try:
++            relief = meshgen.front_relief(trimesh.load(out, force="scene"))
++        except Exception:  # noqa: BLE001 -- an unreadable GLB: made again too
++            relief = 0.0
++        if relief >= meshgen.RELIEF_MIN:
++            continue
++        flat.append(part.id)
++        if not dry_run:
++            out.replace(out.with_name("scad.flat.glb"))
++            rec = meshgen.scad_sidecar(out, "json")
++            if rec.exists():
++                rec.replace(out.with_name("scad.flat.json"))
++    return flat
++
++
+ def scad_estimate(todo: int, jobs_n: int) -> dict:
+     """cad: {seconds, usd} to make `todo` CAD models `jobs_n` at a time with the configured
+     model and effort (meshgen.SCAD_TYPICAL)."""
+@@ -597,6 +625,11 @@ def main() -> None:
+     parser.add_argument(
+         "--estimate", action="store_true", help="with --scad: print the plan and estimate only"
+     )
++    parser.add_argument(
++        "--remake-flat",
++        action="store_true",
++        help="with --scad: remake appliance CAD models whose front is flat (spends xAI credit)",
++    )
+     parser.add_argument(
+         "--retexture",
+         action="store_true",
+@@ -629,6 +662,14 @@ def main() -> None:
+ 
+         async def scad() -> None:
+             parts = await scad_parts(sites, ids, args.scad_match, demo=not args.no_demo_parts)
++            if args.remake_flat:  # texture: flat CAD fronts made again (prompt + relief pass)
++                flat = set_aside_flat(parts, dry_run=args.estimate)
++                print(f"scad: {len(flat)} appliance CAD models with a flat front to make again")
++                parts = [p for p in parts if p.id in flat]
++                if args.estimate:  # nothing moved aside: count them as to-make
++                    est = scad_estimate(len(parts), args.scad_jobs)
++                    print(f"scad: ~{est['seconds'] / 60:.0f} min, ~${est['usd']:.2f}")
++                    return
+             await warm_scad(parts, args.scad_jobs, args.retry_failed, args.estimate)
+ 
+         asyncio.run(scad())
+-- 
+2.50.1 (Apple Git-155)
+

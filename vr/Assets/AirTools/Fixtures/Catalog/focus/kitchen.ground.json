@@ -1,0 +1,216 @@
+{
+ "site": "(fixture: the site asked for)",
+ "environment": "kitchen",
+ "title": "Kitchen",
+ "focus": "ground",
+ "foci": [
+  "wall",
+  "ground",
+  "ceiling",
+  "counter",
+  "opening"
+ ],
+ "generated_at": "2026-09-27T00:00:00+00:00",
+ "categories": [
+  {
+   "id": "dishwashers",
+   "title": "Dishwashers",
+   "icon": "washing-machine",
+   "query": "dishwasher",
+   "items": [
+    {
+     "part_id": "frigidaire-fdpc4221as-341c87",
+     "name": "24 in. Front Control Smart Built-In Tall Tub 62 dBA Dishwasher in Stainless Steel",
+     "price_usd": 329.0,
+     "dims_mm": {
+      "w": 609.6,
+      "h": 889.0,
+      "d": 635.0
+     },
+     "image_url": "/parts/frigidaire-fdpc4221as-341c87/image.jpg",
+     "model_url": "/parts/frigidaire-fdpc4221as-341c87/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "frigidaire-fdph4316as-8a12e1",
+     "name": "24 in Top Control Built in-Tall Tub 52 dBA Dishwasher with Plastic Tub in Stainless Steel with 4-cycles",
+     "price_usd": 399.0,
+     "dims_mm": {
+      "w": 609.6,
+      "h": 889.0,
+      "d": 635.0
+     },
+     "image_url": "/parts/frigidaire-fdph4316as-8a12e1/image.jpg",
+     "model_url": "/parts/frigidaire-fdph4316as-8a12e1/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "whirlpool-wdp540hamw-cd82dd",
+     "name": "24 in. Top Control Built-In Tall Tub 55 dBA Dishwasher in White with Boost Cycle and Triple Filtration Wash, Eco Series",
+     "price_usd": 459.0,
+     "dims_mm": {
+      "w": 606.3,
+      "h": 876.3,
+      "d": 622.3
+     },
+     "image_url": "/parts/whirlpool-wdp540hamw-cd82dd/image.jpg",
+     "model_url": "/parts/whirlpool-wdp540hamw-cd82dd/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "fridges",
+   "title": "Fridges",
+   "icon": "snowflake",
+   "query": "fridge",
+   "items": [
+    {
+     "part_id": "frigidaire-efr751-2646f5",
+     "name": "7.5 cu. ft. Mini Refrigerator in Platinum with Top Freezer",
+     "price_usd": 218.0,
+     "dims_mm": {
+      "w": 546.1,
+      "h": 1409.7,
+      "d": 568.96
+     },
+     "image_url": "/parts/frigidaire-efr751-2646f5/image.jpg",
+     "model_url": "/parts/frigidaire-efr751-2646f5/model.glb",
+     "model_ready": true,
+     "seller": "Walmart"
+    },
+    {
+     "part_id": "insignia-30-in-wide-18-cu-ft-top-freezer-refrigerator-with-energy-star-certification-542d52",
+     "name": "Insignia 30 in. Wide 18 Cu. Ft. Top-Freezer Refrigerator with ENERGY STAR Certification",
+     "price_usd": 549.99,
+     "dims_mm": {
+      "w": 1692.0,
+      "h": 779.0,
+      "d": 754.0
+     },
+     "image_url": "/parts/insignia-30-in-wide-18-cu-ft-top-freezer-refrigerator-with-energy-star-certification-542d52/image.jpg",
+     "model_url": "/parts/insignia-30-in-wide-18-cu-ft-top-freezer-refrigerator-with-energy-star-certification-542d52/model.glb",
+     "model_ready": true,
+     "seller": "Best Buy"
+    },
+    {
+     "part_id": "lg-lhfs28xbs-d1a3ec",
+     "name": "36 in. 28 cu. ft. 3-Door French Door Refrigerator w/ Ice and Water Dispenser and Craft Ice in PrintProof Stainless Steel",
+     "price_usd": 1999.0,
+     "dims_mm": {
+      "w": 908.05,
+      "h": 1771.65,
+      "d": 920.75
+     },
+     "image_url": "/parts/lg-lhfs28xbs-d1a3ec/image.jpg",
+     "model_url": "/parts/lg-lhfs28xbs-d1a3ec/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "ranges",
+   "title": "Ranges & ovens",
+   "icon": "oven",
+   "query": "30 in. electric range",
+   "items": [
+    {
+     "part_id": "frigidaire-gcri306hbf-32db74",
+     "name": "Gallery 30 in. 4 Element Free-Standing Induction Range in Stainless Steel with Air Fry and Total Convection",
+     "price_usd": 1049.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 898.52,
+      "d": 660.4
+     },
+     "image_url": "/parts/frigidaire-gcri306hbf-32db74/image.jpg",
+     "model_url": "/parts/frigidaire-gcri306hbf-32db74/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "ge-phs700ayfs-5546df",
+     "name": "30 in Smart Slide-In Induction and Convection Range with No Preheat Air Fry and EasyWash️ Oven tray",
+     "price_usd": 1299.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 942.97,
+      "d": 727.07
+     },
+     "image_url": "/parts/ge-phs700ayfs-5546df/image.jpg",
+     "model_url": "/parts/ge-phs700ayfs-5546df/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "frigidaire-gcfi3070bf-2cb48a",
+     "name": "Gallery 30 in. 5 Element Slide-In Induction Range in Smudge-Proof Stainless Steel with Stone-Baked Pizza",
+     "price_usd": 1649.0,
+     "dims_mm": {
+      "w": 762.0,
+      "h": 898.52,
+      "d": 660.4
+     },
+     "image_url": "/parts/frigidaire-gcfi3070bf-2cb48a/image.jpg",
+     "model_url": "/parts/frigidaire-gcfi3070bf-2cb48a/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    }
+   ]
+  },
+  {
+   "id": "cabinet-hardware",
+   "title": "Cabinet hardware",
+   "icon": "hand-grabbing",
+   "query": "cabinet pull",
+   "items": [
+    {
+     "part_id": "everbilt-h32636e-np-cp-c7a101",
+     "name": "1 Pair Frameless 35 mm 110-Degree Full Overlay Soft Close Nickel Cabinet Hinge (2 Pieces)",
+     "price_usd": 14.32,
+     "dims_mm": {
+      "w": 14.99,
+      "h": 13.97,
+      "d": 99.82
+     },
+     "image_url": "/parts/everbilt-h32636e-np-cp-c7a101/image.jpg",
+     "model_url": "/parts/everbilt-h32636e-np-cp-c7a101/model.glb",
+     "model_ready": true,
+     "seller": "Home Depot"
+    },
+    {
+     "part_id": "emtek-86013-07030d",
+     "name": "Emtek 86013 Providence Knob",
+     "price_usd": 10.41,
+     "dims_mm": {
+      "w": 25.4,
+      "h": 15.88,
+      "d": 25.4
+     },
+     "image_url": "/parts/emtek-86013-07030d/image.jpg",
+     "model_url": "/parts/emtek-86013-07030d/model.glb",
+     "model_ready": true,
+     "seller": "Trademark Hardware"
+    },
+    {
+     "part_id": "pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608",
+     "name": "Pivot Door Hinges - Rear Pivoting - High Quality Steel - Statuary Bronze Finish",
+     "price_usd": 7.59,
+     "dims_mm": {
+      "w": 9.53,
+      "h": 53.98,
+      "d": 2.38
+     },
+     "image_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/image.jpg",
+     "model_url": "/parts/pivot-door-hinges-rear-pivoting-high-quality-steel-statuary-bronze-finish-1e8608/model.glb",
+     "model_ready": true,
+     "seller": "Hinge Outlet"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,2026 @@
+From 2a94b472aa3a6117e87796ac9a68361f53d3ea5f Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 00:38:35 -0400
+Subject: [PATCH 1/3] feat(cad): LLM+CAD made honest and fast -- stale
+ stand-ins remade, asset.cad status, run records, warm --scad
+
+- Stale llm_scad variants: a template stored while OpenSCAD was missing, offline, lost to a restart, or before its
+  CAD model landed (warm --scad in another process) is remade on the next request (assets.scad_stale; the endpoints
+  wait up to 15 s for the rebuild). A failure counts for its model for an hour (scad.failed.json).
+- asset.cad on llm_scad answers (part.json?mode=, POST /parts/{id}/model + top-level cad, X-Asset-Cad):
+  {status writing|ready|failed|none, started_at, eta_s, made_by, seconds, cost_usd, reason}; cross-process via
+  scad.writing.json. At most 2 live CAD runs at once.
+- meshgen.grok_scad_run: records calls, fixes, seconds, cost, tokens and the raw bbox error (scad.json /
+  scad.failed.json); OpenSCAD errors now carry the model-side TRACE lines (the library's line numbers were shown as
+  the model's); ASSET_SCAD_EFFORT (default "low"), ASSET_SCAD_FIXES, ASSET_SCAD_SAMPLES; profile-based ETA/cost table.
+- Default writer: grok-4.7 at low effort (measured 34-127 s, $0.016-0.056 a part vs 216-400 s, $0.10-0.20 at its
+  default effort, similar geometry); grok-4.20 non-reasoning is 9-19 s but flatter shapes.
+- python -m server.warm --scad: catalog items with a model + SCAD_DEMO_PARTS, 3 at a time, resumable, failures
+  recorded, variant rebuilt, --estimate / --retry-failed / --sites / --scad-match / --scad-parts.
+- server/experiments/scad_bench.py (per-model timing) and cad_compare.py (side-by-side renders + table).
+- tests/test_cad.py: 15 (OpenSCAD and the LLM stubbed) + 1 opt-in live.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/api.md                       |  35 +-
+ server/app.py                     |  31 +-
+ server/assets.py                  | 158 ++++++++-
+ server/config.py                  |   8 +
+ server/experiments/cad_compare.py | 200 +++++++++++
+ server/experiments/scad_bench.py  |  74 ++++
+ server/meshgen.py                 | 375 +++++++++++++++++++--
+ server/models.py                  |   4 +
+ server/warm.py                    | 219 +++++++++++-
+ tests/test_cad.py                 | 539 ++++++++++++++++++++++++++++++
+ 10 files changed, 1581 insertions(+), 62 deletions(-)
+ create mode 100644 server/experiments/cad_compare.py
+ create mode 100644 server/experiments/scad_bench.py
+ create mode 100644 tests/test_cad.py
+
+diff --git a/docs/api.md b/docs/api.md
+index 251cc7c..e0255f5 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -58,7 +58,7 @@ The headset can choose how the models are made (Settings ▸ 3D models) and comp
+ |---|---|---|
+ | `"auto"` | today's order above (`cad` → `llm` / moulded: `scad` → `ai_mesh` → `proxy`) | as above |
+ | `"hf"` | `ai_mesh` (Hunyuan3D-2.1 image-to-3D, every part with a photo, photo-textured) → `llm` template → `proxy` | `"hf:tencent/Hunyuan3D-2.1"` |
+-| `"llm_scad"` | `scad` (Grok writes OpenSCAD, role `asset_scad`, rendered by the `openscad` binary, photo-textured) → `llm` template → `proxy` | `"xai:grok-4.7 + openscad"` |
++| `"llm_scad"` | `scad` (Grok writes OpenSCAD, role `asset_scad`, rendered by the `openscad` binary, photo-textured) → `llm` template → `proxy` | `"xai:grok-4.7 + openscad"` (the model that wrote it, from its `scad.json`) |
+ 
+ - **Both variants per part.** Each mode's model is kept next to `model.glb`: `model.hf.glb`, `model.scad.glb`,
+   `model.auto.glb` (+ `asset.<hf|scad|auto>.json`). `model.glb` and `part.json`'s `asset` are the mode asked for last
+@@ -72,8 +72,37 @@ The headset can choose how the models are made (Settings ▸ 3D models) and comp
+   a ZeroGPU quota error (5 min doubling to 1 h); an `"hf"` request that got a stand-in (quota spent) jumps the queue
+   and its model is replaced once the quota allows. `HF_WARM=false` turns the queue off; never OFFLINE (a cached Hunyuan
+   mesh still serves offline). `python -m server.warm --hf` pre-generates for every cached part.
+-- **OpenSCAD** takes minutes per part (Grok's generate / fix / fit loop), so an `"llm_scad"` request without a cached
+-  `scad.glb` starts it in the background and serves the template (noted) meanwhile; the next request gets the CAD model.
++- **OpenSCAD** takes about a minute per part (Grok's generate / fix / fit loop; see "CAD models" below), so an
++  `"llm_scad"` request without a cached `scad.glb` starts it in the background and serves the template (noted, with
++  `asset.cad.status` `"writing"`) meanwhile; the next request after it lands gets the CAD model.
++
++#### CAD models (cad)
++
++- **`asset.cad`** (only on `"llm_scad"` answers: `part.json?mode=llm_scad`, `POST /parts/{id}/model`, also its top-level
++  `cad`; header `X-Asset-Cad` on `model.glb?mode=llm_scad`): `{status, started_at, eta_s, made_by, seconds, cost_usd,
++  reason}`. `"writing"`: a run (this server's, or `warm --scad` in another process) is on it; `started_at` (epoch s)
++  and `eta_s` (seconds left by the writer's typical run, floored at 10) let the headset say "Grok is writing the CAD
++  model… 1 min". `"ready"`: `scad.glb` exists (`seconds`, `cost_usd` of its run); the answer's tier is `"scad"` once
++  the variant is rebuilt (seconds). `"failed"`: `reason` = "OpenSCAD isn't installed on the server", "No product photo
++  …", "Offline …", or "Grok's OpenSCAD model didn't build: <the OpenSCAD error>". `"none"`: nothing started yet (the
++  request itself starts it). Poll every 10-15 s while `"writing"`; swap when `asset.tier == "scad"`.
++- **Stale stand-ins are remade.** An `llm_scad` template stored for a reason that has passed is rebuilt on the next
++  request (the endpoints wait up to 15 s for it): OpenSCAD missing then and installed now, offline then, a run lost to a
++  restart, a CAD model that landed since (made by `warm --scad`), a failure by another model or over an hour old.
++- **Records next to `scad.glb`:** `scad.json` (model, effort, LLM calls, fixes, seconds, `cost_usd`, tokens, the raw
++  bbox error before the snap to the envelope), `scad.failed.json` (the last failure and why), `scad.writing.json`
++  (the run in progress; any process). At most 2 live runs at once (a search in `llm_scad` mode queues the rest).
++- **Model and speed.** `LLM_ASSET_SCAD` (default `xai:grok-4.7`) and `ASSET_SCAD_EFFORT` (default `"low"`; `""` = the
++  model's own). Measured on the dishwasher, a window frame and a cabinet knob (every run compiled; bbox 0 % after
++  the snap): grok-4.7 at low effort 34-127 s (median ~70 s), $0.016-0.056 a part, geometry close to grok-4.7 at its
++  default effort (216-400 s, $0.10-0.20); grok-4.20 non-reasoning 9-19 s, $0.005-0.015, but flatter shapes (a window
++  as a slab, a knob mounted backwards); grok-4.20 reasoning 118-180 s, $0.03-0.05. `ASSET_SCAD_FIXES` (compile-fix
++  rounds; 2 for a non-reasoning model, else 1) and `ASSET_SCAD_SAMPLES` (parallel first answers, default 1) tune the loop.
++- **Pre-generation:** `python -m server.warm --scad [--sites kitchen] [--scad-match window] [--scad-jobs 3]
++  [--scad-parts id,...] [--no-demo-parts] [--retry-failed] [--estimate]` makes the CAD model of every catalog item that
++  has a model plus the demo's key parts (the kitchen dishwashers, the window frames, the gutter hangers), 3 at a time,
++  and rebuilds each part's `llm_scad` variant. Resumable (made, failed and in-progress parts are skipped); rows in
++  `<DATA_DIR>/scad_warm.json`; `--estimate` prints the plan, minutes and dollars only.
+ 
+ `GET /parts/{id}/part.json?mode=` — the part with that mode's model (`asset.status` `"pending"` while it's being made;
+ the request starts it). `GET /parts/{id}/model.glb?mode=` — that mode's GLB (built first when needed, as without a mode;
+diff --git a/server/app.py b/server/app.py
+index 25bb489..00e966f 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -2,6 +2,7 @@
+ 
+ import asyncio
+ import base64
++import contextlib
+ import hashlib
+ import json
+ import logging
+@@ -221,28 +222,42 @@ async def get_part_json(part_id: str, mode: str | None = None) -> FileResponse |
+         raise HTTPException(404, f"part.json not found for part {part_id!r}")
+     m = assets.normalize_mode(mode)
+     got = assets.ready(part_id, m)
++    if got is None:
++        task = assets.start(part, mode=m)
++        if assets.has_variant(part_id, m):  # cad: a stale one is made again in seconds
++            with contextlib.suppress(TimeoutError):
++                await asyncio.wait_for(asyncio.shield(task), STALE_REBUILD_WAIT_S)
++            got = assets.ready(part_id, m)
+     if got is not None:
+         got = assets.select(got, m)
+     else:
+-        assets.start(part, mode=m)
+         pending = part.asset.model_copy(update={"status": "pending", "mode": m, "note": None})
+         got = part.model_copy(update={"asset": pending})
+     if m == "hf" and not assets.hf_final(part_id):
+         hf_warm.enqueue(part, front=True)
+-    return JSONResponse(got.model_dump(mode="json"))
++    return JSONResponse(assets.with_cad(got).model_dump(mode="json"))
++
++
++# cad: an llm_scad model kept for a reason that has passed (OpenSCAD installed since, the CAD
++# model landed) is rebuilt on request; the template and a cached plan take a few seconds.
++STALE_REBUILD_WAIT_S = 15.0
+ 
+ 
+ MODEL_ON_DEMAND_S = 90.0  # one LLM template call + build; a queued Groq call can take a minute
+ 
+ 
+ def _asset_headers(asset) -> dict[str, str]:
+-    """asset-mode: which tier made the served model, ASCII-safe (a badge without part.json)."""
++    """asset-mode: which tier made the served model, ASCII-safe (a badge without part.json).
++    cad: X-Asset-Cad = the CAD model's status on an llm_scad answer ("writing", "ready", ...)."""
+     safe = lambda v: str(v).encode("ascii", "replace").decode()
+-    return {
++    headers = {
+         "X-Asset-Tier": safe(asset.tier),
+         "X-Asset-Made-By": safe(asset.made_by or ""),
+         "X-Asset-Mode": safe(asset.mode or "auto"),
+     }
++    if asset.cad:
++        headers["X-Asset-Cad"] = safe(asset.cad.get("status") or "")
++    return headers
+ 
+ 
+ @app.get("/parts/{part_id}/model.glb")
+@@ -268,7 +283,8 @@ async def get_part_model(part_id: str, mode: str | None = None) -> FileResponse:
+         glb, _ = assets.variant_paths(part_id, m)
+         if not glb.exists():
+             raise HTTPException(404, f"no {m} model for part {part_id!r}")
+-        return FileResponse(glb, media_type="model/gltf-binary", headers=_asset_headers(part.asset))
++        headers = _asset_headers(assets.with_cad(part).asset)
++        return FileResponse(glb, media_type="model/gltf-binary", headers=headers)
+     if not (pdir / "model.glb").exists():
+         part = jobs.load_part(part_id)
+         if part is not None:
+@@ -302,6 +318,8 @@ async def request_part_model(
+     got = assets.ready(part_id, m)
+     if got is None:
+         task = assets.start(part, mode=m)
++        if assets.has_variant(part_id, m):  # cad: a stale one is made again in seconds
++            wait = max(wait, STALE_REBUILD_WAIT_S)
+         if wait > 0:
+             try:
+                 await asyncio.wait_for(asyncio.shield(task), wait)
+@@ -314,6 +332,8 @@ async def request_part_model(
+         if got is not None
+         else part.asset.model_copy(update={"status": "pending", "mode": m, "note": None})
+     )
++    if m == "llm_scad":
++        asset = asset.model_copy(update={"cad": assets.cad_status(part_id)})
+     return {
+         "part_id": part_id,
+         "mode": m,
+@@ -322,6 +342,7 @@ async def request_part_model(
+         "model_url": f"/parts/{part_id}/model.glb?mode={m}",
+         "hf_queued": bool(hf_queued),
+         "scad_pending": assets.scad_pending(part_id),
++        "cad": asset.cad,
+     }
+ 
+ 
+diff --git a/server/assets.py b/server/assets.py
+index 5395728..c92343d 100644
+--- a/server/assets.py
++++ b/server/assets.py
+@@ -9,7 +9,7 @@ one made the GLB):
+    exact size and the photo projected onto it (photo mode) when the photo shows one product.
+    No photo or a failed vision call: the text model on the listing, template colours.
+ 3. For parts that call tags moulded/organic, or when it failed: `scad`, a cached Grok OpenSCAD
+-   GLB (`scad.glb`, made offline by `server.warm --grok-moulded`, never here); else `ai_mesh`,
++   GLB (`scad.glb`, made by `server.warm --scad` / `--grok-moulded` or an "llm_scad" request); else `ai_mesh`,
+    Hunyuan3D-2.1 image-to-3D (anonymous/HF_TOKEN ZeroGPU quota), kept upright and
+    photo-textured; a moulded part with neither keeps its `llm` template.
+ 4. `proxy`: exact-size box with the product photo on the face it shows (E3 decal), or a plain
+@@ -517,7 +517,12 @@ def _hf_made_by(meta: dict | None) -> str:
+     return f"hf:{(meta or {}).get('space') or _HUNYUAN_SPACES[0]}"
+ 
+ 
+-def _scad_made_by() -> str:
++def _scad_made_by(part_id: str | None = None) -> str:
++    """Who wrote the part's CAD model (its scad.json), else the `asset_scad` role's model."""
++    if part_id is not None:
++        rec = meshgen.scad_record(part_dir(part_id) / "scad.glb")
++        if rec and rec.get("made_by"):
++            return str(rec["made_by"])
+     try:
+         provider, model = llm.resolve_role("asset_scad")
+     except ValueError:
+@@ -603,7 +608,7 @@ async def _generated(part: Part, photo: Path | None, pdir: Path):
+     if tier == "ai_mesh":
+         info["made_by"] = _hf_made_by(hy_meta)
+     elif tier == "scad":
+-        info["made_by"] = _scad_made_by()
++        info["made_by"] = _scad_made_by(part.id)
+     return geometry, tier, residual, info
+ 
+ 
+@@ -645,6 +650,26 @@ async def _generated_hf(part: Part, photo: Path | None, pdir: Path):
+ 
+ _scad_jobs: dict[str, asyncio.Task] = {}
+ _scad_failed: set[str] = set()
++_scad_started: dict[str, float] = {}
++# cad: live CAD runs at once (a search in llm_scad mode starts one per candidate); the rest wait.
++SCAD_LIVE_JOBS = 2
++# cad: a part whose CAD run failed isn't retried live for this long with the same model
++# (`python -m server.warm --scad --retry-failed` does; another LLM_ASSET_SCAD model does).
++SCAD_FAIL_RETRY_S = 3600.0
++SCAD_ETA_FLOOR_S = 10.0  # "almost done" once a run takes longer than its model usually does
++_scad_gates: dict[int, asyncio.Semaphore] = {}
++
++
++def _scad_gate() -> asyncio.Semaphore:
++    loop = id(asyncio.get_running_loop())
++    if loop not in _scad_gates:
++        _scad_gates.clear()
++        _scad_gates[loop] = asyncio.Semaphore(SCAD_LIVE_JOBS)
++    return _scad_gates[loop]
++
++
++def scad_path(part_id: str) -> Path:
++    return part_dir(part_id) / "scad.glb"
+ 
+ 
+ def scad_pending(part_id: str) -> bool:
+@@ -652,32 +677,121 @@ def scad_pending(part_id: str) -> bool:
+     return task is not None and not task.done()
+ 
+ 
++def scad_failed(part_id: str) -> dict | None:
++    """cad: the part's last CAD failure while it still counts (this process saw it fail, or
++    scad.failed.json by the same model within SCAD_FAIL_RETRY_S), else None."""
++    rec = meshgen.scad_failure(scad_path(part_id))
++    if part_id in _scad_failed:
++        return rec or {"error": "Grok's OpenSCAD model didn't build"}
++    if rec is None or rec.get("model") != meshgen.scad_model():
++        return None
++    return rec if time.time() - float(rec.get("at") or 0) < SCAD_FAIL_RETRY_S else None
++
++
+ def _start_grok_scad(part: Part, photo: Path) -> None:
+-    """Grok's OpenSCAD loop in the background (minutes); when it lands, the part's llm_scad
+-    variant is rebuilt from it (the next request serves it)."""
+-    if scad_pending(part.id) or part.id in _scad_failed:
++    """Grok's OpenSCAD loop in the background (seconds to minutes, by model); when it ends the
++    part's llm_scad variant is rebuilt (the CAD model, or the template noted "didn't build"), so
++    the next request serves it. Not while another process (warm --scad) is writing it."""
++    if scad_pending(part.id) or meshgen.scad_writing(scad_path(part.id)) is not None:
+         return
+ 
+     async def run() -> None:
+-        out = part_dir(part.id) / "scad.glb"
++        out = scad_path(part.id)
+         try:
+-            ok = await meshgen.grok_scad(part, photo, out)
++            async with _scad_gate():
++                ok = out.exists() or await meshgen.grok_scad(part, photo, out)
+         except Exception as exc:  # noqa: BLE001 -- grok_scad logs; the template stays
+             logger.info("asset %s: grok_scad failed: %s", part.id, exc)
+             ok = False
+         if not ok:
+             _scad_failed.add(part.id)
+-            return
+         await resolve_asset(part, mode="llm_scad", select_it=False, rebuild=True)
+ 
++    _scad_started[part.id] = time.time()
+     _scad_jobs[part.id] = asyncio.create_task(run())
+ 
+ 
++def cad_status(part_id: str) -> dict:
++    """cad: `asset.cad` for an llm_scad answer, so the headset can show progress and upgrade:
++    {status: "ready" | "writing" | "failed" | "none", started_at, eta_s, made_by, seconds,
++    reason}. "writing": a run in this process or another (warm --scad) is on it, `eta_s` the
++    seconds left by the model's typical run; "failed": it didn't build (or can't be made here:
++    no OpenSCAD, no photo, offline), `reason` says why; "none": nothing started yet."""
++    out = scad_path(part_id)
++    if out.exists():
++        rec = meshgen.scad_record(out) or {}
++        return {
++            "status": "ready",
++            "made_by": rec.get("made_by") or _scad_made_by(part_id),
++            "seconds": rec.get("seconds"),
++            "cost_usd": rec.get("cost_usd"),
++            "started_at": rec.get("started_at"),
++            "eta_s": 0,
++        }
++    lock = meshgen.scad_writing(out)
++    if lock is not None or scad_pending(part_id):
++        lock = lock or {}
++        started = float(lock.get("started_at") or _scad_started.get(part_id) or time.time())
++        model = lock.get("model") or meshgen.scad_model()
++        profile = lock.get("profile") or meshgen.scad_profile(model)
++        left = meshgen.scad_eta_s(profile) - (time.time() - started)
++        return {
++            "status": "writing",
++            "made_by": f"{model} + openscad",
++            "started_at": round(started, 1),
++            "eta_s": round(max(SCAD_ETA_FLOOR_S, left)),
++        }
++    failed = scad_failed(part_id)
++    reason = None
++    if failed is not None:
++        reason = f"Grok's OpenSCAD model didn't build: {str(failed.get('error') or '')[:160]}"
++    elif meshgen.openscad() is None:
++        reason = "OpenSCAD isn't installed on the server"
++    elif not (part_dir(part_id) / "image.jpg").exists():
++        reason = "No product photo for Grok's OpenSCAD"
++    elif get_settings().OFFLINE:
++        reason = "Offline, and no OpenSCAD model is cached"
++    if reason is not None:
++        return {"status": "failed", "reason": reason, "at": (failed or {}).get("at")}
++    return {"status": "none"}
++
++
++def with_cad(part: Part) -> Part:
++    """cad: the part with `asset.cad` filled in when its asset is an llm_scad one (a copy)."""
++    if normalize_mode(part.asset.mode) != "llm_scad":
++        return part
++    asset = part.asset.model_copy(update={"cad": cad_status(part.id)})
++    return part.model_copy(update={"asset": asset})
++
++
++def scad_stale(part_id: str, asset: Asset) -> bool:
++    """cad: a stored llm_scad variant that isn't Grok's CAD, kept for a reason that has passed,
++    so it's made again: its CAD model has landed since (scad.glb, e.g. from warm --scad in
++    another process); OpenSCAD was missing and is here now; it was offline and isn't; Grok was
++    writing it and nothing is (a restart lost the run); it didn't build and that no longer
++    counts (another model, or SCAD_FAIL_RETRY_S later)."""
++    if asset.tier == "scad":
++        return False
++    if scad_path(part_id).exists():
++        return True
++    note = (asset.note or "").lower()
++    if "openscad isn't installed" in note:
++        return meshgen.openscad() is not None
++    if note.startswith("offline, and no openscad"):
++        return not get_settings().OFFLINE
++    if "still writing" in note:
++        return not scad_pending(part_id) and meshgen.scad_writing(scad_path(part_id)) is None
++    if "didn't build" in note:
++        return scad_failed(part_id) is None
++    return False
++
++
+ async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
+     """asset-mode "llm_scad": Grok writes OpenSCAD (role `asset_scad`) for every part with a photo,
+-    rendered by the openscad binary (`meshgen.grok_scad`, E4), photo-textured. Minutes per part,
+-    so a missing scad.glb starts in the background and the LLM template stands in (noted) until it
+-    lands. No openscad binary on the server: the template, noted -- clearly not CAD."""
++    rendered by the openscad binary (`meshgen.grok_scad`, E4), photo-textured. Seconds (grok-4.20)
++    to minutes (grok-4.7) per part, so a missing scad.glb starts in the background and the LLM
++    template stands in (noted; `asset.cad` says "writing") until it lands. No openscad binary on
++    the server: the template, noted -- clearly not CAD."""
+     plan, face = await _plan_and_face(part, photo)
+     scad = pdir / "scad.glb"
+     reason = None
+@@ -688,7 +802,7 @@ async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
+             reason = "OpenSCAD isn't installed on the server"
+         elif get_settings().OFFLINE:
+             reason = "Offline, and no OpenSCAD model is cached"
+-        elif part.id in _scad_failed:
++        elif scad_failed(part.id) is not None:
+             reason = "Grok's OpenSCAD model didn't build"
+         else:
+             _start_grok_scad(part, photo)
+@@ -696,7 +810,7 @@ async def _generated_scad(part: Part, photo: Path | None, pdir: Path):
+     geometry, tier, info = None, None, {}
+     if scad.exists():
+         geometry, tier = trimesh.load(scad, force="scene"), "scad"
+-        info = {**_plan_info(plan), "made_by": _scad_made_by()}
++        info = {**_plan_info(plan), "made_by": _scad_made_by(part.id)}
+         reason = None
+     elif plan is not None:
+         geometry, tier = await asyncio.to_thread(meshgen.build, plan, part.dims_mm), "llm"
+@@ -721,10 +835,11 @@ def _box(part: Part, photo: Path | None):
+ # --- asset-mode: variants on disk ------------------------------------------------------------
+ 
+ 
+-def variant_asset(part_id: str, mode: str) -> Asset | None:
++def variant_asset(part_id: str, mode: str, *, fresh: bool = True) -> Asset | None:
+     """The mode's ready model of the part (its asset), else None. The auto variant only counts
+     while model.glb exists: deleting model.glb still means "re-resolve" (warm --retry-proxies,
+-    --grok-moulded), as before variants."""
++    --grok-moulded), as before variants. cad: an llm_scad variant kept for a reason that has
++    passed (`scad_stale`) doesn't count unless `fresh` is False."""
+     mode = normalize_mode(mode)
+     glb, meta = variant_paths(part_id, mode)
+     if not glb.exists() or not meta.exists():
+@@ -735,7 +850,16 @@ def variant_asset(part_id: str, mode: str) -> Asset | None:
+         asset = Asset.model_validate_json(meta.read_text())
+     except (OSError, ValueError):
+         return None
+-    return asset if asset.status == "ready" else None
++    if asset.status != "ready":
++        return None
++    if mode == "llm_scad" and fresh and scad_stale(part_id, asset):  # cad: made again
++        return None
++    return asset
++
++
++def has_variant(part_id: str, mode: str) -> bool:
++    """cad: the mode's model is on disk, current or not (a stale one is rebuilt in seconds)."""
++    return variant_asset(part_id, mode, fresh=False) is not None
+ 
+ 
+ def _store_variant(part_id: str, mode: str, geometry, asset: Asset) -> None:
+diff --git a/server/config.py b/server/config.py
+index 3272071..584f180 100644
+--- a/server/config.py
++++ b/server/config.py
+@@ -51,6 +51,14 @@ class Settings(BaseSettings):
+     LLM_VISION: str | None = None
+     LLM_ASSET: str | None = None
+     LLM_ASSET_SCAD: str | None = None
++    # cad: Grok's OpenSCAD loop (server/meshgen.py scad_budget): parallel first answers and
++    # compile-fix rounds. None = 1 answer; 2 fix rounds for a non-reasoning model, else 1.
++    ASSET_SCAD_SAMPLES: int | None = None
++    ASSET_SCAD_FIXES: int | None = None
++    # cad: reasoning effort for the OpenSCAD writer (LLM_ASSET_SCAD, default xai:grok-4.7):
++    # "low" (~70 s, ~$0.03 a part, measured) | "medium" | "high"; "" = the model's own default
++    # (grok-4.7: ~280 s, ~$0.14). Dropped for models that take none (grok-4.20).
++    ASSET_SCAD_EFFORT: str | None = "low"
+     # assetgen: a poor `asset` answer (none, or a known shape -- a window -- answered with another
+     # template) is asked once more here (server/meshgen.py ask). "" turns the retry off.
+     LLM_ASSET_RETRY: str | None = "xai:grok-4.20-0309-non-reasoning"
+diff --git a/server/experiments/cad_compare.py b/server/experiments/cad_compare.py
+new file mode 100644
+index 0000000..d055c29
+--- /dev/null
++++ b/server/experiments/cad_compare.py
+@@ -0,0 +1,200 @@
++"""cad: side-by-side renders of one part's 3D models -- HF (Hunyuan image-to-3D), CAD (Grok
++OpenSCAD, per model) and the LLM template -- with a table row per model: faces, file size, bbox
++error against the listed dims, the shape's raw error (CAD: before the snap to the envelope; HF:
++the uniform-scale residual), seconds and cost.
++
++    uv run --with pyrender python -m server.experiments.cad_compare <part_id> out.png \
++        --data data --model "HF=data/parts/<id>/model.hf.glb" --model "CAD=...scad.glb" ...
++
++Each --model is LABEL=path.glb[:meta.json]; the meta is an asset.<stem>.json or a scad.json
++record (seconds, cost_usd, bbox_err_pct / scale_residual_pct, made_by). Rows: 3/4 view, front.
++Renders with pyrender (EGL on Linux, pyglet on macOS).
++"""
++
++import argparse
++import json
++import os
++import sys
++from pathlib import Path
++
++if sys.platform != "darwin":
++    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
++
++import numpy as np
++import pyrender
++import trimesh
++from PIL import Image, ImageDraw, ImageFont
++
++BG = (226, 230, 236)
++VIEWS = {"3/4": (1.0, 0.6, 1.3), "front": (0.0, 0.0, 1.0)}
++
++
++def look_at(eye: np.ndarray, target: np.ndarray) -> np.ndarray:
++    fwd = target - eye
++    fwd = fwd / np.linalg.norm(fwd)
++    up = np.array([0.0, 1.0, 0.0]) if abs(fwd[1]) < 0.99 else np.array([0.0, 0.0, -1.0])
++    right = np.cross(fwd, up)
++    right /= np.linalg.norm(right)
++    pose = np.eye(4)
++    pose[:3, 0], pose[:3, 1], pose[:3, 2], pose[:3, 3] = right, np.cross(right, fwd), -fwd, eye
++    return pose
++
++
++_renderers: dict[int, pyrender.OffscreenRenderer] = {}
++
++
++def _renderer(size: int) -> pyrender.OffscreenRenderer:
++    # One GL context per size for the whole process (a second pyglet context fails on macOS).
++    if size not in _renderers:
++        _renderers[size] = pyrender.OffscreenRenderer(size, size)
++    return _renderers[size]
++
++
++def render(tm: trimesh.Scene, size: int, radius: float) -> dict[str, np.ndarray]:
++    scene = pyrender.Scene(bg_color=[c / 255 for c in BG] + [1.0], ambient_light=[0.45] * 3)
++    for node in tm.graph.nodes_geometry:
++        transform, name = tm.graph[node]
++        geom = tm.geometry[name]
++        if isinstance(geom, trimesh.Trimesh) and len(geom.faces):
++            scene.add(pyrender.Mesh.from_trimesh(geom, smooth=False), pose=transform)
++    center = tm.bounds.mean(axis=0)
++    cam = pyrender.OrthographicCamera(
++        xmag=radius * 1.08, ymag=radius * 1.08, znear=radius * 0.01, zfar=radius * 8
++    )
++    cam_node = scene.add(cam)
++    key = scene.add(pyrender.DirectionalLight(intensity=2.2))
++    fill = scene.add(pyrender.DirectionalLight(intensity=0.9))
++    renderer = _renderer(size)
++    out = {}
++    for view, direction in VIEWS.items():
++        d = np.asarray(direction, float)
++        d /= np.linalg.norm(d)
++        scene.set_pose(cam_node, look_at(center + d * radius * 3, center))
++        scene.set_pose(key, look_at(center + (d + [-0.4, 0.9, 0.3]) * radius * 3, center))
++        scene.set_pose(fill, look_at(center + (d + [0.9, -0.2, 0.0]) * radius * 3, center))
++        rgb, _ = renderer.render(scene)
++        out[view] = rgb.copy()
++    return out
++
++
++def stats(glb: Path, meta: dict, dims_mm: dict) -> dict:
++    tm = trimesh.load(glb, force="scene")
++    faces = sum(len(g.faces) for g in tm.geometry.values() if hasattr(g, "faces"))
++    target = np.array([dims_mm["w"], dims_mm["h"], dims_mm["d"]])
++    ext = tm.extents * 1000.0
++    bbox_err = float(np.max(np.abs(ext - target) / target) * 100.0)
++    shape_err = meta.get("bbox_err_pct")
++    if shape_err is None:
++        shape_err = meta.get("first_bbox_err_pct")
++    if shape_err is None:
++        shape_err = meta.get("scale_residual_pct")
++    return {
++        "faces": int(faces),
++        "kb": round(glb.stat().st_size / 1024, 1),
++        "bbox_err_pct": round(bbox_err, 2),
++        "shape_err_pct": None if shape_err is None else round(float(shape_err), 1),
++        "seconds": meta.get("seconds"),
++        "cost_usd": meta.get("cost_usd"),
++        "made_by": meta.get("made_by") or "",
++        "extents_mm": [round(float(v)) for v in ext],
++    }
++
++
++def sheet(
++    part: dict, photo: Path | None, models: list[tuple[str, Path, dict]], out: Path, size=360
++):
++    scenes = [(label, trimesh.load(glb, force="scene"), meta) for label, glb, meta in models]
++    radius = max(float(np.linalg.norm(tm.extents)) / 2 for _, tm, _ in scenes)
++    cols = len(scenes) + 1
++    head, foot = 46, 118
++    img = Image.new("RGB", (cols * size, head + 2 * size + foot), (255, 255, 255))
++    draw = ImageDraw.Draw(img)
++    try:
++        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 15)
++        small = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 12)
++    except OSError:
++        font = small = ImageFont.load_default()
++    d = part["dims_mm"]
++    draw.text(
++        (8, 6),
++        f"{part['name'][:90]}",
++        fill=(0, 0, 0),
++        font=font,
++    )
++    draw.text(
++        (8, 26),
++        f"{part['id']}  listed W {d['w']:.0f} x H {d['h']:.0f} x D {d['d']:.0f} mm",
++        fill=(70, 70, 70),
++        font=small,
++    )
++    tile = Image.new("RGB", (size, size), (255, 255, 255))
++    if photo and photo.exists():
++        p = Image.open(photo).convert("RGB")
++        p.thumbnail((size - 10, size - 10))
++        tile.paste(p, ((size - p.width) // 2, (size - p.height) // 2))
++    img.paste(tile, (0, head))
++    draw.text((8, head + 4), "product photo", fill=(60, 60, 60), font=small)
++    rows = []
++    for i, (label, tm, meta) in enumerate(scenes, start=1):
++        views = render(tm, size, radius)
++        for r, view in enumerate(VIEWS):
++            img.paste(Image.fromarray(views[view]), (i * size, head + r * size))
++            draw.text(
++                (i * size + 8, head + r * size + 4),
++                f"{label} · {view}",
++                fill=(20, 20, 20),
++                font=font,
++            )
++        s = meta["_stats"]
++        rows.append(s)
++        lines = [
++            f"{label}",
++            f"{s['faces']:,} faces · {s['kb']:.0f} KB",
++            f"bbox vs listed: {s['bbox_err_pct']:.1f}%"
++            + (f" · shape {s['shape_err_pct']:.0f}%" if s["shape_err_pct"] is not None else ""),
++            (f"{s['seconds']:.0f} s" if s["seconds"] is not None else "- s")
++            + (f" · ${s['cost_usd']:.3f}" if s["cost_usd"] is not None else " · $0"),
++            s["made_by"][:48],
++        ]
++        for k, line in enumerate(lines):
++            draw.text(
++                (i * size + 8, head + 2 * size + 6 + k * 21),
++                line,
++                fill=(0, 0, 0) if k == 0 else (60, 60, 60),
++                font=font if k == 0 else small,
++            )
++    img.save(out)
++    return rows
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    ap.add_argument("part_id")
++    ap.add_argument("out", type=Path)
++    ap.add_argument("--data", type=Path, required=True)
++    ap.add_argument("--model", action="append", default=[], help="LABEL=glb[:meta.json]")
++    ap.add_argument("--json", type=Path, help="append the table rows here")
++    a = ap.parse_args()
++    pdir = a.data / "parts" / a.part_id
++    part = json.loads((pdir / "part.json").read_text())
++    models = []
++    for spec in a.model:
++        label, _, rest = spec.partition("=")
++        glb, _, meta_path = rest.partition(":")
++        if not Path(glb).exists():
++            print(f"{a.part_id} | {label} | missing {glb}")
++            continue
++        meta = json.loads(Path(meta_path).read_text()) if meta_path else {}
++        meta["_stats"] = stats(Path(glb), meta, part["dims_mm"])
++        models.append((label, Path(glb), meta))
++    rows = sheet(part, pdir / "image.jpg", models, a.out)
++    for (label, _, _), row in zip(models, rows, strict=True):
++        print(f"{a.part_id} | {label} | {json.dumps(row)}")
++    if a.json:
++        table = json.loads(a.json.read_text()) if a.json.exists() else {}
++        table[a.part_id] = {label: row for (label, _, _), row in zip(models, rows, strict=True)}
++        a.json.write_text(json.dumps(table, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/server/experiments/scad_bench.py b/server/experiments/scad_bench.py
+new file mode 100644
+index 0000000..5600f32
+--- /dev/null
++++ b/server/experiments/scad_bench.py
+@@ -0,0 +1,74 @@
++"""cad: time Grok's OpenSCAD loop (`meshgen.grok_scad_run`) per model on a few parts.
++
++Every call is live: point DATA_DIR at an empty scratch dir (the LLM cache lives there) and read
++the parts from another data dir. One process per model (the role is resolved from the env):
++
++    DATA_DIR=/tmp/bench LLM_ASSET_SCAD=xai:grok-4.20-0309-non-reasoning \
++        uv run python -m server.experiments.scad_bench --parts-dir data/parts \
++        --out /tmp/bench/out frigidaire-fdpc4221as-341c87 jeld-wen-thdjw235100032-d0809e
++
++Prints one row per part (compiled, calls, fixes, fit pass, seconds, cost, raw bbox error) and
++writes <out>/<model>/results.json.
++"""
++
++import argparse
++import asyncio
++import json
++import logging
++import time
++from pathlib import Path
++
++from server import meshgen
++from server.models import Part
++
++
++async def run(parts_dir: Path, out: Path, ids: list[str], jobs: int) -> list[dict]:
++    model = meshgen.scad_model()
++    root = out / model.replace(":", "_").replace("/", "_")
++    gate = asyncio.Semaphore(max(1, jobs))
++
++    async def one(pid: str) -> dict:
++        part = Part.model_validate_json((parts_dir / pid / "part.json").read_text())
++        photo = parts_dir / pid / "image.jpg"
++        async with gate:
++            t0 = time.monotonic()
++            rec = await meshgen.grok_scad_run(part, photo, root / pid / "scad.glb")
++            rec.setdefault("seconds", round(time.monotonic() - t0, 1))
++        rec["part_id"] = pid
++        rec["dims_mm"] = part.dims_mm.model_dump()
++        return rec
++
++    results = await asyncio.gather(*(one(p) for p in ids))
++    root.mkdir(parents=True, exist_ok=True)
++    (root / "results.json").write_text(json.dumps(results, indent=2))
++    print(f"\n{model}")
++    head = f"{'part':<42} {'ok':<3} {'calls':>5} {'fix':>3} {'fit':>3} {'s':>7} {'$':>8} {'bbox0%':>7} {'bbox%':>6}"
++    print(head)
++    for r in results:
++        cost = r.get("cost_usd")
++        print(
++            f"{r['part_id'][:42]:<42} {'y' if r.get('ok') else 'n':<3} {r.get('calls', 0):>5} "
++            f"{r.get('fixes', 0):>3} {'y' if r.get('fit_pass') else '-':>3} "
++            f"{r.get('seconds', 0):>7.1f} {cost if cost is not None else float('nan'):>8.4f} "
++            f"{r.get('first_bbox_err_pct', float('nan')):>7.1f} {r.get('bbox_err_pct', float('nan')):>6.1f}"
++            + (f"  {r['error'][:80]}" if r.get("error") else "")
++        )
++    return results
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    ap.add_argument("ids", nargs="+")
++    ap.add_argument("--parts-dir", type=Path, required=True)
++    ap.add_argument("--out", type=Path, required=True)
++    ap.add_argument("--jobs", type=int, default=3)
++    args = ap.parse_args()
++    logging.basicConfig(
++        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
++    )
++    logging.getLogger("httpx").setLevel(logging.WARNING)
++    asyncio.run(run(args.parts_dir, args.out, args.ids, args.jobs))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/server/meshgen.py b/server/meshgen.py
+index 126ddfe..5b02cc2 100644
+--- a/server/meshgen.py
++++ b/server/meshgen.py
+@@ -14,8 +14,11 @@
+ - `build()`: the template at exactly W x H x D in the api.md §2 frame.
+ - `project()`: the product photo on the triangles facing the face it shows (E5).
+ - `decal_box()`: the exact-size box with the photo on one face (E3), the instant/last-resort tier.
+-- `grok_scad()`: E4's Grok OpenSCAD loop for moulded parts. Offline only (`server.warm
+-  --grok-moulded`, minutes per part); never on the request path.
++- `grok_scad()` / `grok_scad_run()`: E4's Grok OpenSCAD loop (role `asset_scad`, LLM_ASSET_SCAD at
++  ASSET_SCAD_EFFORT; default grok-4.7 at low effort, ~70 s and ~$0.03 a part). cad: the asset-mode
++  "llm_scad" tier runs it in the background (server/assets.py) and `server.warm --scad` ahead of
++  need; each run leaves its record next to the GLB (scad.json / scad.failed.json, and
++  scad.writing.json while it runs).
+ """
+ 
+ import asyncio
+@@ -24,6 +27,7 @@ import hashlib
+ import io
+ import json
+ import logging
++import os
+ import re
+ import shutil
+ import subprocess
+@@ -161,23 +165,59 @@ async def cached_chat_by(role: str, messages: list[dict], **kw) -> tuple[str, st
+     """assetgen: `cached_chat` plus who answered ("provider:model", `made_by`). The first call
+     records it next to the answer (cache namespace `asset_llm_by`, same key) with its seconds;
+     an answer cached before that record existed says "<role's provider:model> (cached)"."""
++    text, meta = await cached_chat_meta(role, messages, **kw)
++    return text, meta["by"]
++
++
++async def cached_chat_meta(
++    role: str, messages: list[dict], *, sample: int = 0, **kw
++) -> tuple[str, dict]:
++    """cad: `cached_chat_by` with the call's record: {by, seconds, cost_usd, prompt_tokens,
++    completion_tokens, reasoning_tokens, cached}. A cache hit costs nothing now (cost_usd 0,
++    seconds 0); its first call's figures stay under `first_*`. `sample` > 0: another answer to
++    the same request (its own cache entry)."""
+     provider, model = llm.resolve_role(role)
+-    digest = hashlib.sha1(json.dumps([messages, kw], sort_keys=True).encode()).hexdigest()
++    keyed = [messages, kw] if not sample else [messages, kw, {"sample": sample}]
++    digest = hashlib.sha1(json.dumps(keyed, sort_keys=True).encode()).hexdigest()
+     key = {"model": f"{provider}:{model}", "req": digest}
++    live: dict = {}
+ 
+     async def call() -> str:
+         start = time.monotonic()
+         resp = await llm.chat(role, messages, **kw)
+         by = made_by(provider, model, getattr(resp, "model", None))
+         seconds = round(time.monotonic() - start, 2)
+-        cache.put("asset_llm_by", key, {"by": by, "seconds": seconds})
++        usage = getattr(resp, "usage", None)
++        details = getattr(usage, "completion_tokens_details", None)
++        record = {
++            "by": by,
++            "seconds": seconds,
++            "cost_usd": llm.cost_usd(usage) if usage is not None else None,
++            "prompt_tokens": getattr(usage, "prompt_tokens", None),
++            "completion_tokens": getattr(usage, "completion_tokens", None),
++            "reasoning_tokens": getattr(details, "reasoning_tokens", None),
++        }
++        cache.put("asset_llm_by", key, record)
++        live.update(record)
+         logger.info("meshgen: role=%s answered by %s in %.1f s", role, by, seconds)
+         return resp.choices[0].message.content or ""
+ 
+     text = await cache.cached("asset_llm", key, call)
++    if live:
++        return text, {**live, "cached": False}
+     meta = cache.get("asset_llm_by", key)
+-    by = meta.get("by") if isinstance(meta, dict) else None
+-    return text, by or f"{provider}:{model} (cached)"
++    meta = meta if isinstance(meta, dict) else {}
++    return text, {
++        "by": meta.get("by") or f"{provider}:{model} (cached)",
++        "seconds": 0.0,
++        "cost_usd": 0.0,
++        "first_seconds": meta.get("seconds"),
++        "first_cost_usd": meta.get("cost_usd"),
++        "prompt_tokens": None,
++        "completion_tokens": None,
++        "reasoning_tokens": None,
++        "cached": True,
++    }
+ 
+ 
+ def _parse(text: str) -> dict:
+@@ -569,10 +609,17 @@ def build_scad(exe: str, code: str, work: Path, dims: tuple) -> tuple[list, str
+         or "Assertion" in ln
+     ]
+     if bad or (p.returncode and "top level object is empty" not in log):
+-        err = "\n".join(bad or log.splitlines()[-8:])[:1500]
+-        err = re.sub(r"in file [^,]*, ", "in model.scad, ", err)
++        # cad: the call chain back into the model (an assertion fires inside the library; the
++        # TRACE lines say which model line called it, with the arguments it got)
++        trace = [
++            ln
++            for ln in log.splitlines()
++            if ln.startswith("TRACE:") and ("call of" in ln or "model.scad" in ln)
++        ]
++        err = "\n".join([*bad, *trace[:6]] if bad else log.splitlines()[-8:])[:1500]
++        err = re.sub(r"in file ([^,]*), ", _scad_file_words, err)
+         lines = code.splitlines()
+-        for n in dict.fromkeys(int(m) for m in re.findall(r"line (\d+)", err)):
++        for n in dict.fromkeys(int(m) for m in re.findall(r"in model\.scad, line (\d+)", err)):
+             if 0 < n <= len(lines):  # show the offending source line, not just its number
+                 err += f"\nline {n}: {lines[n - 1].strip()}"
+         return [], err
+@@ -588,6 +635,12 @@ def build_scad(exe: str, code: str, work: Path, dims: tuple) -> tuple[list, str
+     return pieces, None
+ 
+ 
++def _scad_file_words(m: re.Match) -> str:
++    """cad: "in file <lib path>, " -> "in the helper library, " (its line numbers aren't the
++    model's), anything else -> "in model.scad, "."""
++    return "in the helper library, " if m.group(1).endswith(SCAD_LIB.name) else "in model.scad, "
++
++
+ def _bool(op: str, meshes: list) -> trimesh.Trimesh | None:
+     try:
+         out = getattr(trimesh.boolean, op)(meshes, engine="manifold")
+@@ -652,16 +705,162 @@ async def _scad_attempt(exe: str, text: str, dims: tuple):
+     return scene, raw_err, code, None
+ 
+ 
++# cad: the CAD model's sidecars next to scad.glb, so the server, `warm --scad` and the headset all
++# see the same state across processes: scad.json (who wrote it, LLM calls, seconds, cost, bbox
++# error), scad.failed.json (the last failure: why, when, which model) and scad.writing.json (a run
++# in progress: {started_at, model, pid, eta_s}; removed when it ends, ignored once stale).
++SCAD_SAMPLE_TEMPERATURE = 0.7  # the 2nd.. parallel first answers: different takes
++SCAD_FIT_PCT = 2.0  # a raw bbox this far off the envelope gets one fit pass
++# Typical (seconds, $) of one part's run per profile -- the model, "@effort" for models that take
++# a reasoning effort -- measured on the dishwasher, a window frame and a cabinet knob (docs/api.md
++# "CAD models"): the "Grok is writing the CAD model" ETA and warm --scad's estimate. Finished runs
++# in this process refine the seconds.
++SCAD_TYPICAL = {
++    "grok-4.7": (280.0, 0.14),  # 216-400 s, $0.10-0.20
++    "grok-4.7@high": (280.0, 0.14),
++    "grok-4.7@medium": (240.0, 0.11),  # 178-332 s, $0.08-0.17
++    "grok-4.7@low": (70.0, 0.034),  # 34-127 s, $0.016-0.056 (7 runs): the default
++    "grok-4.20-0309-reasoning": (140.0, 0.036),  # 118-180 s
++    "grok-4.20-0309-non-reasoning": (15.0, 0.008),  # 9-19 s, $0.005-0.015
++    "grok-4.3@low": (20.0, 0.007),  # 14-27 s
++}
++SCAD_DEFAULT = (180.0, 0.05)
++SCAD_WRITING_STALE_S = 1800.0  # a lock older than this (or of a dead pid) is ignored
++_scad_seen_s: dict[str, list[float]] = {}
++
++
++def scad_sidecar(out: Path, kind: str) -> Path:
++    """`out`'s sidecar: kind "json" (the record), "failed" or "writing" (scad.<kind>.json)."""
++    return out.with_name(f"{out.stem}.json" if kind == "json" else f"{out.stem}.{kind}.json")
++
++
++def _read(path: Path) -> dict | None:
++    try:
++        value = json.loads(path.read_text())
++    except (OSError, ValueError):
++        return None
++    return value if isinstance(value, dict) else None
++
++
++def scad_model() -> str:
++    """The `asset_scad` role's "provider:model" (LLM_ASSET_SCAD, else the default)."""
++    try:
++        provider, model = llm.resolve_role("asset_scad")
++    except ValueError:
++        return "?"
++    return f"{provider}:{model}"
++
++
++def _fast_model(model: str) -> bool:
++    name = model.split(":", 1)[-1]
++    return "non-reasoning" in name or name.startswith(("grok-4-fast", "grok-code"))
++
++
++def scad_budget(model: str | None = None) -> tuple[int, int]:
++    """(parallel first answers, compile-fix rounds) for `model`. One answer; a non-reasoning model
++    (~5 s and ~$0.003 a call, but it misses more often) gets 2 fix rounds, a reasoning one 1.
++    ASSET_SCAD_SAMPLES > 1 asks that many first answers at once and keeps the first that builds
++    and fills the envelope (measured: no better than one answer plus fixes on the demo parts)."""
++    settings = get_settings()
++    fast = _fast_model(model or scad_model())
++    samples = settings.ASSET_SCAD_SAMPLES or 1
++    fixes = (
++        settings.ASSET_SCAD_FIXES if settings.ASSET_SCAD_FIXES is not None else (2 if fast else 1)
++    )
++    return max(1, samples), max(0, fixes)
++
++
++def scad_effort(model: str | None = None) -> str | None:
++    """The reasoning effort the OpenSCAD writer runs at (ASSET_SCAD_EFFORT), None for a model that
++    takes none (grok-4.20) or when unset (the model's default)."""
++    provider, _, name = (model or scad_model()).partition(":")
++    effort = (get_settings().ASSET_SCAD_EFFORT or "").strip().lower() or None
++    return effort if effort and llm.takes_reasoning_effort(provider, name) else None
++
++
++def scad_profile(model: str | None = None) -> str:
++    """ "grok-4.7@low", "grok-4.20-0309-non-reasoning": the model and its effort (SCAD_TYPICAL)."""
++    name = (model or scad_model()).split(":", 1)[-1]
++    effort = scad_effort(model)
++    return f"{name}@{effort}" if effort else name
++
++
++def _typical(profile: str) -> tuple[float, float]:
++    return SCAD_TYPICAL.get(profile) or SCAD_TYPICAL.get(profile.split("@")[0]) or SCAD_DEFAULT
++
++
++def scad_eta_s(profile: str | None = None) -> float:
++    """Typical seconds for one CAD run of `profile` (default: the configured one): this
++    process's recent runs, else SCAD_TYPICAL."""
++    profile = profile or scad_profile()
++    seen = sorted(_scad_seen_s.get(profile, [])[-5:])
++    if seen:
++        return round(seen[len(seen) // 2], 1)
++    return _typical(profile)[0]
++
++
++def scad_cost_usd(profile: str | None = None) -> float:
++    """Typical dollars for one part's CAD run of `profile` (warm --scad's estimate)."""
++    return _typical(profile or scad_profile())[1]
++
++
++def _pid_alive(pid: object) -> bool:
++    try:
++        os.kill(int(pid), 0)
++    except (OSError, TypeError, ValueError):
++        return False
++    return True
++
++
++def scad_writing(out: Path) -> dict | None:
++    """The run writing `out` right now (any process), else None: {started_at, model, pid, eta_s}."""
++    lock = _read(scad_sidecar(out, "writing"))
++    if lock is None or out.exists():
++        return None
++    age = time.time() - float(lock.get("started_at") or 0)
++    if age > SCAD_WRITING_STALE_S or (lock.get("pid") and not _pid_alive(lock["pid"])):
++        return None
++    return lock
++
++
++def scad_record(out: Path) -> dict | None:
++    """scad.json: how the CAD model at `out` was made (None for one made before records)."""
++    return _read(scad_sidecar(out, "json"))
++
++
++def scad_failure(out: Path) -> dict | None:
++    """scad.failed.json: the last failed run for `out` (None when it built, or never failed)."""
++    return None if out.exists() else _read(scad_sidecar(out, "failed"))
++
++
+ async def grok_scad(part: Part, photo: Path, out: Path) -> bool:
+-    """E4's loop on role `asset_scad` (grok-4.7): generate, one compile-error fix, one bbox
+-    feedback pass when the model misses the envelope by >2 %. Writes the contract GLB (geometry
+-    only) to `out`. True when `out` exists afterwards. Minutes per part: offline only."""
++    """E4's loop on role `asset_scad` (`grok_scad_run`). True when `out` exists afterwards."""
++    return bool((await grok_scad_run(part, photo, out))["ok"])
++
++
++async def grok_scad_run(part: Part, photo: Path, out: Path) -> dict:
++    """E4's loop on role `asset_scad` (LLM_ASSET_SCAD): generate, SCAD_FIXES compile-error fixes,
++    one bbox feedback pass when the model misses the envelope by > SCAD_FIT_PCT. Writes the
++    contract GLB (geometry only) to `out` and the run's record next to it (scad.json, or
++    scad.failed.json), holding scad.writing.json while it runs. Returns the record: {ok, model,
++    made_by, seconds, calls, fixes, fit_pass, cost_usd, prompt/completion/reasoning tokens,
++    first_bbox_err_pct, bbox_err_pct, faces, error}. Never raises."""
+     if out.exists():
+-        return True
++        return {**(scad_record(out) or {}), "ok": True, "skipped": "exists"}
++    model = scad_model()
++    profile = scad_profile(model)
++    record: dict = {
++        "ok": False,
++        "part_id": part.id,
++        "model": model,
++        "profile": profile,
++        "calls": 0,
++        "fixes": 0,
++    }
+     exe = openscad()
+     if exe is None:
+         logger.info("grok_scad: OpenSCAD not found (PATH or %s), skipping %s", _APPIMAGE, part.id)
+-        return False
++        return {**record, "error": "OpenSCAD isn't installed"}
+     dims = (part.dims_mm.w, part.dims_mm.h, part.dims_mm.d)
+     prompt = SCAD_PROMPT.format(
+         name=part.name,
+@@ -673,6 +872,13 @@ async def grok_scad(part: Part, photo: Path, out: Path) -> bool:
+         d=dims[2],
+         api=_scad_api(),
+     )
++    calls: list[dict] = []
++    samples, fixes = scad_budget(model)
++    envelope = (
++        f"It must span X [{-dims[0] / 2}, {dims[0] / 2}], Y [0, {dims[1]}], Z [0, {dims[2]}];"
++        " anything outside is cut off. Check the frame (Y up, back face at Z=0, front at Z=D)"
++        " and fix the sizes and positions."
++    )
+ 
+     def follow_up(code: str, note: str) -> list[dict]:
+         return [
+@@ -681,34 +887,131 @@ async def grok_scad(part: Part, photo: Path, out: Path) -> bool:
+             {"role": "user", "content": note},
+         ]
+ 
++    effort = scad_effort(model)
++    base_kw = dict(SCAD_KW, reasoning_effort=effort) if effort else SCAD_KW
++    record["effort"] = effort
++
++    async def ask(messages: list[dict], sample: int = 0) -> str:
++        kw = dict(base_kw, temperature=SCAD_SAMPLE_TEMPERATURE) if sample else base_kw
++        text, meta = await cached_chat_meta("asset_scad", messages, sample=sample, **kw)
++        calls.append(meta)
++        return text
++
++    def fix_note(err: str) -> str:
++        more = f" {envelope}" if err.startswith("Mesh assembly failed") else ""
++        return f"It failed with:\n{err}\n\nFix it.{more} {FULL_CODE}"
++
++    t0 = time.monotonic()
++    started = time.time()
++    lock = scad_sidecar(out, "writing")
++    out.parent.mkdir(parents=True, exist_ok=True)
++    cache.write_json_atomic(
++        lock,
++        json.dumps(
++            {
++                "started_at": started,
++                "model": model,
++                "profile": profile,
++                "pid": os.getpid(),
++                "eta_s": scad_eta_s(profile),
++            }
++        ),
++    )
++    scene, err = None, None
++    record["samples"] = samples
+     try:
+         url = await asyncio.to_thread(photo_data_url, photo, 768)
+-        text = await cached_chat("asset_scad", _user(prompt, url), **SCAD_KW)
+-        scene, raw_err, code, err = await _scad_attempt(exe, text, dims)
+-        if err:
+-            note = f"It failed with:\n{err}\n\nFix it. {FULL_CODE}"
+-            text = await cached_chat("asset_scad", follow_up(code, note), **SCAD_KW)
++        first = _user(prompt, url)
++        texts = await asyncio.gather(
++            *(ask(first, i) for i in range(samples)), return_exceptions=samples > 1
++        )
++        tries = []
++        for text in texts:
++            if isinstance(text, BaseException):
++                logger.info("grok_scad: %s: one answer failed: %s", part.id, text)
++                continue
++            tries.append(await _scad_attempt(exe, text, dims))
++        if not tries:
++            raise next(t for t in texts if isinstance(t, BaseException))
++        built = [t for t in tries if t[3] is None]
++        record["compiled_first"] = len(built)
++        # the first (temperature 0.2) answer that builds and roughly fills the envelope; the
++        # closest fit only when none does (a bare envelope box also "fits" perfectly)
++        near = [t for t in built if t[1] <= SCAD_RESCALE_MAX_PCT]
++        best = near[0] if near else min(built, key=lambda t: t[1]) if built else tries[0]
++        scene, raw_err, code, err = best
++        while err and record["fixes"] < fixes:
++            record["fixes"] += 1
++            # a 2nd.. round is its own answer (a fix that repeats itself would be a cache hit)
++            text = await ask(follow_up(code, fix_note(err)), record["fixes"] - 1)
+             scene, raw_err, code, err = await _scad_attempt(exe, text, dims)
+         if err:
+             logger.info("grok_scad: %s never compiled: %s", part.id, err[:200])
+-            return False
+-        if raw_err > 2.0:
+-            note = (
+-                f"The model's bounding box misses the envelope by up to {raw_err:.0f} % of a"
+-                f" dimension. It must span X [{-dims[0] / 2}, {dims[0] / 2}], Y [0, {dims[1]}],"
+-                f" Z [0, {dims[2]}]; anything outside is cut off. Check the frame (Y up, back"
+-                f" face at Z=0, front at Z=D) and fix the sizes and positions. {FULL_CODE}"
+-            )
+-            text = await cached_chat("asset_scad", follow_up(code, note), **SCAD_KW)
+-            fixed, fixed_err, _, err = await _scad_attempt(exe, text, dims)
+-            if fixed is not None and fixed_err < raw_err:
+-                scene, raw_err = fixed, fixed_err
++        else:
++            record["first_bbox_err_pct"] = round(raw_err, 2)
++            record["fit_pass"] = raw_err > SCAD_FIT_PCT
++            if raw_err > SCAD_FIT_PCT:
++                note = (
++                    f"The model's bounding box misses the envelope by up to {raw_err:.0f} % of a"
++                    f" dimension. {envelope} {FULL_CODE}"
++                )
++                text = await ask(follow_up(code, note))
++                fixed, fixed_err, _, _ = await _scad_attempt(exe, text, dims)
++                if fixed is not None and fixed_err < raw_err:
++                    scene, raw_err = fixed, fixed_err
++            record["bbox_err_pct"] = round(raw_err, 2)
+     # Blind except is deliberate: an offline batch job over many parts; one part's network,
+     # quota or build failure is logged and the job moves on.
+     except Exception as exc:  # noqa: BLE001
+         logger.info("grok_scad: %s failed: %s", part.id, exc)
+-        return False
+-    out.parent.mkdir(parents=True, exist_ok=True)
+-    scene.export(out)
+-    logger.info("grok_scad: %s -> %s (bbox err %.1f%%)", part.id, out, raw_err)
+-    return True
++        err = f"{type(exc).__name__}: {str(exc)[:300]}"
++        scene = None
++    finally:
++        lock.unlink(missing_ok=True)
++    record.update(_calls_summary(calls))
++    record.update(
++        seconds=round(time.monotonic() - t0, 1),
++        at=time.time(),
++        started_at=started,
++        made_by=f"{calls[0]['by'].removesuffix(' (cached)') if calls else model} + openscad",
++    )
++    if scene is None or err:
++        record["error"] = (err or "no model")[:600]
++        cache.write_json_atomic(scad_sidecar(out, "failed"), json.dumps(record, indent=2))
++        return record
++    tmp = out.with_name(f".{out.name}.tmp")
++    scene.export(tmp, file_type="glb")
++    os.replace(tmp, out)
++    record["ok"] = True
++    record["faces"] = int(sum(len(g.faces) for g in scene.geometry.values()))
++    cache.write_json_atomic(scad_sidecar(out, "json"), json.dumps(record, indent=2))
++    scad_sidecar(out, "failed").unlink(missing_ok=True)
++    if not any(c.get("cached") for c in calls):
++        _scad_seen_s.setdefault(profile, []).append(record["seconds"])
++    logger.info(
++        "grok_scad: %s -> %s (bbox err %.1f%%, %d calls, %.0f s, $%.3f)",
++        part.id,
++        out,
++        raw_err,
++        record["calls"],
++        record["seconds"],
++        record["cost_usd"] or 0.0,
++    )
++    return record
++
++
++def _calls_summary(calls: list[dict]) -> dict:
++    def total(key: str):
++        values = [c.get(key) for c in calls if c.get(key) is not None]
++        return sum(values) if values else None
++
++    cost = total("cost_usd")
++    return {
++        "calls": len(calls),
++        "cached_calls": sum(1 for c in calls if c.get("cached")),
++        "llm_seconds": round(total("seconds") or 0.0, 1),
++        "cost_usd": round(cost, 5) if cost is not None else None,
++        "prompt_tokens": total("prompt_tokens"),
++        "completion_tokens": total("completion_tokens"),
++        "reasoning_tokens": total("reasoning_tokens"),
++    }
+diff --git a/server/models.py b/server/models.py
+index 219f6ef..6827110 100644
+--- a/server/models.py
++++ b/server/models.py
+@@ -69,6 +69,10 @@ class Asset(BaseModel):
+     # ZeroGPU quota spent, no product photo). None from older servers.
+     mode: str | None = None
+     note: str | None = None
++    # cad: for an "llm_scad" answer, how Grok's CAD model is doing (server/assets.py cad_status):
++    # {status: "writing" | "ready" | "failed" | "none", started_at, eta_s, made_by, reason}.
++    # Only on responses (part.json?mode=, POST /parts/{id}/model); never stored.
++    cad: dict | None = None
+ 
+ 
+ class Fit(BaseModel):
+diff --git a/server/warm.py b/server/warm.py
+index 2866461..b797bea 100644
+--- a/server/warm.py
++++ b/server/warm.py
+@@ -5,6 +5,8 @@ scripted demo needs is cached locally; only the live search is lost").
+     uv run python -m server.warm --labels <site> [--every 4]
+     uv run python -m server.warm --hf [--hf-limit N] [--hf-no-wait]
+     uv run python -m server.warm --catalog [--sites kitchen,zabel-gymnasium] [--no-models]
++    uv run python -m server.warm --scad [--sites kitchen] [--scad-match window] [--scad-jobs 3]
++        [--scad-parts id,id] [--no-demo-parts] [--retry-failed] [--estimate]
+ 
+ For each `{"query": ..., "measurement": {...}}` entry: runs the same `find_parts` +
+ `resolve_asset` path `jobs.py` runs for a live search (sequential -- `assets.py` rate-limits the
+@@ -34,6 +36,16 @@ site names the place, every category with fewer than 3 known parts is searched (
+ lookups), the first 3 parts per category get their models and every listed part its photo. It
+ prints each site's categories and the SerpApi calls, LLM calls and dollars it spent.
+ 
++`--scad` (cad) makes Grok's OpenSCAD model (`meshgen.grok_scad_run`, role `asset_scad` =
++LLM_ASSET_SCAD) for every catalog item that has a model (every served site, or `--sites`) plus
++the demo's key parts (`SCAD_DEMO_PARTS`: the kitchen dishwashers, the window frames, the gutter
++hangers), `--scad-jobs` at once (default 3), then rebuilds each part's llm_scad variant so the
++headset's LLM+CAD mode serves it at once. Resumable: a part with scad.glb is skipped, a part
++whose run failed (scad.failed.json: why, model, cost) too unless `--retry-failed`, and one
++another process is writing. Prints the plan with an estimate first (`--estimate`: only that),
++one row per part, and the totals; the run's rows land in <DATA_DIR>/scad_warm.json. The model
++each part shows is unchanged.
++
+ Idempotent: `find_parts` (whole-result cache), `resolve_asset` (skips re-resolving a part whose
+ model.glb + "ready" part.json already exist) and `voice.speak` (tts cache) all check their own
+ disk cache first, so re-running this after a successful warm costs nothing.
+@@ -53,9 +65,12 @@ import logging
+ import time
+ from pathlib import Path
+ 
+-from server import agent, assets, bom, catalog, jobs, labels, meshgen, search, voice
++from server import agent, assets, bom, cache, catalog, jobs, labels, meshgen, search, voice
++from server.config import get_settings
+ from server.models import Job, Measurement, Part, SearchRequest
+ 
++logger = logging.getLogger(__name__)
++
+ # The gutter array beat sets 8 hangers -- warm the "what else do I need?" BOM for exactly that
+ # count so the offline demo's agent fast path has a cached answer (see `warm_bom`).
+ _GUTTER_QUERY = "gutter hanger"
+@@ -255,6 +270,179 @@ async def warm_hf(limit: int | None = None, wait: bool = True, sleep=asyncio.sle
+     return counts
+ 
+ 
++# cad: the demo's key parts, CAD first (the kitchen dishwasher the replace job swaps, its
++# runner-ups, the window frames, the gutter hangers); those not on disk are skipped.
++SCAD_DEMO_PARTS = [
++    "frigidaire-fdpc4221as-341c87",
++    "frigidaire-fdpc4314as-87a659",
++    "whirlpool-wdp540hamz-a67f69",
++    "jeld-wen-thdjw235100032-d0809e",
++    "jeld-wen-thdjw140400129-e52d6c",
++    "jeld-wen-thdjw138500119-d5f663",
++    "amerimax-home-products-21812-846830",
++    "amerimax-home-products-m0722b-d6dfa5",
++]
++
++
++async def scad_parts(
++    sites: list[str] | None = None,
++    ids: list[str] | None = None,
++    match: str | None = None,
++    demo: bool = True,
++) -> list[Part]:
++    """cad: the parts `--scad` works on, in order: `ids`, the demo's key parts, then every
++    catalog item with a model (model.glb) for `sites` (default: every served site), each once;
++    `match` keeps those whose id or name holds it (case-insensitive)."""
++    order: list[str] = list(ids or [])
++    if demo:
++        order += SCAD_DEMO_PARTS
++    catalog.INDEX.load()
++    for site in sites or catalog.served_sites():
++        try:
++            det = await catalog.detect(site, wait_s=None)
++        except LookupError:
++            print(f"  {site}: not a served site")
++            continue
++        for cat, _ in catalog.categories_for(det):
++            for doc in catalog.INDEX.in_category(cat)[: catalog.MAX_ITEMS]:
++                if catalog.model_ready(doc.part_id):
++                    order.append(doc.part_id)
++    parts = []
++    for pid in dict.fromkeys(order):
++        part = jobs.load_part(pid)
++        if part is None:
++            continue
++        if match and match.lower() not in f"{part.id} {part.name}".lower():
++            continue
++        parts.append(part)
++    return parts
++
++
++def scad_estimate(todo: int, jobs_n: int) -> dict:
++    """cad: {seconds, usd} to make `todo` CAD models `jobs_n` at a time with the configured
++    model and effort (meshgen.SCAD_TYPICAL)."""
++    model, profile = meshgen.scad_model(), meshgen.scad_profile()
++    each_s = meshgen.scad_eta_s(profile)
++    usd = meshgen.scad_cost_usd(profile)
++    return {
++        "model": model,
++        "profile": profile,
++        "parts": todo,
++        "seconds": round(each_s * -(-todo // max(1, jobs_n)), 0),
++        "usd": round(usd * todo, 3),
++        "each_s": each_s,
++        "each_usd": usd,
++    }
++
++
++def _scad_log_path() -> Path:
++    return Path(get_settings().DATA_DIR) / "scad_warm.json"
++
++
++async def warm_scad(
++    parts: list[Part],
++    jobs_n: int = 3,
++    retry_failed: bool = False,
++    estimate_only: bool = False,
++) -> dict:
++    """cad: Grok's OpenSCAD model for each part, `jobs_n` at a time, then its llm_scad variant
++    rebuilt (not selected). {outcome: count, seconds, usd, ...}; one row per part; resumable."""
++    model = meshgen.scad_model()
++    exe = meshgen.openscad()
++    todo, skip = [], {}
++    for part in parts:
++        out = assets.scad_path(part.id)
++        if out.exists():
++            skip[part.id] = "exists"
++        elif meshgen.scad_writing(out) is not None:
++            skip[part.id] = "writing"
++        elif meshgen.scad_failure(out) is not None and not retry_failed:
++            skip[part.id] = "failed_before"
++        else:
++            todo.append(part)
++    est = scad_estimate(len(todo), jobs_n)
++    print(
++        f"scad: {len(parts)} parts, {len(todo)} to make with {est['profile']} ({jobs_n} at a time), "
++        f"{sum(v == 'exists' for v in skip.values())} made, "
++        f"{sum(v == 'failed_before' for v in skip.values())} failed before"
++        + ("" if retry_failed else " (--retry-failed)")
++        + f"; estimate ~{est['seconds'] / 60:.0f} min, ~${est['usd']:.2f}"
++        f" ({est['each_s']:.0f} s, ${est['each_usd']:.3f} a part)"
++    )
++    counts: dict = {"exists": 0, "failed_before": 0, "writing": 0}
++    for v in skip.values():
++        counts[v] += 1
++    if estimate_only or exe is None:
++        if exe is None:
++            print("scad: OpenSCAD isn't installed (openscad on PATH): nothing made")
++        return {**counts, "estimate": est}
++    log = _scad_log_path()
++    rows: dict = {}
++    try:
++        rows = json.loads(log.read_text()) if log.exists() else {}
++    except ValueError:
++        rows = {}
++    gate = asyncio.Semaphore(max(1, jobs_n))
++    t_all = time.monotonic()
++    usd = 0.0
++
++    async def one(part: Part) -> None:
++        nonlocal usd
++        pdir = assets.part_dir(part.id)
++        photo = pdir / "image.jpg"
++        async with gate:
++            if not photo.exists() and not (
++                part.image_url and await assets.fetch_image(part.image_url, photo)
++            ):
++                outcome, rec = "no_photo", {}
++            else:
++                rec = await meshgen.grok_scad_run(part, photo, assets.scad_path(part.id))
++                outcome = "made" if rec.get("ok") else "failed"
++        if outcome == "made":
++            try:
++                got = await assets.resolve_asset(
++                    part, mode="llm_scad", select_it=False, rebuild=True
++                )
++                variant = got.asset.tier
++            except Exception as exc:  # noqa: BLE001 -- the CAD model stays; the server rebuilds
++                logger.warning("scad warm: %s variant failed: %s", part.id, exc)
++                variant = "-"
++        else:
++            variant = "-"
++        usd += rec.get("cost_usd") or 0.0
++        counts[outcome] = counts.get(outcome, 0) + 1
++        row = {
++            "outcome": outcome,
++            "model": rec.get("model", model),
++            "seconds": rec.get("seconds"),
++            "calls": rec.get("calls"),
++            "fixes": rec.get("fixes"),
++            "cost_usd": rec.get("cost_usd"),
++            "bbox_err_pct": rec.get("bbox_err_pct"),
++            "variant": variant,
++            "error": rec.get("error"),
++            "at": time.time(),
++        }
++        rows[part.id] = row
++        cache.write_json_atomic(log, json.dumps(rows, indent=2))
++        print(
++            f"  {part.id[:58]:<58} {outcome:<8} {row['calls'] or 0:>2} calls"
++            f" {row['seconds'] or 0:6.1f} s ${row['cost_usd'] or 0:.4f}"
++            f" bbox {row['bbox_err_pct'] if row['bbox_err_pct'] is not None else '-'}%"
++            f" variant={variant}" + (f"  ({str(row['error'])[:70]})" if row["error"] else ""),
++            flush=True,
++        )
++
++    await asyncio.gather(*(one(p) for p in todo))
++    took = time.monotonic() - t_all
++    made = counts.get("made", 0)
++    print(
++        f"scad: {counts} in {took / 60:.1f} min, ${usd:.3f}"
++        + (f" (${usd / max(1, len(todo)):.4f} and {took / max(1, len(todo)):.1f} s a part)")
++    )
++    return {**counts, "seconds": round(took, 1), "usd": round(usd, 4), "made": made}
++
++
+ async def _run(
+     queries: list[dict], retry_proxies: bool = False, grok_moulded: bool = False
+ ) -> None:
+@@ -311,6 +499,23 @@ def main() -> None:
+     parser.add_argument(
+         "--no-models", action="store_true", help="with --catalog: skip building models"
+     )
++    parser.add_argument(
++        "--scad",
++        action="store_true",
++        help="only make Grok OpenSCAD (LLM+CAD) models: catalog items with a model + demo parts",
++    )
++    parser.add_argument("--scad-jobs", type=int, default=3, help="with --scad: runs at once")
++    parser.add_argument("--scad-parts", help="with --scad: comma-separated part ids first")
++    parser.add_argument("--scad-match", help="with --scad: only parts whose id/name holds this")
++    parser.add_argument(
++        "--no-demo-parts", action="store_true", help="with --scad: skip SCAD_DEMO_PARTS"
++    )
++    parser.add_argument(
++        "--retry-failed", action="store_true", help="with --scad: retry parts that failed before"
++    )
++    parser.add_argument(
++        "--estimate", action="store_true", help="with --scad: print the plan and estimate only"
++    )
+     args = parser.parse_args()
+     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry SerpApi api_key
+@@ -320,6 +525,18 @@ def main() -> None:
+     if args.hf:
+         asyncio.run(warm_hf(args.hf_limit, wait=not args.hf_no_wait))
+         return
++    if args.scad:
++        sites = [s.strip() for s in args.sites.split(",") if s.strip()] if args.sites else None
++        ids = (
++            [s.strip() for s in args.scad_parts.split(",") if s.strip()] if args.scad_parts else []
++        )
++
++        async def scad() -> None:
++            parts = await scad_parts(sites, ids, args.scad_match, demo=not args.no_demo_parts)
++            await warm_scad(parts, args.scad_jobs, args.retry_failed, args.estimate)
++
++        asyncio.run(scad())
++        return
+     if args.catalog:
+         sites = [s.strip() for s in args.sites.split(",") if s.strip()] if args.sites else None
+         asyncio.run(catalog.warm(sites, models=not args.no_models))
+diff --git a/tests/test_cad.py b/tests/test_cad.py
+new file mode 100644
+index 0000000..31fda23
+--- /dev/null
++++ b/tests/test_cad.py
+@@ -0,0 +1,539 @@
++"""cad: Grok's OpenSCAD models (LLM+CAD) as a first-class asset mode -- stale llm_scad variants
++made again when their reason has passed, an honest `asset.cad` status while Grok writes, the run
++records next to scad.glb (calls, seconds, cost, bbox error, failures), a model-sized loop (parallel
++answers for a fast model), and `python -m server.warm --scad`. OpenSCAD and the LLM are stubbed;
++`test_live_grok_scad_on_a_knob` (opt-in, `-m live`) runs the real thing."""
++
++import asyncio
++import json
++import os
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import respx
++import trimesh
++from fastapi.testclient import TestClient
++from httpx import Response
++from PIL import Image
++
++from server import assets, hf_warm, jobs, meshgen, warm
++from server.app import app
++from server.config import get_settings
++from server.models import Dims, Part
++
++FIXTURES_DIR = Path(__file__).parent / "fixtures" / "assets"
++SOURCE_PHOTO = FIXTURES_DIR / "source_photo_window_ac.jpg"
++AC_DIMS = Dims(w=614.68, d=515.62, h=368.3)
++FAST = "xai:grok-4.20-0309-non-reasoning"
++
++
++@pytest.fixture(autouse=True)
++def _data_dir(tmp_path, monkeypatch, request):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    if not request.node.get_closest_marker("live"):  # live: the configured model
++        monkeypatch.setenv("LLM_ASSET_SCAD", FAST)
++    get_settings.cache_clear()
++    hf_warm.reset()
++    assets._scad_jobs.clear()
++    assets._scad_failed.clear()
++    assets._scad_started.clear()
++    meshgen._scad_seen_s.clear()
++    yield tmp_path
++    hf_warm.reset()
++    get_settings.cache_clear()
++
++
++@pytest.fixture
++def router():
++    """The product photo at example.com for the whole test (background runs fetch it too)."""
++    with respx.mock(assert_all_called=False) as r:
++        _serve_photo(r)
++        yield r
++
++
++@pytest.fixture(autouse=True)
++def _public_example_com(monkeypatch, request):
++    import socket
++
++    if request.node.get_closest_marker("live"):  # the real DNS for the real API
++        return
++
++    def fake(host, *args, **kwargs):
++        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
++
++    monkeypatch.setattr(socket, "getaddrinfo", fake)
++
++
++def _part(pid="ac-1", **kw) -> Part:
++    return Part(
++        id=pid,
++        name=kw.pop("name", "Window air conditioner"),
++        dims_mm=kw.pop("dims_mm", AC_DIMS),
++        image_url=kw.pop("image_url", "https://example.com/photo.jpg"),
++        **kw,
++    )
++
++
++def _fake_plan_llm(monkeypatch) -> list:
++    """The template call (role `asset`); any other role fails loudly."""
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append(role)
++        assert role in ("asset", "extract"), role
++        answer = {
++            "template": "box_appliance",
++            "colors": {"body": "#F0F0F0"},
++            "photo": {"face": "front", "rotate_cw": 0, "single": True},
++            "shape_class": "template",
++        }
++        return SimpleNamespace(
++            model="qwen/qwen3.8-27b",
++            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(answer)))],
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++def _serve_photo(router):
++    router.get("https://example.com/photo.jpg").mock(
++        return_value=Response(
++            200, content=SOURCE_PHOTO.read_bytes(), headers={"content-type": "image/jpeg"}
++        )
++    )
++
++
++def _slab(pid: str) -> None:
++    """A CAD model on disk for the part, as grok_scad writes it (contract frame, metres)."""
++    box = trimesh.creation.box(extents=(0.61, 0.37, 0.52))
++    box.apply_translation((0, 0, 0.26))
++    out = assets.scad_path(pid)
++    out.parent.mkdir(parents=True, exist_ok=True)
++    trimesh.Scene(box).export(out)
++    (out.parent / "scad.json").write_text(
++        json.dumps({"ok": True, "made_by": f"{FAST} + openscad", "seconds": 14.2, "calls": 3})
++    )
++
++
++def _gated_grok(monkeypatch) -> tuple[asyncio.Event, list]:
++    """grok_scad stub that waits for the event, then writes the CAD model."""
++    gate, calls = asyncio.Event(), []
++
++    async def fake(part, photo, out):
++        calls.append(part.id)
++        await gate.wait()
++        _slab(part.id)
++        return True
++
++    monkeypatch.setattr(meshgen, "grok_scad", fake)
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    return gate, calls
++
++
++# --- (a) stale llm_scad variants ---------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_a_template_stored_without_openscad_is_made_again_once_it_is_installed(
++    monkeypatch, router
++):
++    _fake_plan_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: None)
++    first = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert "OpenSCAD isn't installed" in first.asset.note
++    assert assets.ready("ac-1", "llm_scad") is not None  # still no OpenSCAD: it stands
++
++    gate, grok = _gated_grok(monkeypatch)  # OpenSCAD is installed now
++    assert assets.ready("ac-1", "llm_scad") is None  # stale: made again on the next request
++    assert assets.has_variant("ac-1", "llm_scad")
++    again = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert (again.asset.tier, again.asset.note) == (
++        "llm",
++        "Grok is still writing the OpenSCAD model: the LLM template instead",
++    )
++    assert assets.ready("ac-1", "llm_scad") is not None  # writing: served as is meanwhile
++    assert assets.cad_status("ac-1")["status"] == "writing"
++
++    gate.set()
++    await assets._scad_jobs["ac-1"]
++    done = assets.ready("ac-1", "llm_scad")
++    assert (done.asset.tier, done.asset.made_by) == ("scad", f"{FAST} + openscad")
++    assert grok == ["ac-1"]
++
++
++@pytest.mark.asyncio
++async def test_a_run_lost_to_a_restart_is_started_again(monkeypatch, router):
++    _fake_plan_llm(monkeypatch)
++    gate, grok = _gated_grok(monkeypatch)
++    await assets.resolve_asset(_part(), mode="llm_scad")
++    assert grok == ["ac-1"]
++    assets._scad_jobs.pop("ac-1").cancel()  # the server restarted mid-run
++    assert assets.ready("ac-1", "llm_scad") is None
++    assert assets.cad_status("ac-1")["status"] == "none"
++    await assets.resolve_asset(_part(), mode="llm_scad")
++    assert grok == ["ac-1", "ac-1"] and assets.scad_pending("ac-1")
++    gate.set()
++    await assets._scad_jobs["ac-1"]
++
++
++@pytest.mark.asyncio
++async def test_a_cad_model_made_by_another_process_is_picked_up(monkeypatch, router):
++    _fake_plan_llm(monkeypatch)
++    _gate, grok = _gated_grok(monkeypatch)
++    out = assets.scad_path("ac-1")
++    out.parent.mkdir(parents=True)
++    lock = meshgen.scad_sidecar(out, "writing")
++    lock.write_text(json.dumps({"started_at": time.time() - 5, "model": FAST, "pid": os.getpid()}))
++    first = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert grok == []  # warm --scad is on it: no second run
++    assert "still writing" in first.asset.note
++    status = assets.cad_status("ac-1")
++    assert status["status"] == "writing" and 10 <= status["eta_s"] <= 60
++    assert assets.ready("ac-1", "llm_scad") is not None
++
++    lock.unlink()
++    _slab("ac-1")  # it landed
++    assert assets.ready("ac-1", "llm_scad") is None
++    got = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert (got.asset.tier, got.asset.note) == ("scad", None)
++    assert assets.cad_status("ac-1")["status"] == "ready"
++
++
++@pytest.mark.asyncio
++async def test_a_failure_counts_for_its_model_and_an_hour(monkeypatch, router):
++    _fake_plan_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    out = assets.scad_path("ac-1")
++    out.parent.mkdir(parents=True)
++    failed = meshgen.scad_sidecar(out, "failed")
++    failed.write_text(json.dumps({"model": FAST, "at": time.time(), "error": "ERROR: x"}))
++
++    async def no_grok(*a):
++        raise AssertionError("a failure that still counts must not run again")
++
++    monkeypatch.setattr(meshgen, "grok_scad", no_grok)
++    got = await assets.resolve_asset(_part(), mode="llm_scad")
++    assert got.asset.note.startswith("Grok's OpenSCAD model didn't build")
++    cad = assets.cad_status("ac-1")
++    assert cad["status"] == "failed" and "ERROR: x" in cad["reason"]
++    assert assets.ready("ac-1", "llm_scad") is not None
++
++    failed.write_text(json.dumps({"model": FAST, "at": time.time() - 7200, "error": "x"}))
++    assert assets.ready("ac-1", "llm_scad") is None  # an hour later: try again
++    failed.write_text(json.dumps({"model": "xai:grok-4.7", "at": time.time(), "error": "x"}))
++    assert assets.ready("ac-1", "llm_scad") is None  # another model: try again
++
++
++# --- (b) honest pending states on the endpoints ------------------------------------------------
++
++
++def test_b_part_json_and_post_model_say_grok_is_writing(monkeypatch):
++    _fake_plan_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    part = _part()
++    jobs.save_part(part)
++    out = assets.scad_path("ac-1")
++    meshgen.scad_sidecar(out, "writing").write_text(
++        json.dumps({"started_at": time.time() - 20, "model": FAST, "pid": os.getpid()})
++    )
++    with respx.mock(assert_all_called=False) as router, TestClient(app) as client:
++        _serve_photo(router)
++        body = client.post("/parts/ac-1/model?mode=llm_scad", json={"wait_s": 30}).json()
++        assert body["status"] == "ready"
++        assert body["asset"]["tier"] == "llm"  # the template stands in, noted
++        assert body["cad"]["status"] == body["asset"]["cad"]["status"] == "writing"
++        assert body["cad"]["eta_s"] >= 10 and body["cad"]["started_at"] > 0
++        assert body["cad"]["made_by"] == f"{FAST} + openscad"
++
++        j = client.get("/parts/ac-1/part.json?mode=llm_scad").json()
++        assert (j["asset"]["tier"], j["asset"]["cad"]["status"]) == ("llm", "writing")
++        r = client.get("/parts/ac-1/model.glb?mode=llm_scad")
++        assert r.headers["x-asset-cad"] == "writing"
++
++        meshgen.scad_sidecar(out, "writing").unlink()
++        _slab("ac-1")  # landed (warm --scad in another process)
++        j = client.get("/parts/ac-1/part.json?mode=llm_scad").json()
++        assert (j["asset"]["status"], j["asset"]["tier"]) == ("ready", "scad")
++        assert j["asset"]["cad"]["status"] == "ready" and j["asset"]["cad"]["seconds"] == 14.2
++        assert j["asset"]["made_by"] == f"{FAST} + openscad"
++
++        hf = client.get("/parts/ac-1/part.json?mode=auto").json()
++        assert hf["asset"].get("cad") is None  # only llm_scad answers carry it
++
++
++def test_b_no_openscad_is_a_failed_status_with_its_reason(monkeypatch):
++    _fake_plan_llm(monkeypatch)
++    monkeypatch.setattr(meshgen, "openscad", lambda: None)
++    jobs.save_part(_part())
++    with respx.mock(assert_all_called=False) as router, TestClient(app) as client:
++        _serve_photo(router)
++        body = client.post("/parts/ac-1/model", json={"mode": "llm_scad", "wait_s": 30}).json()
++    assert body["cad"] == {
++        "status": "failed",
++        "reason": "OpenSCAD isn't installed on the server",
++        "at": None,
++    }
++
++
++def test_b_the_eta_counts_down_to_a_floor(monkeypatch):
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    out = assets.scad_path("p")
++    out.parent.mkdir(parents=True)
++    (out.parent / "image.jpg").write_bytes(b"jpg")
++    lock = meshgen.scad_sidecar(out, "writing")
++    lock.write_text(json.dumps({"started_at": time.time() - 5, "model": "xai:grok-4.7"}))
++    low = meshgen.SCAD_TYPICAL["grok-4.7@low"][0]  # no profile in the lock: this server's effort
++    assert assets.cad_status("p")["eta_s"] == pytest.approx(low - 5, abs=2)
++    lock.write_text(
++        json.dumps({"started_at": time.time() - 5, "model": "xai:grok-4.7", "profile": "grok-4.7"})
++    )
++    high = meshgen.SCAD_TYPICAL["grok-4.7"][0]
++    assert assets.cad_status("p")["eta_s"] == pytest.approx(high - 5, abs=2)  # the writer's
++    lock.write_text(json.dumps({"started_at": time.time() - 1000, "model": "xai:grok-4.7"}))
++    assert assets.cad_status("p")["eta_s"] == assets.SCAD_ETA_FLOOR_S
++    lock.write_text(json.dumps({"started_at": time.time() - 4000, "model": "xai:grok-4.7"}))
++    assert assets.cad_status("p")["status"] == "none"  # a stale lock doesn't count
++    lock.write_text(json.dumps({"started_at": time.time(), "model": FAST, "pid": 999999}))
++    assert assets.cad_status("p")["status"] == "none"  # nor one of a dead process
++
++
++# --- the loop's records and budget -------------------------------------------------------------
++
++
++@pytest.fixture
++def photo(tmp_path) -> Path:
++    path = tmp_path / "photo.jpg"
++    img = Image.new("RGB", (400, 300), (255, 255, 255))
++    img.paste((200, 30, 30), (100, 90, 300, 210))
++    img.save(path)
++    return path
++
++
++def _scad_llm(monkeypatch, replies: list) -> list:
++    """`asset_scad` answers in order, each with xAI usage (cost ticks)."""
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append({"role": role, "messages": messages, "kw": kw})
++        text = replies[min(len(calls), len(replies)) - 1]
++        usage = SimpleNamespace(
++            prompt_tokens=1600,
++            completion_tokens=600,
++            cost_in_usd_ticks=35_000_000,  # $0.0035
++            completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
++        )
++        return SimpleNamespace(
++            model="grok-4.20-0309-non-reasoning",
++            usage=usage,
++            choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++def _slab_pieces(dims):
++    w, h, d = dims
++    return [(trimesh.creation.box(bounds=[[-w / 2, 0, 0], [w / 2, h, d]]), "#EEEEEE")]
++
++
++def test_the_profile_is_the_model_and_its_effort(monkeypatch):
++    assert meshgen.scad_profile("xai:grok-4.7") == "grok-4.7@low"  # the default effort
++    assert meshgen.scad_profile(FAST) == "grok-4.20-0309-non-reasoning"  # 4.20 takes no effort
++    assert meshgen.scad_effort(FAST) is None
++    assert meshgen.scad_cost_usd("grok-4.7@low") == meshgen.SCAD_TYPICAL["grok-4.7@low"][1]
++    assert meshgen.scad_eta_s("grok-9@turbo") == meshgen.SCAD_DEFAULT[0]
++    monkeypatch.setenv("ASSET_SCAD_EFFORT", "")
++    get_settings.cache_clear()
++    assert meshgen.scad_profile("xai:grok-4.7") == "grok-4.7"  # "" = the model's own default
++
++
++def test_budget_by_model(monkeypatch):
++    assert meshgen.scad_budget(FAST) == (1, 2)
++    assert meshgen.scad_budget("xai:grok-4.7") == (1, 1)
++    monkeypatch.setenv("ASSET_SCAD_SAMPLES", "2")
++    monkeypatch.setenv("ASSET_SCAD_FIXES", "0")
++    get_settings.cache_clear()
++    assert meshgen.scad_budget(FAST) == (2, 0)
++
++
++@pytest.mark.asyncio
++async def test_three_answers_at_once_and_the_first_that_builds_wins(monkeypatch, photo, tmp_path):
++    monkeypatch.setenv("ASSET_SCAD_SAMPLES", "3")
++    get_settings.cache_clear()
++    calls = _scad_llm(monkeypatch, ["```openscad\nA\n```", "```openscad\nB\n```", "```\nC\n```"])
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/openscad")
++    dims = (614.68, 368.3, 515.62)
++    lock_seen = []
++
++    def build(exe, code, work, d):
++        lock_seen.append(meshgen.scad_sidecar(out, "writing").exists())
++        if code == "B":
++            return _slab_pieces(dims), None
++        return [], f"ERROR: {code}"
++
++    monkeypatch.setattr(meshgen, "build_scad", build)
++    out = tmp_path / "p" / "scad.glb"
++    rec = await meshgen.grok_scad_run(_part(), photo, out)
++
++    assert rec["ok"] and out.exists() and all(lock_seen)
++    assert not meshgen.scad_sidecar(out, "writing").exists()
++    assert [c["kw"]["temperature"] for c in calls] == [0.2, 0.7, 0.7]
++    assert (rec["calls"], rec["fixes"], rec["compiled_first"], rec["samples"]) == (3, 0, 1, 3)
++    assert rec["cost_usd"] == pytest.approx(0.0105)
++    assert rec["made_by"] == f"{FAST} + openscad"
++    assert rec["bbox_err_pct"] == pytest.approx(0, abs=1e-6)
++    assert meshgen.scad_record(out)["cost_usd"] == pytest.approx(0.0105)
++    assert rec["profile"] == "grok-4.20-0309-non-reasoning"
++    assert meshgen.scad_eta_s(rec["profile"]) == rec["seconds"]  # this process's runs refine it
++
++
++@pytest.mark.asyncio
++async def test_a_run_that_never_builds_is_recorded_as_failed(monkeypatch, photo, tmp_path):
++    calls = _scad_llm(monkeypatch, ["```openscad\nbad\n```"])
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/openscad")
++    monkeypatch.setattr(meshgen, "build_scad", lambda *a: ([], "ERROR: syntax error"))
++    out = tmp_path / "p" / "scad.glb"
++    rec = await meshgen.grok_scad_run(_part(), photo, out)
++    assert not rec["ok"] and not out.exists()
++    assert len(calls) == 1 + 2  # one answer, two fix rounds (a non-reasoning model)
++    failed = meshgen.scad_failure(out)
++    assert failed["error"].startswith("ERROR: syntax error") and failed["model"] == FAST
++    assert failed["cost_usd"] == pytest.approx(3 * 0.0035)
++    assert not meshgen.scad_sidecar(out, "writing").exists()
++
++
++@pytest.mark.asyncio
++async def test_a_second_run_of_the_same_request_costs_nothing(monkeypatch):
++    _scad_llm(monkeypatch, ["x"])
++    first = await meshgen.cached_chat_meta("asset_scad", [{"role": "user", "content": "q"}])
++    again = await meshgen.cached_chat_meta("asset_scad", [{"role": "user", "content": "q"}])
++    other = await meshgen.cached_chat_meta(
++        "asset_scad", [{"role": "user", "content": "q"}], sample=1
++    )
++    assert (first[1]["cached"], first[1]["cost_usd"]) == (False, pytest.approx(0.0035))
++    assert (again[1]["cached"], again[1]["cost_usd"], again[1]["first_cost_usd"]) == (
++        True,
++        0.0,
++        pytest.approx(0.0035),
++    )
++    assert other[1]["cached"] is False  # another sample is its own call
++
++
++# --- (d) warm --scad ----------------------------------------------------------------------------
++
++
++def _on_disk(pid: str, name: str = "Thing", photo: bool = True) -> Part:
++    part = _part(pid, name=name, image_url=None)
++    part.asset.tier, part.asset.status = "llm", "ready"
++    jobs.save_part(part)
++    (assets.part_dir(pid) / "model.glb").write_bytes(b"glb")
++    if photo:
++        (assets.part_dir(pid) / "image.jpg").write_bytes(SOURCE_PHOTO.read_bytes())
++    return part
++
++
++@pytest.mark.asyncio
++async def test_warm_scad_is_parallel_resumable_and_records_failures(monkeypatch, tmp_path, capsys):
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++    parts = [_on_disk(f"p{i}") for i in range(5)]
++    _slab("p0")  # made before: skipped
++    fail_ids = {"p1"}
++    running, peak, grok, rebuilt = [0], [0], [], []
++
++    async def fake_run(part, photo, out):
++        grok.append(part.id)
++        running[0] += 1
++        peak[0] = max(peak[0], running[0])
++        await asyncio.sleep(0.02)
++        running[0] -= 1
++        if part.id in fail_ids:
++            rec = {
++                "ok": False,
++                "model": FAST,
++                "error": "ERROR: nope",
++                "calls": 5,
++                "at": time.time(),
++            }
++            meshgen.scad_sidecar(out, "failed").write_text(json.dumps(rec))
++            return {**rec, "seconds": 0.02, "cost_usd": 0.0175}
++        _slab(part.id)
++        return {"ok": True, "model": FAST, "calls": 3, "seconds": 0.02, "cost_usd": 0.0105}
++
++    async def fake_resolve(part, **kw):
++        rebuilt.append((part.id, kw))
++        return part.model_copy(update={"asset": part.asset.model_copy(update={"tier": "scad"})})
++
++    monkeypatch.setattr(meshgen, "grok_scad_run", fake_run)
++    monkeypatch.setattr(assets, "resolve_asset", fake_resolve)
++
++    got = await warm.warm_scad(parts, jobs_n=2)
++    assert sorted(grok) == ["p1", "p2", "p3", "p4"] and peak[0] == 2
++    assert (got["made"], got["failed"], got["exists"]) == (3, 1, 1)
++    assert got["usd"] == pytest.approx(3 * 0.0105 + 0.0175)
++    assert {pid for pid, _ in rebuilt} == {"p2", "p3", "p4"}
++    assert all(kw == {"mode": "llm_scad", "select_it": False, "rebuild": True} for _, kw in rebuilt)
++    rows = json.loads((tmp_path / "scad_warm.json").read_text())
++    assert rows["p1"]["outcome"] == "failed" and rows["p1"]["error"] == "ERROR: nope"
++    assert "estimate" in capsys.readouterr().out
++
++    grok.clear()
++    again = await warm.warm_scad(parts, jobs_n=2)  # resumed: nothing left but the failure
++    assert grok == [] and (again["exists"], again["failed_before"]) == (4, 1)
++    fail_ids.clear()
++    await warm.warm_scad(parts, jobs_n=2, retry_failed=True)
++    assert grok == ["p1"]
++
++
++@pytest.mark.asyncio
++async def test_warm_scad_estimate_only_runs_nothing(monkeypatch):
++    monkeypatch.setattr(meshgen, "openscad", lambda: "/usr/bin/true")
++
++    async def no_run(*a):
++        raise AssertionError("estimate only")
++
++    monkeypatch.setattr(meshgen, "grok_scad_run", no_run)
++    got = await warm.warm_scad([_on_disk("a"), _on_disk("b")], jobs_n=3, estimate_only=True)
++    est = got["estimate"]
++    assert est["parts"] == 2 and est["model"] == FAST
++    assert est["usd"] == pytest.approx(2 * meshgen.SCAD_TYPICAL["grok-4.20-0309-non-reasoning"][1])
++
++
++@pytest.mark.asyncio
++async def test_scad_parts_are_ids_then_demo_parts_then_catalog_items(monkeypatch, tmp_path):
++    monkeypatch.setenv("SCENE_DIR", str(tmp_path / "no-scenes"))
++    get_settings.cache_clear()
++    dw = warm.SCAD_DEMO_PARTS[0]
++    window = warm.SCAD_DEMO_PARTS[3]
++    for pid, name in [("mine", "My knob"), (dw, "Dishwasher"), (window, "Vinyl Window")]:
++        _on_disk(pid, name)
++    got = await warm.scad_parts(ids=["mine", "missing"])
++    assert [p.id for p in got] == ["mine", dw, window]
++    assert [p.id for p in await warm.scad_parts(match="window")] == [window]
++    assert [p.id for p in await warm.scad_parts(ids=["mine"], demo=False)] == ["mine"]
++
++
++# --- opt-in: the real Grok + OpenSCAD -----------------------------------------------------------
++
++
++@pytest.mark.live
++@pytest.mark.skipif(meshgen.openscad() is None, reason="OpenSCAD not installed")
++@pytest.mark.asyncio
++async def test_live_grok_scad_on_a_knob(tmp_path, photo):
++    """The configured writer (default grok-4.7 at low effort: ~1 min, ~$0.03; LLM_ASSET_SCAD /
++    ASSET_SCAD_EFFORT pick another). Run: `set -a; . .env; set +a; pytest -m live -k grok_scad`."""
++    knob = Part(
++        id="live-knob",
++        name="Round cabinet knob, satin nickel",
++        dims_mm=Dims(w=32, h=32, d=28),
++        material="zinc",
++    )
++    out = tmp_path / "live-knob" / "scad.glb"
++    rec = await meshgen.grok_scad_run(knob, photo, out)
++    assert rec["ok"], rec.get("error")
++    scene = trimesh.load(out, force="scene")
++    assert scene.extents == pytest.approx([0.032, 0.032, 0.028], abs=1e-4)
++    assert rec["cost_usd"] is None or rec["cost_usd"] < 0.5
+-- 
+2.50.1 (Apple Git-155)
+

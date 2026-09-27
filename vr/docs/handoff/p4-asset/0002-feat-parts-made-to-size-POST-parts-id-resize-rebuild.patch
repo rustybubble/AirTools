@@ -1,0 +1,529 @@
+From 6b095635bb367f1cab423fe13136180cc6f54ee2 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:38:26 -0400
+Subject: [PATCH 2/5] feat(parts): made to size -- POST /parts/{id}/resize
+ rebuilds a part's model at a new W x H x D
+
+For the headset's Size & finish panel (width / height / depth steppers, "Fit to opening"). New
+server/resize.py builds the model the way its tier made model.glb:
+
+- llm: the template plan resolve_asset cached (asked with the part's own size: a cache hit, no
+  LLM call) built again at the new size -- frame members, sashes and panes keep their proportions
+  -- with the product photo on the same face. ~0.1 s.
+- proxy: the photo decal box at the new size; cad / scad / ai_mesh: model.glb stretched per axis
+  about its mount-face origin (`scaled`).
+- `finish`: F11 first (finish.apply, Imagine, cached); its variant photo and colours go on the
+  rebuilt model (finish.build gains `dims`). A tint-only finish is left to the headset
+  (`finish_source: "tint"`).
+- Each size is built once: model-size-<w>x<h>x<d>[-<finish>].glb (served by the model-{slug}.glb
+  route) with its reply in a .json beside it. 409 while model.glb is still being made; 422 outside
+  0.5-2x the listing or under 10 mm.
+- finish.product_roles keeps glass (KEEP_ROLES): a window's panes are its largest role and were
+  taken for the product colour, so a bronze window got bronze glass.
+
+Live on :8007: a Jeld-Wen 59.5 x 47.5 in slider at 1487 x 1187 x 83 mm -> template in 0.10 s (cached
+0.00 s); + Bronze -> Imagine $0.07, 8.1 s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ server/app.py        |  29 ++++++-
+ server/finish.py     |  32 ++++++--
+ server/resize.py     | 162 +++++++++++++++++++++++++++++++++++++
+ tests/test_resize.py | 187 +++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 404 insertions(+), 6 deletions(-)
+ create mode 100644 server/resize.py
+ create mode 100644 tests/test_resize.py
+
+diff --git a/server/app.py b/server/app.py
+index 96c664e..eda8f26 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -51,6 +51,7 @@ from server import (
+     quote,
+     realtime,
+     report,
++    resize,
+     rules,
+     runjob,
+     safety,
+@@ -62,7 +63,7 @@ from server import (
+ )
+ from server.config import get_settings
+ from server.keys import KeysExhausted
+-from server.models import SearchRequest
++from server.models import Dims, SearchRequest
+ 
+ logging.basicConfig(level=logging.INFO)
+ # httpx logs full request URLs at INFO, and SerpApi takes its key as a query param.
+@@ -229,6 +230,32 @@ async def part_finish(part_id: str, body: FinishRequest) -> dict:
+     return await finish.apply(_load_part(part_id), body.finish)
+ 
+ 
++# --- parts: made to size (assetgen, server/resize.py) -------------------------
++
++
++class ResizeRequest(BaseModel):
++    """The size the headset's Size & finish panel asks for (mm), and optionally a finish."""
++
++    w: float = Field(gt=0)
++    h: float = Field(gt=0)
++    d: float = Field(gt=0)
++    finish: str | None = Field(default=None, max_length=60)
++
++
++@app.post("/parts/{part_id}/resize")
++async def part_resize(part_id: str, body: ResizeRequest) -> dict:
++    """The part's model rebuilt at w x h x d (its template at the new size; a mesh stretched),
++    served at the returned `model_url`. 409 while its model.glb is still being made; 422 for a
++    size outside 0.5-2x the listing."""
++    part = _load_part(part_id)
++    if part.asset.status != "ready" or not (assets.part_dir(part_id) / "model.glb").exists():
++        raise HTTPException(409, "the part's model isn't ready yet")
++    try:
++        return await resize.resize(part, Dims(w=body.w, h=body.h, d=body.d), body.finish)
++    except resize.ResizeError as exc:
++        raise HTTPException(422, str(exc)) from exc
++
++
+ # --- scenes: read-only scene packages (plan §1a/§1b) ------------------------
+ 
+ _SITE_RE = re.compile(r"^[a-z0-9-]+$")
+diff --git a/server/finish.py b/server/finish.py
+index bc0fbda..e4a880a 100644
+--- a/server/finish.py
++++ b/server/finish.py
+@@ -31,7 +31,7 @@ from PIL import Image
+ from server import assets, cache, meshgen
+ from server import part_templates as T
+ from server.config import get_settings
+-from server.models import Part
++from server.models import Dims, Part
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -75,12 +75,22 @@ def _rgb(hex_str: str) -> np.ndarray:
+     return np.array([int(hex_str.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)])
+ 
+ 
++# assetgen: roles a finish never recolours (a bronze window keeps clear glass; the panes are also
++# a window's largest role, which would otherwise make glass "the product's colour").
++KEEP_ROLES = {"glass"}
++
++
+ def product_roles(colors: dict[str, str], areas: dict[str, float]) -> list[str]:
+     """The template roles in the product's own colour: the largest role, plus any within
+     ROLE_TOL of its colour (a water heater's jacket, top and panels, not its copper pipes or
+     dark base). ponytail: sRGB max-channel distance, no Lab."""
++    areas = {r: a for r, a in areas.items() if r not in KEEP_ROLES} or areas
+     main = colors[max(areas, key=areas.get)]
+-    return [r for r, c in colors.items() if np.abs(_rgb(c) - _rgb(main)).max() <= ROLE_TOL]
++    return [
++        r
++        for r, c in colors.items()
++        if r not in KEEP_ROLES and np.abs(_rgb(c) - _rgb(main)).max() <= ROLE_TOL
++    ]
+ 
+ 
+ async def edit(photo: Path, finish: str) -> dict:
+@@ -130,9 +140,13 @@ def save_variant(jpg_b64: str, photo: Path, out: Path) -> None:
+     img.resize(size, Image.LANCZOS).save(out, "JPEG", quality=90)
+ 
+ 
+-async def build(part: Part, photo: Path, variant: Path, name: str) -> trimesh.Scene:
+-    """`variant` on the part's geometry, the way `assets._generated`/`_box` made model.glb."""
+-    dims = part.dims_mm
++async def build(
++    part: Part, photo: Path, variant: Path, name: str, dims: Dims | None = None
++) -> trimesh.Scene:
++    """`variant` on the part's geometry, the way `assets._generated`/`_box` made model.glb.
++    assetgen: `dims` builds it at another size (server/resize.py); the plan is still asked with
++    the part's own size, so it's the cached one."""
++    dims = dims or part.dims_mm
+     if part.asset.tier == "proxy":
+         face = await asyncio.to_thread(meshgen.aspect_guess, dims, photo)
+         return await asyncio.to_thread(meshgen.decal_box, dims, variant, face)
+@@ -153,12 +167,20 @@ async def build(part: Part, photo: Path, variant: Path, name: str) -> trimesh.Sc
+             trimesh.load, assets.part_dir(part.id) / "model.glb", force="scene"
+         )
+         geometry = assets._paint(assets._flatten(loaded), color)
++        if dims != part.dims_mm:  # assetgen: stretched onto the new size about the mount face
++            geometry.apply_scale(stretch(part.dims_mm, dims))
+     if plan is None or plan.single:
+         rotate = plan.rotate_cw if plan else 0
+         geometry = await asyncio.to_thread(meshgen.project, geometry, variant, face, rotate)
+     return geometry
+ 
+ 
++def stretch(before: Dims, after: Dims) -> list[float]:
++    """assetgen: per-axis factors (X = w, Y = h, Z = d) taking a GLB of `before` onto `after`; the
++    origin (the mount-face centre) stays put."""
++    return [after.w / before.w, after.h / before.h, after.d / before.d]
++
++
+ def _spoken(name: str, source: str, tint_only: bool, is_listed: bool) -> str:
+     if source == "imagine":
+         line = f"Here it is in {name}."
+diff --git a/server/resize.py b/server/resize.py
+new file mode 100644
+index 0000000..5baef7b
+--- /dev/null
++++ b/server/resize.py
+@@ -0,0 +1,162 @@
++"""assetgen: a part's model at another size (the headset's Size & finish panel: width / height /
++depth steppers, "Fit to opening"), built the way its tier built model.glb (`POST
++/parts/{id}/resize`).
++
++- `llm`: the template plan `resolve_asset` cached (asked with the part's own size, so it's a cache
++  hit and no LLM call) is built again at the new W x H x D -- frame members, sashes and panes keep
++  their proportions instead of stretching -- and the product photo goes on the same face.
++- `proxy`: the photo decal box (or the plain box) at the new size.
++- `cad` / `scad` / `ai_mesh`: model.glb stretched per axis about its mount-face origin (`scaled`):
++  a mesh has no parameters to rebuild.
++- `finish`: with a finish name, F11 (`finish.apply`, Grok Imagine, cached) first; its variant
++  photo and colours go on the rebuilt model. When F11 only tints (`source: "tint"`), the model is
++  built in the listing's colours and the headset tints it (`finish_source: "tint"`).
++
++Each size (and finish) is built once: `model-size-<w>x<h>x<d>[-<finish>].glb` next to model.glb,
++served by the `model-{slug}.glb` route, with its reply in a `.json` beside it. Sizes stay within
++MIN_FACTOR..MAX_FACTOR of the listing (a window made to measure, not a different product).
++Never calls an LLM for a warmed part.
++"""
++
++import asyncio
++import json
++import logging
++import time
++from pathlib import Path
++
++import trimesh
++
++from server import assets, cache, finish, meshgen
++from server.models import Dims, Part
++
++logger = logging.getLogger(__name__)
++
++MIN_FACTOR, MAX_FACTOR = 0.5, 2.0  # of the listing's size, per axis
++MIN_MM = 10.0
++
++
++class ResizeError(ValueError):
++    """A size the endpoint refuses (422)."""
++
++
++def check(part: Part, dims: Dims) -> None:
++    """Within MIN_FACTOR..MAX_FACTOR of the listing on every axis, and at least MIN_MM."""
++    for axis in ("w", "h", "d"):
++        want, listed = getattr(dims, axis), getattr(part.dims_mm, axis)
++        if want < MIN_MM:
++            raise ResizeError(f"{axis} {want:.0f} mm is under {MIN_MM:.0f} mm")
++        if not (MIN_FACTOR * listed - 0.5 <= want <= MAX_FACTOR * listed + 0.5):
++            raise ResizeError(
++                f"{axis} {want:.0f} mm is outside {MIN_FACTOR:g}-{MAX_FACTOR:g}x the listing's "
++                f"{listed:.0f} mm"
++            )
++
++
++def slug(dims: Dims, finish_name: str | None) -> str:
++    """ "size-1486x1181x80" (+ "-matte-black"): whole millimetres, the model-{slug}.glb alphabet."""
++    s = f"size-{round(dims.w)}x{round(dims.h)}x{round(dims.d)}"
++    f = finish.slug(finish_name or "")
++    return f"{s}-{f}" if f else s
++
++
++def _scaled(part: Part, dims: Dims) -> trimesh.Scene:
++    """model.glb stretched per axis onto `dims` about its origin (the mount-face centre)."""
++    scene = trimesh.load(assets.part_dir(part.id) / "model.glb", force="scene")
++    scene.apply_transform(_scale_matrix(finish.stretch(part.dims_mm, dims)))
++    return scene
++
++
++def _scale_matrix(k: list[float]):
++    m = trimesh.transformations.identity_matrix()
++    m[0, 0], m[1, 1], m[2, 2] = k
++    return m
++
++
++async def _template(part: Part, dims: Dims, photo: Path | None) -> trimesh.Scene | None:
++    """The cached plan at the new size, photo on (the part's own photo)."""
++    plan = await meshgen.ask(part, photo)  # the plan resolve_asset cached: no LLM call
++    if plan is None:
++        return None
++    geometry = await asyncio.to_thread(meshgen.build, plan, dims)
++    if photo is not None and plan.single:
++        face = plan.face or await asyncio.to_thread(meshgen.aspect_guess, dims, photo)
++        try:
++            geometry = await asyncio.to_thread(
++                meshgen.project, geometry, photo, face, plan.rotate_cw
++            )
++        except Exception as exc:  # noqa: BLE001 -- an untextured model is still the right size
++            logger.info("resize %s: photo projection failed: %s", part.id, exc)
++    return geometry
++
++
++async def resize(part: Part, dims: Dims, finish_name: str | None = None) -> dict:
++    """The part's model at `dims` (and `finish_name`): the `POST /parts/{id}/resize` body. Raises
++    ResizeError for a size out of range; otherwise never raises (a failed rebuild is `scaled`)."""
++    check(part, dims)
++    finish_name = (finish_name or "").strip() or None
++    name = slug(dims, finish_name)
++    pdir = assets.part_dir(part.id)
++    glb, sidecar = pdir / f"model-{name}.glb", pdir / f"model-{name}.json"
++    if glb.exists() and sidecar.exists():
++        try:
++            return {**json.loads(sidecar.read_text()), "cached": True}
++        except (OSError, ValueError):
++            pass
++    start = time.monotonic()
++    photo = pdir / "image.jpg"
++    photo = photo if photo.exists() else None
++    out = {
++        "part_id": part.id,
++        "dims_mm": dims.model_dump(),
++        "listed_mm": part.dims_mm.model_dump(),
++        "tier": part.asset.tier,
++        "template": part.asset.template,
++        "finish": finish_name,
++        "finish_source": None,
++        "source": "scaled",
++        "reason": None,
++    }
++    geometry = None
++    try:
++        variant = None
++        if finish_name:
++            res = await finish.apply(part, finish_name)  # F11: Imagine edit (cached) or tint
++            out["finish_source"] = res["source"]
++            out["reason"] = res.get("reason")
++            if res["source"] == "imagine":
++                variant = pdir / f"finish-{finish.slug(finish_name)}.jpg"
++        if variant is not None and variant.exists() and photo is not None:
++            geometry = await finish.build(part, photo, variant, finish_name, dims=dims)
++            out["source"] = "box" if part.asset.tier == "proxy" else "template"
++            if part.asset.tier not in ("llm", "proxy"):
++                out["source"] = "scaled"
++        elif part.asset.tier == "llm":
++            geometry = await _template(part, dims, photo)
++            out["source"] = "template" if geometry is not None else "scaled"
++        elif part.asset.tier == "proxy":
++            geometry = await asyncio.to_thread(
++                assets._box, part.model_copy(update={"dims_mm": dims}), photo
++            )
++            out["source"] = "box"
++    # Blind except is deliberate: a template, photo or Imagine failure still leaves the stretched
++    # model below, which is the right size.
++    except Exception as exc:  # noqa: BLE001
++        logger.info("resize %s: rebuild failed (%s), stretching model.glb", part.id, exc)
++        out["reason"] = str(exc)[:200]
++        geometry = None
++    if geometry is None:
++        geometry = await asyncio.to_thread(_scaled, part, dims)
++        out["source"] = "scaled"
++    await asyncio.to_thread(geometry.export, glb)
++    out["model_url"] = f"/parts/{part.id}/model-{name}.glb"
++    out["seconds"] = round(time.monotonic() - start, 2)
++    cache.write_json_atomic(sidecar, json.dumps(out, indent=2))
++    logger.info(
++        "resize %s -> %s: %s (%s) in %.2f s",
++        part.id,
++        name,
++        out["source"],
++        part.asset.tier,
++        out["seconds"],
++    )
++    return {**out, "cached": False}
+diff --git a/tests/test_resize.py b/tests/test_resize.py
+new file mode 100644
+index 0000000..0917bdd
+--- /dev/null
++++ b/tests/test_resize.py
+@@ -0,0 +1,187 @@
++"""assetgen: a part made to size (server/resize.py, POST /parts/{id}/resize) and a finish that
++keeps a window's glass. No network, no keys: every LLM call is stubbed."""
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++import trimesh
++from fastapi.testclient import TestClient
++from PIL import Image
++
++from server import agent, assets, jobs, meshgen, resize
++from server import part_templates as T
++from server.app import app
++from server.config import get_settings
++from server.models import Asset, Dims, Part
++
++WINDOW = Dims(w=1486, h=1181, d=80)
++NAME = "58.5 in. x 46.5 in. Double Hung White Vinyl Replacement Window"
++WINDOW_ANSWER = {
++    "template": "window",
++    "params": {"style": "double_hung", "grid_x": 2, "grid_y": 1},
++    "colors": {"frame": "#F2F2F2", "glass": "#9FB4C4"},
++    "finishes": {"frame": "plastic"},
++    "photo": {"face": "front", "rotate_cw": 0, "single": True},
++    "shape_class": "template",
++}
++PANEL_ANSWER = {**WINDOW_ANSWER, "template": "flat_panel", "params": {"frame_w": 0.1}}
++
++
++@pytest.fixture(autouse=True)
++def _data_dir(tmp_path, monkeypatch):
++    monkeypatch.setenv("DATA_DIR", str(tmp_path))
++    get_settings.cache_clear()
++    agent._sessions.clear()
++    yield tmp_path
++    get_settings.cache_clear()
++    agent._sessions.clear()
++
++
++@pytest.fixture
++def photo(tmp_path) -> Path:
++    """A white window frame with grey glass on a white catalogue background."""
++    path = tmp_path / "window.jpg"
++    img = Image.new("RGB", (500, 400), (255, 255, 255))
++    img.paste((230, 230, 228), (50, 40, 450, 360))
++    img.paste((120, 140, 160), (80, 70, 420, 330))
++    img.save(path)
++    return path
++
++
++def _part(**kw) -> Part:
++    return Part(**{"id": "win", "name": NAME, "dims_mm": WINDOW, **kw})
++
++
++def fake_llm(monkeypatch, replies: dict, answered: dict | None = None) -> list:
++    """Stub `llm.chat`: role -> reply text (or an exception); `answered`: role -> the model name
++    the response says answered it (a Groq call that fell back to xAI says grok-*)."""
++    calls = []
++
++    async def chat(role, messages, **kw):
++        calls.append(role)
++        reply = replies[role]
++        if isinstance(reply, Exception):
++            raise reply
++        msg = SimpleNamespace(content=reply)
++        return SimpleNamespace(
++            choices=[SimpleNamespace(message=msg)], model=(answered or {}).get(role)
++        )
++
++    monkeypatch.setattr(meshgen.llm, "chat", chat)
++    return calls
++
++
++def _bounds_mm(glb: Path) -> np.ndarray:
++    lo, hi = trimesh.load(glb, force="scene").bounds
++    return (hi - lo) * 1000
++
++
++# --- made to size: POST /parts/{id}/resize -------------------------------------------------------
++
++
++def _ready_part(tier: str, photo: Path | None = None) -> Part:
++    part = _part()
++    part.asset = Asset(tier=tier, status="ready", template="window" if tier == "llm" else None)
++    pdir = assets.part_dir(part.id)
++    pdir.mkdir(parents=True, exist_ok=True)
++    if photo is not None:
++        Image.open(photo).save(pdir / "image.jpg")
++    if tier == "llm":
++        scene, _ = T.build("window", WINDOW.model_dump())
++        scene.export(pdir / "model.glb")
++    else:
++        assets.proxy_mesh(WINDOW).export(pdir / "model.glb")
++    jobs.save_part(part)
++    return part
++
++
++@pytest.mark.asyncio
++async def test_an_llm_part_is_rebuilt_from_its_cached_plan_at_the_new_size(monkeypatch, photo):
++    calls = fake_llm(monkeypatch, {"asset": json.dumps(WINDOW_ANSWER)})
++    part = _ready_part("llm", photo)
++    await meshgen.ask(part, assets.part_dir("win") / "image.jpg")  # resolve_asset cached the plan
++    assert calls == ["asset"]
++    new = Dims(w=1487.3, h=1187.3, d=80)
++    out = await resize.resize(part, new)
++    assert calls == ["asset"]  # rebuilt from the cached plan: no LLM call
++    assert out["source"] == "template" and out["tier"] == "llm" and not out["cached"]
++    assert out["model_url"] == "/parts/win/model-size-1487x1187x80.glb"
++    glb = assets.part_dir("win") / "model-size-1487x1187x80.glb"
++    assert _bounds_mm(glb) == pytest.approx([new.w, new.h, new.d], abs=0.01)
++    assert "photo" in trimesh.load(glb, force="scene").geometry  # the product photo went on
++    again = await resize.resize(part, new)
++    assert again["cached"] and again["model_url"] == out["model_url"]
++
++
++@pytest.mark.asyncio
++async def test_a_proxy_part_gets_a_new_box_and_a_mesh_is_stretched(photo):
++    part = _ready_part("proxy", photo)
++    out = await resize.resize(part, Dims(w=1400, h=1100, d=100))
++    assert out["source"] == "box"
++    glb = assets.part_dir("win") / "model-size-1400x1100x100.glb"
++    assert _bounds_mm(glb) == pytest.approx([1400, 1100, 100], abs=0.01)
++
++    part = _ready_part("ai_mesh")
++    out = await resize.resize(part, Dims(w=1300, h=1000, d=90))
++    assert out["source"] == "scaled"
++    scene = trimesh.load(assets.part_dir("win") / "model-size-1300x1000x90.glb", force="scene")
++    lo, hi = scene.bounds
++    assert (hi - lo) * 1000 == pytest.approx([1300, 1000, 90], abs=0.01)
++    assert lo[2] == pytest.approx(0, abs=1e-6)  # the mount face stays on the origin
++
++
++def test_sizes_out_of_range_are_refused():
++    part = _part()
++    with pytest.raises(resize.ResizeError):
++        resize.check(part, Dims(w=WINDOW.w * 2.2, h=WINDOW.h, d=WINDOW.d))
++    with pytest.raises(resize.ResizeError):
++        resize.check(part, Dims(w=WINDOW.w, h=WINDOW.h * 0.4, d=WINDOW.d))
++    with pytest.raises(resize.ResizeError):
++        resize.check(part, Dims(w=WINDOW.w, h=WINDOW.h, d=5))
++    resize.check(part, Dims(w=WINDOW.w * 0.5, h=WINDOW.h * 2, d=WINDOW.d))
++    assert (
++        resize.slug(Dims(w=1486.4, h=1181, d=79.6), "Matte Black")
++        == "size-1486x1181x80-matte-black"
++    )
++
++
++def test_the_resize_route(photo):
++    client = TestClient(app)
++    assert client.post("/parts/nope/resize", json={"w": 1, "h": 1, "d": 1}).status_code == 404
++    part = _part()
++    part.asset = Asset(tier="proxy", status="pending")
++    jobs.save_part(part)
++    assert client.post("/parts/win/resize", json={"w": 1400, "h": 1100, "d": 80}).status_code == 409
++    _ready_part("proxy", photo)
++    r = client.post("/parts/win/resize", json={"w": 5000, "h": 1100, "d": 80})
++    assert r.status_code == 422 and "outside" in r.json()["detail"]
++    r = client.post("/parts/win/resize", json={"w": 1400, "h": 1100, "d": 80})
++    assert r.status_code == 200 and r.json()["source"] == "box"
++    got = client.get(r.json()["model_url"])
++    assert got.status_code == 200 and got.content[:4] == b"glTF"
++
++
++@pytest.mark.asyncio
++async def test_a_finish_the_seller_doesnt_render_is_left_to_the_headset_tint(monkeypatch, photo):
++    fake_llm(monkeypatch, {"asset": json.dumps(WINDOW_ANSWER)})
++    part = _ready_part("llm", photo)
++    await meshgen.ask(part, assets.part_dir("win") / "image.jpg")
++
++    async def tint_only(p, name):
++        return {"source": "tint", "reason": "offline, finish not cached"}
++
++    monkeypatch.setattr(resize.finish, "apply", tint_only)
++    out = await resize.resize(part, Dims(w=1480, h=1180, d=80), "Bronze")
++    assert out["finish"] == "Bronze" and out["finish_source"] == "tint"
++    assert out["source"] == "template" and out["model_url"].endswith("-bronze.glb")
++
++
++def test_a_finish_keeps_a_windows_glass():
++    from server import finish
++
++    colors = {"frame": "#F0F0F0", "sash": "#F0F0F0", "glass": "#E8F0F8", "grid": "#F0F0F0"}
++    areas = {"frame": 1.0, "sash": 0.8, "glass": 3.0, "grid": 0.1}  # the panes are the largest
++    assert finish.product_roles(colors, areas) == ["frame", "sash", "grid"]
+-- 
+2.50.1 (Apple Git-155)
+

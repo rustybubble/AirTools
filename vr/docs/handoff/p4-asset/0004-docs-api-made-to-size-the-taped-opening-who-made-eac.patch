@@ -1,0 +1,121 @@
+From 2c5a4848241f388bc1be5936be77f7d2dc46e809 Mon Sep 17 00:00:00 2001
+From: Ravindra Lakkireddy <85186928+rlakki08@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 21:05:10 -0400
+Subject: [PATCH 4/5] docs(api): made to size, the taped opening, who made each
+ asset, window depths
+
+POST /parts/{id}/resize; SearchRequest.opening and context `opening`; asset.made_by / template /
+retried / seconds and LLM_ASSET_RETRY; dims_source home_depot_typical_depth / title_typical_depth
+and why a window's rough opening isn't its size.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md   |  1 +
+ docs/api.md | 46 ++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 45 insertions(+), 2 deletions(-)
+
+diff --git a/README.md b/README.md
+index ce484f4..c767cc4 100644
+--- a/README.md
++++ b/README.md
+@@ -90,6 +90,7 @@ Each role is independently overridable via environment variable:
+ | `LLM_VISION` | `groq:qwen/qwen3.8-27b` | Headset frame description |
+ | `LLM_ASSET` | `groq:qwen/qwen3.8-27b` | Part 3D asset: template, params, colours, photo face (one vision call per part; `xai:grok-4.20-0309-non-reasoning` works too) |
+ | `LLM_ASSET_SCAD` | `xai:grok-4.7` | Offline OpenSCAD models for moulded parts (`warm --grok-moulded` only) |
++| `LLM_ASSET_RETRY` | `xai:grok-4.20-0309-non-reasoning` | A poor `asset` answer (none, or a known shape such as a window answered with another template) is asked once more here; `""` = off. `asset.made_by` in part.json says who made each model |
+ | `LLM_SURVEY` | `xai:grok-4.20-0309-non-reasoning` | Drone condition survey (`POST /scene/survey`): one vision call over up to 6 capture frames |
+ | `LLM_SURVEY_CAREFUL` | `xai:grok-4.7` | The same survey with `model: "careful"` (low reasoning effort) |
+ | `LLM_REPORT` | `xai:grok-4.3` | Site-walk report summary (`GET /report/{session_id}`); falls back to the `agent` role if xAI fails |
+diff --git a/docs/api.md b/docs/api.md
+index 8170317..48c94bf 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -48,6 +48,13 @@ Origin at the **mounting-face centre**: X/Y plane at Z=0, part extends toward +Z
+ `asset.scale_residual_pct` — max per-axis deviation (%) vs uniform scale; 0 for `llm` and proxy.
+ Photo-textured GLBs carry one extra JPEG-textured primitive named `photo`.
+ 
++Who made it (additive, null from older servers): `asset.made_by` — the provider:model that answered the
++template call (`"groq:qwen/qwen3.8-27b"`; `"xai:grok-4.20-0309-non-reasoning"` when Groq was rate-limited and
++`llm.chat` re-sent the call to xAI, or when Groq's answer was poor and the Grok retry won), `asset.template` (the
++`llm` template, e.g. `"window"`), `asset.retried` (the Grok retry made it) and `asset.seconds` (start to GLB). A poor
++answer is none at all, or not the template a known shape needs (a "... Vinyl Window" as a flat panel or a box); the
++retry runs on role `asset_retry` (`LLM_ASSET_RETRY`, default `xai:grok-4.20-0309-non-reasoning`, `""` = off).
++
+ ---
+ 
+ ## 3. Flows
+@@ -161,6 +168,7 @@ Start a background search; returns after a 0.5 s fast-path wait.
+ | `frame_jpg_b64` | string | base64 JPEG hint for part ID |
+ | `max_candidates` | int | default 3 |
+ | `cavity` | Cavity | optional: a removed scene part's gap, `{w_m, h_m, d_m, component_id?, label?, estimated?, measured?: {w_m, h_m, d_m}}` in real metres (the parts file's `size_m` x the scale calibration; `measured` = the headset's tape, which wins). Every candidate's `fit` is then against all three axes (width across the opening, height, depth; the tightest clearance decides, `axis` names it) and fitting ones sort first |
++| `opening` | Opening | optional: an opening the headset taped (a window's width and height tapes), `{w_m, h_m, d_m?, label?, kind?}` in real metres. The shops are searched with its size ("window frame 59 x 47 in"), the planner is told the product goes into it, and every candidate's `fit` is against its width and height (its depth only with `d_m`): more than 3 mm over is `too_big`, more than 51 mm (2 in.) under on an axis is `too_small` (made for a smaller opening), else `fits`; the ones that fit come first, least spare first |
+ 
+ `Measurement.axis`: `"w"/"d"/"h"/"length"` or null.
+ 
+@@ -198,9 +206,10 @@ Full `Part` object. Key fields for rendering:
+ | `id` | string | slug, e.g. `"gutter-hanger-hidden-k-style"` |
+ | `name` | string | display name |
+ | `dims_mm` | `{w,d,h}` | millimetres |
+-| `dims_source` | string | `"home_depot"/"page"/"llm"/"title"`; `"title"` = last resort, sizes printed in the listing title (e.g. "12 in. W x 8 in. D x 3 in. H", or the one side the LLM's published dims lacked) |
++| `dims_source` | string | `"home_depot"/"page"/"llm"/"title"`; `"title"` = last resort, sizes printed in the listing title (e.g. "12 in. W x 8 in. D x 3 in. H", or the one side the LLM's published dims lacked). A window or door published with its width and height only gets its jamb depth, else the standard 3 1/4 in.: `"home_depot_typical_depth"` / `"title_typical_depth"` (Home Depot's "Rough Opening Width/Height" is the hole it goes in, never its size) |
+ | `asset.tier` / `asset.status` | string | see section 2 |
+ | `asset.scale_residual_pct` | float | |
++| `asset.made_by` / `asset.template` / `asset.retried` / `asset.seconds` | string / string / bool / float | who made the model and how long it took (section 2); null from older servers |
+ | `fit.status` | string | `"fits"/"too_big"/"too_small"/"unknown"` |
+ | `fit.spare_mm` | float\|null | negative = too big |
+ | `fit.note` | string\|null | e.g. `"exact fit"`, `"fits a 23–36 in. window opening"` |
+@@ -315,10 +324,42 @@ cache miss returns `tint`, never an error.
+ 
+ Errors: `400` invalid part id, `404` unknown part, `422` empty or over-long `finish`.
+ 
++### `POST /parts/{part_id}/resize` — made to size
++
++The part's model at another size (the headset's Size & finish panel: width / height / depth steps, "Fit to
++opening"), built the way its tier built `model.glb`, same contract (section 2: metres, origin at the mount-face
++centre, bbox = the new size):
++
++- `llm`: the template plan `resolve_asset` cached is built again at the new size -- frame members, sashes and panes
++  keep their proportions -- with the product photo on the same face. No LLM call (the plan is a cache hit). ~0.1 s.
++- `proxy`: the photo decal box at the new size. `cad` / `scad` / `ai_mesh`: `model.glb` stretched per axis about its
++  origin (`source: "scaled"`).
++- With `finish`: `POST /finish` first (Imagine, cached); its variant photo and colours go on the rebuilt model. A
++  tint-only finish comes back with `finish_source: "tint"`: the model is in the listing's colours, tint it.
++
++**Request:** `{"w": 1487.3, "h": 1187.3, "d": 82.55, "finish": "Bronze"}` — millimetres; `finish` optional.
++
++**Response:**
++```json
++{
++  "part_id": "jeld-wen-thdjw138500117-c6201e", "dims_mm": {"w": 1487.3, "d": 82.55, "h": 1187.3},
++  "listed_mm": {"w": 1511.3, "d": 82.55, "h": 1206.5}, "tier": "llm", "template": "window",
++  "finish": "Bronze", "finish_source": "imagine", "source": "template", "reason": null,
++  "model_url": "/parts/jeld-wen-thdjw138500117-c6201e/model-size-1487x1187x83-bronze.glb",
++  "seconds": 8.06, "cached": false
++}
++```
++
++Each size and finish is built once (`model-size-<w>x<h>x<d>[-<finish>].glb`, whole mm, served by the
++`model-{slug}.glb` route below; a repeat returns `cached: true` at once).
++
++Errors: `400` invalid part id, `404` unknown part, `409` its `model.glb` isn't ready yet, `422` a side under 10 mm or
++outside 0.5–2x the listing (a window made to measure, not a different product).
++
+ ### `GET /parts/{part_id}/model-{slug}.glb` and `/parts/{part_id}/finish-{slug}.jpg`
+ The variant GLB (same contract as `model.glb`) and the edited product photo, at the URLs `POST
+ /finish` returned. `slug` is the finish lowercased with `-` between words (`matte-black`). `404`
+-until rendered.
++until rendered. `POST /resize`'s models are served here too (`size-1487x1187x83[-bronze]`).
+ 
+ ---
+ 
+@@ -1997,6 +2038,7 @@ Send with every `/agent/command` and `/voice/command`, and as a `{"type":"contex
+ | `scale` | the headset's scale correction (1.0 = none); multiplies the structure sizes the agent sees |
+ | `removed` | the scene parts taken out, oldest first (`[]` when none; sent whenever the loaded package has parts). The last one is "the gap" for measure and replace |
+ | `cavity` | that gap: `{component_id, label, w_m, h_m, d_m, estimated, measured?}` (the `Cavity` of `POST /parts/search`) |
++| `opening` | the opening the headset taped last (a window's width and height tapes): `{w_m, h_m, d_m?, label}` (the `Opening` of `POST /parts/search`). `find_part` passes it on; it lasts while the headset keeps sending it |
+ 
+ Session state is in-memory; it resets on server restart. Keep `session_id` consistent across all calls.
+ 
+-- 
+2.50.1 (Apple Git-155)
+
